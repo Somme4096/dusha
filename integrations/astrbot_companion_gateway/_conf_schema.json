@@ -1,0 +1,29 @@
+{
+  "gateway_url": {
+    "description": "Companion gateway URL",
+    "type": "string",
+    "default": "http://127.0.0.1:8765"
+  },
+  "companion_id": {
+    "description": "Persistent companion ID",
+    "type": "string",
+    "default": "sophia"
+  },
+  "api_token": {
+    "description": "Value for X-Companion-Token",
+    "type": "string",
+    "default": "",
+    "obvious_hint": true
+  },
+  "poll_seconds": {
+    "description": "Proactive event poll interval",
+    "type": "int",
+    "default": 30
+  },
+  "enable_proactive": {
+    "description": "Poll and send proactive events",
+    "type": "bool",
+    "default": true
+  }
+}
+

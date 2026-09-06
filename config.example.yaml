@@ -1,0 +1,51 @@
+data_dir: ~/.local/share/companion-gateway
+host: 127.0.0.1
+port: 8765
+timezone: Asia/Taipei
+default_companion_id: sophia
+
+# Set this to an environment variable name to require X-Companion-Token.
+api_token_env: ""
+
+upstream:
+  # Use the upstream OpenAI-compatible /v1 base URL.
+  base_url: https://api.openai.com/v1
+  api_key_env: UPSTREAM_API_KEY
+  timeout_seconds: 120
+
+memory:
+  recent_messages: 8
+  search_hits: 4
+  context_messages: 1
+  injection_max_chars: 12000
+
+affect:
+  mood_follow_hours: 12
+  mood_return_hours: 72
+  habituation_window_minutes: 15
+  habituation_factor: 0.7
+  silence_longing_per_hour: 0.04
+  silence_anxiety_per_hour: 0.02
+  silence_seeking_per_hour: 0.02
+  dimensions:
+    fear:
+      neutral: 0.0
+      floor: 0.0
+      tau: 7
+  # Add phrases here if the built-in deterministic matcher misses your language.
+  label_patterns: {}
+
+proactive:
+  enabled: true
+  poll_interval_seconds: 60
+  minimum_silence_minutes: 180
+  longing_threshold: 0.48
+  fear_threshold: 0.55
+  cooldown_minutes: 360
+  max_per_day: 2
+  max_unanswered: 2
+  quiet_start_hour: 1
+  quiet_end_hour: 8
+  lease_seconds: 120
+  failed_retry_minutes: 15
+
