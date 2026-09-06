@@ -19,6 +19,11 @@ memory:
   context_messages: 1
   injection_max_chars: 12000
 
+evergreen:
+  enabled: true
+  max_items: 32
+  max_chars: 4000
+
 affect:
   mood_follow_hours: 12
   mood_return_hours: 72
@@ -48,4 +53,3 @@ proactive:
   quiet_end_hour: 8
   lease_seconds: 120
   failed_retry_minutes: 15
-

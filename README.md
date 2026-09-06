@@ -8,6 +8,8 @@ The service adapts Omemo's OpenAI-compatible proxy boundary and Drivesoid v2.0.0
 
 Every message keeps its original JSON content, extracted text, timestamp, source, conversation, SHA-256 digest, and optional source message ID. SQLite FTS5 is a rebuildable index. Search results include the original hit and adjacent original messages.
 
+Evergreen facts live in an append-only revision table in the same database. The agent creates, revises, and forgets them through explicit tools. The service injects the latest active, unexpired revisions in a fixed order. It does not extract facts, summarize conversations, merge claims, or call a model for lifecycle work.
+
 Affect has fast `base` values and slower `mood` values for:
 
 `vitality`, `fatigue`, `longing`, `intimacy`, `possessiveness`, `lust`, `jealousy`, `anxiety`, `protectiveness`, `fear`, `contentment`, `elation`, `seeking`, `play`, `dejection`, and `irritability`.
@@ -46,6 +48,8 @@ Install the directory `integrations/astrbot_companion_gateway` as an AstrBot plu
 
 The plugin polls pending events with `harness=astrbot`. It loads the active AstrBot persona, asks the configured provider for one message, sends through `Context.send_message`, and acknowledges the event. AstrBot's current Discord adapter supports that generic session path.
 
+The plugin registers four evergreen tools: `remember_evergreen_fact`, `revise_evergreen_fact`, `forget_evergreen_fact`, and `review_evergreen_facts`. It also registers the read-only `search_conversation_memory` and `get_conversation_record` tools. Episodic message ingestion remains automatic.
+
 Do not point AstrBot through the OpenAI proxy while the plugin is active. AstrBot cannot put its changing session ID into static provider headers, so that setup would create a second `default` conversation. Other harnesses can use the proxy when they can set the headers above.
 
 ## Proactive event API
@@ -74,13 +78,16 @@ Use `outcome: failed` to release it after the retry delay. A user reply cancels 
 mise exec -- uv run companion-gateway memory search '青い硝子'
 mise exec -- uv run companion-gateway memory show 42
 mise exec -- uv run companion-gateway memory recent
+mise exec -- uv run companion-gateway evergreen list
+mise exec -- uv run companion-gateway evergreen remember user.preference.editor \
+  'The user prefers Helix.' --reason 'The user stated this preference.'
 mise exec -- uv run companion-gateway affect show
 mise exec -- uv run companion-gateway affect event fear_concern \
   --note 'Travel safety concern' --follow-up-minutes 180
 mise exec -- uv run companion-gateway proactive evaluate
 ```
 
-The CLI gives the companion or an operator direct memory access without another model call. The REST endpoints expose the same data to MCP bridges.
+The CLI supports episodic inspection and evergreen audit or repair without another model call. The REST API supplies the AstrBot tools and remains available to later MCP bridges.
 
 ## Backup and service setup
 
@@ -106,5 +113,7 @@ Edit the unit if this repository or `mise` lives elsewhere. The data directory c
 ## Limits
 
 FTS5 provides lexical and substring recall. It does not match paraphrases as well as an embedding index. The raw schema and message IDs allow a later embedding table without changing canonical data.
+
+Evergreen facts can become stale when the agent misses a correction. Expiration and review dates follow deterministic clock checks, while semantic changes require an explicit agent or operator revision.
 
 Deterministic phrase classification cannot infer every emotional nuance. Use explicit event labels for safety-critical fear or relationship events. The service does not generate persona content or decide what the companion believes.

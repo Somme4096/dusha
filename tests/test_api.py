@@ -141,3 +141,85 @@ async def test_message_api_rejects_empty_content(config, monkeypatch):
         )
     assert response.status_code == 422
     assert response.json()["detail"] == "message content is empty"
+
+
+async def test_evergreen_api_lifecycle_and_memory_context(config, monkeypatch):
+    monkeypatch.setattr(api.asyncio, "to_thread", _run_inline)
+    app = api.create_app(config)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        message = await client.post(
+            "/state/v1/messages",
+            json={
+                "companion_id": "sophia",
+                "harness": "test",
+                "conversation_id": "one",
+                "role": "user",
+                "content": "My preferred editor is Helix.",
+            },
+        )
+        message_id = message.json()["id"]
+
+        created = await client.post(
+            "/state/v1/evergreen/facts",
+            json={
+                "companion_id": "sophia",
+                "key": "user.preference.editor",
+                "text": "The user prefers Helix.",
+                "source_message_id": message_id,
+            },
+        )
+        assert created.status_code == 200
+        fact = created.json()["fact"]
+
+        duplicate = await client.post(
+            "/state/v1/evergreen/facts",
+            json={
+                "companion_id": "sophia",
+                "key": "user.preference.editor",
+                "text": "The user prefers another editor.",
+            },
+        )
+        assert duplicate.status_code == 409
+
+        revised = await client.post(
+            f"/state/v1/evergreen/facts/{fact['fact_id']}/revisions",
+            json={
+                "companion_id": "sophia",
+                "expected_revision": 1,
+                "text": "The user usually prefers Helix.",
+                "reason": "Preference clarified.",
+            },
+        )
+        assert revised.status_code == 200
+        assert revised.json()["fact"]["revision"] == 2
+
+        listed = await client.get(
+            "/state/v1/evergreen/facts",
+            params={"companion_id": "sophia"},
+        )
+        assert listed.json()["facts"][0]["text"] == "The user usually prefers Helix."
+
+        history = await client.get(
+            f"/state/v1/evergreen/facts/{fact['fact_id']}/history",
+            params={"companion_id": "sophia"},
+        )
+        assert len(history.json()["revisions"]) == 2
+
+        context = await client.get(
+            f"/state/v1/memory/{message_id}",
+            params={"companion_id": "sophia", "context_messages": 1},
+        )
+        assert context.status_code == 200
+        assert context.json()["messages"][0]["text"] == "My preferred editor is Helix."
+
+        forgotten = await client.post(
+            f"/state/v1/evergreen/facts/{fact['fact_id']}/forget",
+            json={
+                "companion_id": "sophia",
+                "expected_revision": 2,
+                "reason": "Preference withdrawn.",
+            },
+        )
+        assert forgotten.status_code == 200
+        assert forgotten.json()["fact"]["effective_state"] == "forgotten"

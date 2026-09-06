@@ -143,6 +143,12 @@ class MemoryStore:
             ).fetchone()
             return self._row(row) if row else None
 
+    def context(self, companion_id: str, message_id: int, radius: int = 1) -> list[dict[str, Any]]:
+        message = self.get(message_id)
+        if not message or message["companion_id"] != companion_id:
+            return []
+        return self._surrounding(message["conversation_id"], message_id, max(0, min(radius, 10)))
+
     def recent(
         self,
         companion_id: str,

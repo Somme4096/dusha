@@ -42,6 +42,46 @@ def parser() -> argparse.ArgumentParser:
     recent.add_argument("--limit", type=int, default=20)
     memory_commands.add_parser("reindex")
 
+    evergreen = commands.add_parser("evergreen", help="Inspect or update evergreen facts")
+    evergreen_commands = evergreen.add_subparsers(dest="evergreen_command", required=True)
+    evergreen_list = evergreen_commands.add_parser("list")
+    evergreen_list.add_argument("--companion", default="")
+    evergreen_list.add_argument("--include-inactive", action="store_true")
+    evergreen_list.add_argument("--due-only", action="store_true")
+    evergreen_list.add_argument("--limit", type=int, default=100)
+    evergreen_history = evergreen_commands.add_parser("history")
+    evergreen_history.add_argument("fact_id")
+    evergreen_history.add_argument("--companion", default="")
+    evergreen_remember = evergreen_commands.add_parser("remember")
+    evergreen_remember.add_argument("key")
+    evergreen_remember.add_argument("text")
+    evergreen_remember.add_argument("--companion", default="")
+    evergreen_remember.add_argument("--priority", type=int, default=50)
+    evergreen_remember.add_argument("--source-message-id", type=int)
+    evergreen_remember.add_argument("--reason", default="")
+    evergreen_remember.add_argument("--review-after")
+    evergreen_remember.add_argument("--expires-at")
+    evergreen_revise = evergreen_commands.add_parser("revise")
+    evergreen_revise.add_argument("fact_id")
+    evergreen_revise.add_argument("expected_revision", type=int)
+    evergreen_revise.add_argument("text")
+    evergreen_revise.add_argument("--companion", default="")
+    evergreen_revise.add_argument("--priority", type=int)
+    evergreen_revise.add_argument("--source-message-id", type=int)
+    evergreen_revise.add_argument("--reason", default="")
+    review_group = evergreen_revise.add_mutually_exclusive_group()
+    review_group.add_argument("--review-after")
+    review_group.add_argument("--clear-review-after", action="store_true")
+    expiry_group = evergreen_revise.add_mutually_exclusive_group()
+    expiry_group.add_argument("--expires-at")
+    expiry_group.add_argument("--clear-expires-at", action="store_true")
+    evergreen_forget = evergreen_commands.add_parser("forget")
+    evergreen_forget.add_argument("fact_id")
+    evergreen_forget.add_argument("expected_revision", type=int)
+    evergreen_forget.add_argument("--companion", default="")
+    evergreen_forget.add_argument("--source-message-id", type=int)
+    evergreen_forget.add_argument("--reason", required=True)
+
     affect = commands.add_parser("affect", help="Inspect or update affect")
     affect_commands = affect.add_subparsers(dest="affect_command", required=True)
     affect_show = affect_commands.add_parser("show")
@@ -98,6 +138,69 @@ def main() -> None:
         else:
             service.memory.rebuild_index()
             _print({"status": "rebuilt"})
+    elif args.command == "evergreen":
+        if args.evergreen_command == "list":
+            _print(
+                {
+                    "facts": service.evergreen.list_current(
+                        companion,
+                        include_inactive=args.include_inactive,
+                        due_only=args.due_only,
+                        limit=args.limit,
+                    )
+                }
+            )
+        elif args.evergreen_command == "history":
+            _print({"revisions": service.evergreen.history(companion, args.fact_id)})
+        elif args.evergreen_command == "remember":
+            _print(
+                {
+                    "fact": service.evergreen.remember(
+                        companion_id=companion,
+                        key=args.key,
+                        text=args.text,
+                        priority=args.priority,
+                        source_message_id=args.source_message_id,
+                        reason=args.reason,
+                        review_after=args.review_after,
+                        expires_at=args.expires_at,
+                        created_by="operator",
+                    )
+                }
+            )
+        elif args.evergreen_command == "revise":
+            revise_kwargs = {
+                "companion_id": companion,
+                "fact_id": args.fact_id,
+                "expected_revision": args.expected_revision,
+                "text": args.text,
+                "priority": args.priority,
+                "source_message_id": args.source_message_id,
+                "reason": args.reason,
+                "created_by": "operator",
+            }
+            if args.clear_review_after:
+                revise_kwargs["review_after"] = None
+            elif args.review_after is not None:
+                revise_kwargs["review_after"] = args.review_after
+            if args.clear_expires_at:
+                revise_kwargs["expires_at"] = None
+            elif args.expires_at is not None:
+                revise_kwargs["expires_at"] = args.expires_at
+            _print({"fact": service.evergreen.revise(**revise_kwargs)})
+        else:
+            _print(
+                {
+                    "fact": service.evergreen.forget(
+                        companion_id=companion,
+                        fact_id=args.fact_id,
+                        expected_revision=args.expected_revision,
+                        reason=args.reason,
+                        source_message_id=args.source_message_id,
+                        created_by="operator",
+                    )
+                }
+            )
     elif args.command == "affect":
         if args.affect_command == "show":
             _print(service.affect.status(companion))

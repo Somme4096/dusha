@@ -24,6 +24,13 @@ class MemoryConfig:
 
 
 @dataclass(slots=True)
+class EvergreenConfig:
+    enabled: bool = True
+    max_items: int = 32
+    max_chars: int = 4_000
+
+
+@dataclass(slots=True)
 class AffectConfig:
     mood_follow_hours: float = 12.0
     mood_return_hours: float = 72.0
@@ -62,6 +69,7 @@ class AppConfig:
     api_token_env: str = ""
     upstream: UpstreamConfig = field(default_factory=UpstreamConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
+    evergreen: EvergreenConfig = field(default_factory=EvergreenConfig)
     affect: AffectConfig = field(default_factory=AffectConfig)
     proactive: ProactiveConfig = field(default_factory=ProactiveConfig)
 
@@ -167,6 +175,7 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         api_token_env=str(raw.get("api_token_env", "")),
         upstream=_section(UpstreamConfig, raw, "upstream"),
         memory=_section(MemoryConfig, raw, "memory"),
+        evergreen=_section(EvergreenConfig, raw, "evergreen"),
         affect=_section(AffectConfig, raw, "affect"),
         proactive=_section(ProactiveConfig, raw, "proactive"),
     )

@@ -63,6 +63,28 @@ CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE OF text ON messages BEGIN
     INSERT INTO messages_fts(rowid, text) VALUES (new.id, new.text);
 END;
 
+CREATE TABLE IF NOT EXISTS evergreen_fact_revisions (
+    revision_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fact_id TEXT NOT NULL,
+    companion_id TEXT NOT NULL REFERENCES companions(id) ON DELETE CASCADE,
+    revision INTEGER NOT NULL CHECK(revision > 0),
+    fact_key TEXT NOT NULL,
+    text TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('active', 'forgotten')),
+    priority INTEGER NOT NULL DEFAULT 50 CHECK(priority BETWEEN 0 AND 100),
+    source_message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    review_after TEXT,
+    expires_at TEXT,
+    created_at TEXT NOT NULL,
+    created_by TEXT NOT NULL CHECK(created_by IN ('agent', 'operator', 'api')),
+    UNIQUE(fact_id, revision)
+);
+CREATE INDEX IF NOT EXISTS evergreen_fact_companion_key
+ON evergreen_fact_revisions(companion_id, fact_key, revision DESC);
+CREATE INDEX IF NOT EXISTS evergreen_fact_history
+ON evergreen_fact_revisions(fact_id, revision);
+
 CREATE TABLE IF NOT EXISTS affect_state (
     companion_id TEXT PRIMARY KEY REFERENCES companions(id) ON DELETE CASCADE,
     state_json TEXT NOT NULL,

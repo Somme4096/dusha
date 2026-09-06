@@ -16,6 +16,7 @@ from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from .config import AppConfig, load_config
+from .evergreen import EvergreenConflict
 from .memory import text_from_content
 from .proactive import ProactiveEngine
 from .service import CompanionService
@@ -49,6 +50,35 @@ class SearchInput(BaseModel):
     query: str
     limit: int = 8
     context_messages: int = 1
+
+
+class RememberFactInput(BaseModel):
+    companion_id: str = ""
+    key: str
+    text: str
+    priority: int = Field(default=50, ge=0, le=100)
+    source_message_id: int | None = None
+    reason: str = ""
+    review_after: str | None = None
+    expires_at: str | None = None
+
+
+class ReviseFactInput(BaseModel):
+    companion_id: str = ""
+    expected_revision: int = Field(ge=1)
+    text: str
+    priority: int | None = Field(default=None, ge=0, le=100)
+    source_message_id: int | None = None
+    reason: str = ""
+    review_after: str | None = None
+    expires_at: str | None = None
+
+
+class ForgetFactInput(BaseModel):
+    companion_id: str = ""
+    expected_revision: int = Field(ge=1)
+    reason: str
+    source_message_id: int | None = None
 
 
 class AffectEventInput(BaseModel):
@@ -150,6 +180,120 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             max(0, min(body.context_messages, 10)),
         )
         return {"results": results}
+
+    @app.get("/state/v1/memory/{message_id}", dependencies=[Depends(authorized)])
+    async def memory_context(
+        message_id: int,
+        companion_id: str = "",
+        context_messages: int = Query(1, ge=0, le=10),
+    ) -> dict[str, Any]:
+        messages = await asyncio.to_thread(
+            service.memory.context,
+            companion_id or cfg.default_companion_id,
+            message_id,
+            context_messages,
+        )
+        if not messages:
+            raise HTTPException(status_code=404, detail="memory record not found")
+        return {"messages": messages}
+
+    @app.post("/state/v1/evergreen/facts", dependencies=[Depends(authorized)])
+    async def remember_fact(body: RememberFactInput) -> dict[str, Any]:
+        try:
+            fact = await asyncio.to_thread(
+                service.evergreen.remember,
+                companion_id=body.companion_id or cfg.default_companion_id,
+                key=body.key,
+                text=body.text,
+                priority=body.priority,
+                source_message_id=body.source_message_id,
+                reason=body.reason,
+                review_after=body.review_after,
+                expires_at=body.expires_at,
+                created_by="agent",
+            )
+        except EvergreenConflict as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        return {"fact": fact}
+
+    @app.get("/state/v1/evergreen/facts", dependencies=[Depends(authorized)])
+    async def list_facts(
+        companion_id: str = "",
+        include_inactive: bool = False,
+        due_only: bool = False,
+        limit: int = Query(100, ge=1, le=500),
+    ) -> dict[str, Any]:
+        facts = await asyncio.to_thread(
+            service.evergreen.list_current,
+            companion_id or cfg.default_companion_id,
+            include_inactive=include_inactive,
+            due_only=due_only,
+            limit=limit,
+        )
+        return {"facts": facts}
+
+    @app.get("/state/v1/evergreen/facts/{fact_id}/history", dependencies=[Depends(authorized)])
+    async def fact_history(fact_id: str, companion_id: str = "") -> dict[str, Any]:
+        try:
+            revisions = await asyncio.to_thread(
+                service.evergreen.history,
+                companion_id or cfg.default_companion_id,
+                fact_id,
+            )
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="evergreen fact not found") from error
+        return {"revisions": revisions}
+
+    @app.post(
+        "/state/v1/evergreen/facts/{fact_id}/revisions",
+        dependencies=[Depends(authorized)],
+    )
+    async def revise_fact(fact_id: str, body: ReviseFactInput) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {
+            "companion_id": body.companion_id or cfg.default_companion_id,
+            "fact_id": fact_id,
+            "expected_revision": body.expected_revision,
+            "text": body.text,
+            "priority": body.priority,
+            "source_message_id": body.source_message_id,
+            "reason": body.reason,
+            "created_by": "agent",
+        }
+        if "review_after" in body.model_fields_set:
+            kwargs["review_after"] = body.review_after
+        if "expires_at" in body.model_fields_set:
+            kwargs["expires_at"] = body.expires_at
+        try:
+            fact = await asyncio.to_thread(service.evergreen.revise, **kwargs)
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="evergreen fact not found") from error
+        except EvergreenConflict as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        return {"fact": fact}
+
+    @app.post("/state/v1/evergreen/facts/{fact_id}/forget", dependencies=[Depends(authorized)])
+    async def forget_fact(fact_id: str, body: ForgetFactInput) -> dict[str, Any]:
+        try:
+            fact = await asyncio.to_thread(
+                service.evergreen.forget,
+                companion_id=body.companion_id or cfg.default_companion_id,
+                fact_id=fact_id,
+                expected_revision=body.expected_revision,
+                reason=body.reason,
+                source_message_id=body.source_message_id,
+                created_by="agent",
+            )
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="evergreen fact not found") from error
+        except EvergreenConflict as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        return {"fact": fact}
 
     @app.post("/state/v1/context", dependencies=[Depends(authorized)])
     async def context(body: ContextInput) -> dict[str, Any]:
