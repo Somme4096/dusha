@@ -19,7 +19,6 @@ def config(tmp_path: Path) -> AppConfig:
     return AppConfig(
         data_dir=tmp_path,
         timezone="Asia/Taipei",
-        default_companion_id="sophia",
         upstream=UpstreamConfig(),
         memory=MemoryConfig(recent_messages=2, search_hits=4, context_messages=1, injection_max_chars=20_000),
         evergreen=EvergreenConfig(enabled=True, max_items=32, max_chars=4_000),

@@ -13,7 +13,7 @@ from typing import Any
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import Response, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .config import AppConfig, load_config
 from .evergreen import EvergreenConflict
@@ -25,8 +25,11 @@ from .timeutil import parse_time
 logger = logging.getLogger("companion_gateway")
 
 
-class MessageInput(BaseModel):
-    companion_id: str = ""
+class GatewayInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class MessageInput(GatewayInput):
     harness: str = "api"
     conversation_id: str = "default"
     role: str
@@ -37,23 +40,20 @@ class MessageInput(BaseModel):
     affect_label: str = ""
 
 
-class ContextInput(BaseModel):
-    companion_id: str = ""
+class ContextInput(GatewayInput):
     query: str = ""
     harness: str = ""
     conversation_id: str = ""
     exclude_message_ids: list[int] = Field(default_factory=list)
 
 
-class SearchInput(BaseModel):
-    companion_id: str = ""
+class SearchInput(GatewayInput):
     query: str
     limit: int = 8
     context_messages: int = 1
 
 
-class RememberFactInput(BaseModel):
-    companion_id: str = ""
+class RememberFactInput(GatewayInput):
     key: str
     text: str
     priority: int = Field(default=50, ge=0, le=100)
@@ -63,8 +63,7 @@ class RememberFactInput(BaseModel):
     expires_at: str | None = None
 
 
-class ReviseFactInput(BaseModel):
-    companion_id: str = ""
+class ReviseFactInput(GatewayInput):
     expected_revision: int = Field(ge=1)
     text: str
     priority: int | None = Field(default=None, ge=0, le=100)
@@ -74,21 +73,20 @@ class ReviseFactInput(BaseModel):
     expires_at: str | None = None
 
 
-class ForgetFactInput(BaseModel):
-    companion_id: str = ""
+class ForgetFactInput(GatewayInput):
     expected_revision: int = Field(ge=1)
     reason: str
     source_message_id: int | None = None
 
 
-class AffectEventInput(BaseModel):
+class AffectEventInput(GatewayInput):
     label: str
     note: str = ""
     occurred_at: str | None = None
     follow_up_minutes: int | None = None
 
 
-class AckInput(BaseModel):
+class AckInput(GatewayInput):
     consumer: str
     outcome: str
     text: str = ""
@@ -99,12 +97,25 @@ class AckInput(BaseModel):
 async def _scheduler(proactive: ProactiveEngine, interval: int) -> None:
     while True:
         try:
-            await asyncio.to_thread(proactive.evaluate_all)
+            await asyncio.to_thread(proactive.evaluate)
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.exception("proactive evaluation failed")
         await asyncio.sleep(max(5, interval))
+
+
+async def _semantic_scheduler(service: CompanionService, interval: int) -> None:
+    while True:
+        try:
+            result = await asyncio.to_thread(service.semantic.backfill_once)
+            if result.get("error") and not result.get("cooling_down"):
+                logger.warning("embedding backfill unavailable: %s", result["error"])
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("embedding backfill failed")
+        await asyncio.sleep(max(1, interval))
 
 
 def create_app(config: AppConfig | None = None) -> FastAPI:
@@ -114,16 +125,28 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
-        task = asyncio.create_task(
-            _scheduler(proactive, cfg.proactive.poll_interval_seconds),
-            name="proactive-evaluator",
-        )
+        tasks = [
+            asyncio.create_task(
+                _scheduler(proactive, cfg.proactive.poll_interval_seconds),
+                name="proactive-evaluator",
+            )
+        ]
+        if service.semantic.enabled:
+            tasks.append(
+                asyncio.create_task(
+                    _semantic_scheduler(service, cfg.memory.embedding.backfill_interval_seconds),
+                    name="memory-embedding-backfill",
+                )
+            )
         try:
             yield
         finally:
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+            for task in tasks:
+                task.cancel()
+            for task in tasks:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+            service.close()
 
     app = FastAPI(title="Companion State Gateway", version="0.1.0", lifespan=lifespan)
     app.state.config = cfg
@@ -141,16 +164,19 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         return {
             "status": "ok",
             "database": service.database.integrity_check(),
-            "companions": len(service.companion_ids()),
             "upstream_configured": bool(cfg.upstream.base_url),
+            "memory_index": service.semantic.status(),
         }
+
+    @app.get("/state/v1/memory/index", dependencies=[Depends(authorized)])
+    async def memory_index_status() -> dict[str, Any]:
+        return await asyncio.to_thread(service.semantic.status)
 
     @app.post("/state/v1/messages", dependencies=[Depends(authorized)])
     async def ingest_message(body: MessageInput) -> dict[str, Any]:
         try:
             return await asyncio.to_thread(
                 service.ingest_message,
-                companion_id=body.companion_id or cfg.default_companion_id,
                 harness=body.harness,
                 conversation_id=body.conversation_id,
                 role=body.role,
@@ -174,7 +200,6 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     async def search_memory(body: SearchInput) -> dict[str, Any]:
         results = await asyncio.to_thread(
             service.memory.search,
-            body.companion_id or cfg.default_companion_id,
             body.query,
             max(1, min(body.limit, 50)),
             max(0, min(body.context_messages, 10)),
@@ -184,12 +209,10 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     @app.get("/state/v1/memory/{message_id}", dependencies=[Depends(authorized)])
     async def memory_context(
         message_id: int,
-        companion_id: str = "",
         context_messages: int = Query(1, ge=0, le=10),
     ) -> dict[str, Any]:
         messages = await asyncio.to_thread(
             service.memory.context,
-            companion_id or cfg.default_companion_id,
             message_id,
             context_messages,
         )
@@ -202,7 +225,6 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         try:
             fact = await asyncio.to_thread(
                 service.evergreen.remember,
-                companion_id=body.companion_id or cfg.default_companion_id,
                 key=body.key,
                 text=body.text,
                 priority=body.priority,
@@ -220,14 +242,12 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
 
     @app.get("/state/v1/evergreen/facts", dependencies=[Depends(authorized)])
     async def list_facts(
-        companion_id: str = "",
         include_inactive: bool = False,
         due_only: bool = False,
         limit: int = Query(100, ge=1, le=500),
     ) -> dict[str, Any]:
         facts = await asyncio.to_thread(
             service.evergreen.list_current,
-            companion_id or cfg.default_companion_id,
             include_inactive=include_inactive,
             due_only=due_only,
             limit=limit,
@@ -235,11 +255,10 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         return {"facts": facts}
 
     @app.get("/state/v1/evergreen/facts/{fact_id}/history", dependencies=[Depends(authorized)])
-    async def fact_history(fact_id: str, companion_id: str = "") -> dict[str, Any]:
+    async def fact_history(fact_id: str) -> dict[str, Any]:
         try:
             revisions = await asyncio.to_thread(
                 service.evergreen.history,
-                companion_id or cfg.default_companion_id,
                 fact_id,
             )
         except KeyError as error:
@@ -252,7 +271,6 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     )
     async def revise_fact(fact_id: str, body: ReviseFactInput) -> dict[str, Any]:
         kwargs: dict[str, Any] = {
-            "companion_id": body.companion_id or cfg.default_companion_id,
             "fact_id": fact_id,
             "expected_revision": body.expected_revision,
             "text": body.text,
@@ -280,7 +298,6 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         try:
             fact = await asyncio.to_thread(
                 service.evergreen.forget,
-                companion_id=body.companion_id or cfg.default_companion_id,
                 fact_id=fact_id,
                 expected_revision=body.expected_revision,
                 reason=body.reason,
@@ -299,23 +316,21 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     async def context(body: ContextInput) -> dict[str, Any]:
         return await asyncio.to_thread(
             service.build_context,
-            companion_id=body.companion_id or cfg.default_companion_id,
             query=body.query,
             harness=body.harness,
             conversation_id=body.conversation_id,
             exclude_message_ids=set(body.exclude_message_ids),
         )
 
-    @app.get("/state/v1/affect/{companion_id}", dependencies=[Depends(authorized)])
-    async def affect_status(companion_id: str) -> dict[str, Any]:
-        return await asyncio.to_thread(service.affect.status, companion_id)
+    @app.get("/state/v1/affect", dependencies=[Depends(authorized)])
+    async def affect_status() -> dict[str, Any]:
+        return await asyncio.to_thread(service.affect.status)
 
-    @app.post("/state/v1/affect/{companion_id}/events", dependencies=[Depends(authorized)])
-    async def affect_event(companion_id: str, body: AffectEventInput) -> dict[str, Any]:
+    @app.post("/state/v1/affect/events", dependencies=[Depends(authorized)])
+    async def affect_event(body: AffectEventInput) -> dict[str, Any]:
         try:
             result = await asyncio.to_thread(
                 service.affect.apply_label,
-                companion_id,
                 body.label,
                 now=parse_time(body.occurred_at),
                 note=body.note,
@@ -325,19 +340,18 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             raise HTTPException(status_code=422, detail=str(error)) from error
         return {"label": result.label, "event_id": result.event_id, "state": result.state}
 
-    @app.post("/state/v1/proactive/evaluate/{companion_id}", dependencies=[Depends(authorized)])
-    async def evaluate_proactive(companion_id: str) -> dict[str, Any]:
-        event = await asyncio.to_thread(proactive.evaluate, companion_id)
+    @app.post("/state/v1/proactive/evaluate", dependencies=[Depends(authorized)])
+    async def evaluate_proactive() -> dict[str, Any]:
+        event = await asyncio.to_thread(proactive.evaluate)
         return {"event": event}
 
     @app.get("/state/v1/proactive/events", dependencies=[Depends(authorized)])
     async def poll_proactive(
         consumer: str = Query(..., min_length=1),
-        companion_id: str = "",
         harness: str = "",
         limit: int = Query(1, ge=1, le=20),
     ) -> dict[str, Any]:
-        events = await asyncio.to_thread(proactive.poll, consumer, companion_id, limit, None, harness)
+        events = await asyncio.to_thread(proactive.poll, consumer, limit, None, harness)
         return {"events": events}
 
     @app.post("/state/v1/proactive/events/{event_id}/ack", dependencies=[Depends(authorized)])
@@ -370,7 +384,6 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         if not isinstance(messages, list):
             raise HTTPException(status_code=422, detail="messages must be a list")
 
-        companion_id = request.headers.get("x-companion-id", cfg.default_companion_id)
         conversation_id = request.headers.get("x-conversation-id", "default")
         harness = request.headers.get("x-harness", "openai")
         route = request.headers.get("x-companion-route", "")
@@ -391,7 +404,6 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                 message_content = message
             result = await asyncio.to_thread(
                 service.ingest_message,
-                companion_id=companion_id,
                 harness=harness,
                 conversation_id=conversation_id,
                 role=message["role"],
@@ -406,7 +418,6 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
 
         state_context = await asyncio.to_thread(
             service.build_context,
-            companion_id=companion_id,
             query=current_query,
             harness=harness,
             conversation_id=conversation_id,
@@ -419,7 +430,6 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                 cfg,
                 body,
                 service,
-                companion_id,
                 harness,
                 conversation_id,
                 route,
@@ -436,7 +446,6 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                 response_key = _next_transcript_key(transcript_key, response_message)
                 await asyncio.to_thread(
                     service.ingest_message,
-                    companion_id=companion_id,
                     harness=harness,
                     conversation_id=conversation_id,
                     role="assistant",
@@ -500,7 +509,6 @@ async def _proxy_stream(
     cfg: AppConfig,
     body: dict[str, Any],
     service: CompanionService,
-    companion_id: str,
     harness: str,
     conversation_id: str,
     route: str,
@@ -549,7 +557,6 @@ async def _proxy_stream(
                 response_key = _next_transcript_key(transcript_key, {"role": "assistant", "content": text})
                 await asyncio.to_thread(
                     service.ingest_message,
-                    companion_id=companion_id,
                     harness=harness,
                     conversation_id=conversation_id,
                     role="assistant",

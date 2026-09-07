@@ -1,13 +1,59 @@
 from __future__ import annotations
 
+import sqlite3
+
+import pytest
+
+from companion_gateway.database import Database
 from companion_gateway.service import CompanionService
+
+
+def test_incompatible_database_is_rejected(tmp_path):
+    path = tmp_path / "old.sqlite3"
+    with sqlite3.connect(path) as db:
+        db.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY)")
+
+    with pytest.raises(RuntimeError, match="schema version 0 is incompatible"):
+        Database(path)
+
+
+def test_schema_has_one_state_scope(config):
+    service = CompanionService(config)
+    expected = {
+        "conversations": ["id", "harness", "external_id", "route", "created_at", "updated_at"],
+        "messages": [
+            "id",
+            "conversation_id",
+            "role",
+            "text",
+            "content_json",
+            "external_id",
+            "occurred_at",
+            "ingested_at",
+            "sha256",
+        ],
+        "affect_state": [
+            "id",
+            "state_json",
+            "last_updated_at",
+            "last_user_message_at",
+            "last_interaction_at",
+            "last_proactive_sent_at",
+            "unanswered_proactive",
+            "revision",
+        ],
+    }
+    with service.database.connect() as db:
+        for table, columns in expected.items():
+            actual = [row["name"] for row in db.execute(f"PRAGMA table_info({table})")]
+            assert actual == columns
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 2
 
 
 def test_raw_text_is_canonical_search_result_and_survives_restart(config):
     service = CompanionService(config)
     original = "昨日、Birch said exactly: 『青い硝子を忘れないで』\nSecond line, unchanged."
     stored = service.ingest_message(
-        companion_id="sophia",
         harness="astrbot",
         conversation_id="discord:FriendMessage:42",
         route="discord:FriendMessage:42",
@@ -17,7 +63,6 @@ def test_raw_text_is_canonical_search_result_and_survives_restart(config):
         affect_label="neutral",
     )
     duplicate = service.ingest_message(
-        companion_id="sophia",
         harness="astrbot",
         conversation_id="discord:FriendMessage:42",
         route="discord:FriendMessage:42",
@@ -31,7 +76,7 @@ def test_raw_text_is_canonical_search_result_and_survives_restart(config):
     assert service.memory.get(stored["id"])["text"] == original
 
     restarted = CompanionService(config)
-    results = restarted.memory.search("sophia", "青い硝子")
+    results = restarted.memory.search("青い硝子")
     recalled = [message for result in results for message in result["messages"]]
     assert any(message["text"] == original for message in recalled)
     assert restarted.memory.get(stored["id"])["sha256"] == stored["sha256"]
@@ -44,7 +89,6 @@ def test_structured_openai_content_is_preserved(config):
         {"type": "image_url", "image_url": {"url": "https://example.invalid/a.png"}},
     ]
     stored = service.ingest_message(
-        companion_id="sophia",
         harness="openai",
         conversation_id="one",
         role="user",
@@ -60,7 +104,6 @@ def test_structured_openai_content_is_preserved(config):
 def test_context_uses_original_records_without_persona(config):
     service = CompanionService(config)
     first = service.ingest_message(
-        companion_id="sophia",
         harness="api",
         conversation_id="one",
         route="opaque-route",
@@ -70,7 +113,6 @@ def test_context_uses_original_records_without_persona(config):
         affect_label="neutral",
     )
     current = service.ingest_message(
-        companion_id="sophia",
         harness="api",
         conversation_id="one",
         route="opaque-route",
@@ -80,7 +122,6 @@ def test_context_uses_original_records_without_persona(config):
         affect_label="neutral",
     )
     result = service.build_context(
-        companion_id="sophia",
         harness="api",
         conversation_id="one",
         query="brass key",

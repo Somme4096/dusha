@@ -4,11 +4,6 @@
     "type": "string",
     "default": "http://127.0.0.1:8765"
   },
-  "companion_id": {
-    "description": "Persistent companion ID",
-    "type": "string",
-    "default": "sophia"
-  },
   "api_token": {
     "description": "Value for X-Companion-Token",
     "type": "string",
@@ -26,4 +21,3 @@
     "default": true
   }
 }
-

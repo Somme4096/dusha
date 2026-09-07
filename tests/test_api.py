@@ -37,7 +37,6 @@ async def test_state_api_and_openai_proxy_preserve_one_canonical_transcript(conf
     app = api.create_app(config)
     transport = httpx.ASGITransport(app=app)
     headers = {
-        "X-Companion-Id": "sophia",
         "X-Conversation-Id": "portable-thread",
         "X-Harness": "test-harness",
     }
@@ -66,13 +65,13 @@ async def test_state_api_and_openai_proxy_preserve_one_canonical_transcript(conf
 
         search = await client.post(
             "/state/v1/memory/search",
-            json={"companion_id": "sophia", "query": "amber window"},
+            json={"query": "amber window"},
         )
         assert search.status_code == 200
         recalled = [message["text"] for hit in search.json()["results"] for message in hit["messages"]]
         assert "Remember the amber window." in recalled
 
-    stored = app.state.service.memory.recent("sophia", limit=10)
+    stored = app.state.service.memory.recent(limit=10)
     assert [message["text"] for message in stored] == [
         "Hello.",
         "First reply.",
@@ -119,7 +118,7 @@ async def test_proxy_archives_tool_call_messages(config, monkeypatch):
             json={"model": "upstream", "messages": [{"role": "user", "content": "Look it up."}]},
         )
     assert response.status_code == 200
-    stored = app.state.service.memory.recent("sophia", limit=10)
+    stored = app.state.service.memory.recent(limit=10)
     assert stored[-1]["content"] == tool_message
     assert '"name":"lookup"' in stored[-1]["text"]
 
@@ -132,7 +131,6 @@ async def test_message_api_rejects_empty_content(config, monkeypatch):
         response = await client.post(
             "/state/v1/messages",
             json={
-                "companion_id": "sophia",
                 "harness": "test",
                 "conversation_id": "one",
                 "role": "user",
@@ -151,7 +149,6 @@ async def test_evergreen_api_lifecycle_and_memory_context(config, monkeypatch):
         message = await client.post(
             "/state/v1/messages",
             json={
-                "companion_id": "sophia",
                 "harness": "test",
                 "conversation_id": "one",
                 "role": "user",
@@ -163,7 +160,6 @@ async def test_evergreen_api_lifecycle_and_memory_context(config, monkeypatch):
         created = await client.post(
             "/state/v1/evergreen/facts",
             json={
-                "companion_id": "sophia",
                 "key": "user.preference.editor",
                 "text": "The user prefers Helix.",
                 "source_message_id": message_id,
@@ -175,7 +171,6 @@ async def test_evergreen_api_lifecycle_and_memory_context(config, monkeypatch):
         duplicate = await client.post(
             "/state/v1/evergreen/facts",
             json={
-                "companion_id": "sophia",
                 "key": "user.preference.editor",
                 "text": "The user prefers another editor.",
             },
@@ -185,7 +180,6 @@ async def test_evergreen_api_lifecycle_and_memory_context(config, monkeypatch):
         revised = await client.post(
             f"/state/v1/evergreen/facts/{fact['fact_id']}/revisions",
             json={
-                "companion_id": "sophia",
                 "expected_revision": 1,
                 "text": "The user usually prefers Helix.",
                 "reason": "Preference clarified.",
@@ -194,21 +188,15 @@ async def test_evergreen_api_lifecycle_and_memory_context(config, monkeypatch):
         assert revised.status_code == 200
         assert revised.json()["fact"]["revision"] == 2
 
-        listed = await client.get(
-            "/state/v1/evergreen/facts",
-            params={"companion_id": "sophia"},
-        )
+        listed = await client.get("/state/v1/evergreen/facts")
         assert listed.json()["facts"][0]["text"] == "The user usually prefers Helix."
 
-        history = await client.get(
-            f"/state/v1/evergreen/facts/{fact['fact_id']}/history",
-            params={"companion_id": "sophia"},
-        )
+        history = await client.get(f"/state/v1/evergreen/facts/{fact['fact_id']}/history")
         assert len(history.json()["revisions"]) == 2
 
         context = await client.get(
             f"/state/v1/memory/{message_id}",
-            params={"companion_id": "sophia", "context_messages": 1},
+            params={"context_messages": 1},
         )
         assert context.status_code == 200
         assert context.json()["messages"][0]["text"] == "My preferred editor is Helix."
@@ -216,7 +204,6 @@ async def test_evergreen_api_lifecycle_and_memory_context(config, monkeypatch):
         forgotten = await client.post(
             f"/state/v1/evergreen/facts/{fact['fact_id']}/forget",
             json={
-                "companion_id": "sophia",
                 "expected_revision": 2,
                 "reason": "Preference withdrawn.",
             },

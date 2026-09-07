@@ -19,7 +19,6 @@ class CompanionGatewayPlugin(star.Star):
         super().__init__(context)
         self.config = config
         self.base_url = str(config.get("gateway_url", "http://127.0.0.1:8765")).rstrip("/")
-        self.companion_id = str(config.get("companion_id", "sophia"))
         self.poll_seconds = max(5, int(config.get("poll_seconds", 30)))
         self.enable_proactive = bool(config.get("enable_proactive", True))
         token = str(config.get("api_token", ""))
@@ -91,7 +90,6 @@ class CompanionGatewayPlugin(star.Star):
             stored = await self._post(
                 "/state/v1/messages",
                 {
-                    "companion_id": self.companion_id,
                     "harness": "astrbot",
                     "conversation_id": event.unified_msg_origin,
                     "route": event.unified_msg_origin,
@@ -106,7 +104,6 @@ class CompanionGatewayPlugin(star.Star):
             context = await self._post(
                 "/state/v1/context",
                 {
-                    "companion_id": self.companion_id,
                     "harness": "astrbot",
                     "conversation_id": event.unified_msg_origin,
                     "query": prompt,
@@ -142,7 +139,6 @@ class CompanionGatewayPlugin(star.Star):
             reason(string): A short reason for saving the fact.
         """
         payload: dict[str, Any] = {
-            "companion_id": self.companion_id,
             "key": key,
             "text": text,
             "priority": priority,
@@ -187,7 +183,6 @@ class CompanionGatewayPlugin(star.Star):
             reason(string): A short reason for the revision.
         """
         payload: dict[str, Any] = {
-            "companion_id": self.companion_id,
             "expected_revision": expected_revision,
             "text": text,
             "reason": reason,
@@ -225,7 +220,6 @@ class CompanionGatewayPlugin(star.Star):
             reason(string): A short reason for forgetting the fact.
         """
         payload: dict[str, Any] = {
-            "companion_id": self.companion_id,
             "expected_revision": expected_revision,
             "reason": reason,
         }
@@ -260,7 +254,6 @@ class CompanionGatewayPlugin(star.Star):
             result = await self._get(
                 "/state/v1/evergreen/facts",
                 {
-                    "companion_id": self.companion_id,
                     "due_only": due_only,
                     "include_inactive": include_inactive,
                     "limit": max(1, min(limit, 100)),
@@ -293,7 +286,6 @@ class CompanionGatewayPlugin(star.Star):
             result = await self._post(
                 "/state/v1/memory/search",
                 {
-                    "companion_id": self.companion_id,
                     "query": query,
                     "limit": max(1, min(limit, 10)),
                     "context_messages": 0,
@@ -334,7 +326,6 @@ class CompanionGatewayPlugin(star.Star):
             result = await self._get(
                 f"/state/v1/memory/{memory_id}",
                 {
-                    "companion_id": self.companion_id,
                     "context_messages": max(0, min(context_messages, 10)),
                 },
             )
@@ -361,7 +352,6 @@ class CompanionGatewayPlugin(star.Star):
             await self._post(
                 "/state/v1/messages",
                 {
-                    "companion_id": self.companion_id,
                     "harness": "astrbot",
                     "conversation_id": event.unified_msg_origin,
                     "route": event.unified_msg_origin,
@@ -385,7 +375,6 @@ class CompanionGatewayPlugin(star.Star):
                     headers=self.headers,
                     params={
                         "consumer": "astrbot",
-                        "companion_id": self.companion_id,
                         "harness": "astrbot",
                         "limit": 1,
                     },

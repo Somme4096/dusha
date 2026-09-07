@@ -8,7 +8,6 @@ from typing import Any
 
 from .config import DEFAULT_LABEL_PATTERNS, AffectConfig
 from .database import Database
-from .memory import MemoryStore
 from .timeutil import isoformat, parse_time, utc_now
 
 # This deterministic two-timescale model is adapted from Drivesoid v2.0.0.
@@ -131,9 +130,8 @@ class AffectResult:
 
 
 class AffectEngine:
-    def __init__(self, database: Database, memory: MemoryStore, config: AffectConfig):
+    def __init__(self, database: Database, config: AffectConfig):
         self.database = database
-        self.memory = memory
         self.config = config
         self.label_patterns = dict(DEFAULT_LABEL_PATTERNS)
         self.label_patterns.update(config.label_patterns)
@@ -152,21 +150,20 @@ class AffectEngine:
         base = {name: values["neutral"] for name, values in self.spec.items()}
         return {"base": base.copy(), "mood": base.copy(), "recent_labels": []}
 
-    def _ensure(self, companion_id: str, now: datetime) -> None:
-        self.memory.ensure_companion(companion_id, now)
+    def _ensure(self, now: datetime) -> None:
         state = self.initial_state()
         with self.database.connect() as db:
             db.execute(
                 """INSERT OR IGNORE INTO affect_state
-                   (companion_id, state_json, last_updated_at, last_interaction_at)
-                   VALUES(?,?,?,?)""",
-                (companion_id, json.dumps(state, separators=(",", ":")), isoformat(now), isoformat(now)),
+                   (id, state_json, last_updated_at, last_interaction_at)
+                   VALUES(1,?,?,?)""",
+                (json.dumps(state, separators=(",", ":")), isoformat(now), isoformat(now)),
             )
 
-    def _load_row(self, companion_id: str, now: datetime) -> tuple[Any, dict[str, Any]]:
-        self._ensure(companion_id, now)
+    def _load_row(self, now: datetime) -> tuple[Any, dict[str, Any]]:
+        self._ensure(now)
         with self.database.connect() as db:
-            row = db.execute("SELECT * FROM affect_state WHERE companion_id=?", (companion_id,)).fetchone()
+            row = db.execute("SELECT * FROM affect_state WHERE id=1").fetchone()
         return row, json.loads(row["state_json"])
 
     @staticmethod
@@ -232,15 +229,14 @@ class AffectEngine:
                     state["base"]["dejection"] + 0.01 * silence_hours,
                 )
 
-    def _save(self, companion_id: str, state: dict[str, Any], now: datetime, **fields: Any) -> None:
+    def _save(self, state: dict[str, Any], now: datetime, **fields: Any) -> None:
         assignments = ["state_json=?", "last_updated_at=?", "revision=revision+1"]
         values: list[Any] = [json.dumps(state, separators=(",", ":")), isoformat(now)]
         for name, value in fields.items():
             assignments.append(f"{name}=?")
             values.append(value)
-        values.append(companion_id)
         with self.database.connect() as db:
-            db.execute(f"UPDATE affect_state SET {', '.join(assignments)} WHERE companion_id=?", values)
+            db.execute(f"UPDATE affect_state SET {', '.join(assignments)} WHERE id=1", values)
 
     def classify(self, text: str) -> str:
         folded = text.casefold()
@@ -251,7 +247,6 @@ class AffectEngine:
 
     def apply_label(
         self,
-        companion_id: str,
         label: str,
         *,
         now: datetime | None = None,
@@ -263,7 +258,7 @@ class AffectEngine:
         if label not in LABEL_DELTAS:
             raise ValueError(f"unsupported affect label: {label}")
         current = now or utc_now()
-        row, state = self._load_row(companion_id, current)
+        row, state = self._load_row(current)
         self._advance(row, state, current)
         window_start = current - timedelta(minutes=self.config.habituation_window_minutes)
         recent = [
@@ -286,11 +281,10 @@ class AffectEngine:
         with self.database.connect() as db:
             cursor = db.execute(
                 """INSERT INTO affect_events
-                   (companion_id, label, source_message_id, deltas_json, note, occurred_at,
+                   (label, source_message_id, deltas_json, note, occurred_at,
                     follow_up_at, follow_up_expires_at)
-                   VALUES(?,?,?,?,?,?,?,?)""",
+                   VALUES(?,?,?,?,?,?,?)""",
                 (
-                    companion_id,
                     label,
                     source_message_id,
                     json.dumps(LABEL_DELTAS[label], separators=(",", ":")),
@@ -307,23 +301,20 @@ class AffectEngine:
             with self.database.connect() as db:
                 db.execute(
                     "UPDATE proactive_events SET status='cancelled', updated_at=? "
-                    "WHERE companion_id=? AND status IN ('pending','leased')",
-                    (isoformat(current), companion_id),
+                    "WHERE status IN ('pending','leased')",
+                    (isoformat(current),),
                 )
-        self._save(companion_id, state, current, **fields)
+        self._save(state, current, **fields)
         with self.database.connect() as db:
-            updated = db.execute(
-                "SELECT * FROM affect_state WHERE companion_id=?", (companion_id,)
-            ).fetchone()
+            updated = db.execute("SELECT * FROM affect_state WHERE id=1").fetchone()
         return AffectResult(label, self._public_state(state, updated, current), event_id)
 
     def apply_message(
-        self, companion_id: str, text: str, message_id: int, now: datetime | None = None
+        self, text: str, message_id: int, now: datetime | None = None
     ) -> AffectResult:
         label = self.classify(text)
         follow_up = 180 if label in NEGATIVE_LABELS else None
         return self.apply_label(
-            companion_id,
             label,
             now=now,
             source_message_id=message_id,
@@ -331,32 +322,29 @@ class AffectEngine:
             follow_up_minutes=follow_up,
         )
 
-    def status(self, companion_id: str, now: datetime | None = None) -> dict[str, Any]:
+    def status(self, now: datetime | None = None) -> dict[str, Any]:
         current = now or utc_now()
-        row, state = self._load_row(companion_id, current)
+        row, state = self._load_row(current)
         self._advance(row, state, current)
-        self._save(companion_id, state, current)
+        self._save(state, current)
         with self.database.connect() as db:
-            updated = db.execute(
-                "SELECT * FROM affect_state WHERE companion_id=?", (companion_id,)
-            ).fetchone()
+            updated = db.execute("SELECT * FROM affect_state WHERE id=1").fetchone()
         return self._public_state(state, updated, current)
 
-    def on_proactive_sent(self, companion_id: str, now: datetime | None = None) -> None:
+    def on_proactive_sent(self, now: datetime | None = None) -> None:
         current = now or utc_now()
-        row, state = self._load_row(companion_id, current)
+        row, state = self._load_row(current)
         self._advance(row, state, current)
         self._apply_deltas(state, {"longing": -0.08, "seeking": -0.05, "anxiety": 0.03})
         self._save(
-            companion_id,
             state,
             current,
             last_proactive_sent_at=isoformat(current),
             unanswered_proactive=int(row["unanswered_proactive"]) + 1,
         )
 
-    def prompt_context(self, companion_id: str, now: datetime | None = None) -> str:
-        status = self.status(companion_id, now)
+    def prompt_context(self, now: datetime | None = None) -> str:
+        status = self.status(now)
         values = status["base"]
         deviations = sorted(
             ((abs(values[name] - self.spec[name]["neutral"]), name, values[name]) for name in values),

@@ -12,7 +12,7 @@ The review used repository source, tests, manifests, licenses, and current AstrB
 - Inspected commit: `5e6db375a19aea491b9b0a88111e829f222f0b07`
 - License: Apache-2.0
 - Useful code: OpenAI chat completion forwarding, streaming support, tool field preservation, and an AstrBot setup path.
-- Required change: Omemo stores generated memory summaries in a JSON file. It does not preserve every original message as canonical data. This project keeps its proxy boundary and replaces the memory layer with SQLite raw history plus FTS5 retrieval.
+- Required change: Omemo stores generated memory summaries in a JSON file. It does not preserve every original message as canonical data. This project keeps its proxy boundary and replaces the memory layer with SQLite raw history plus disposable FTS5 and child-vector indexes.
 
 ### Drivesoid v2.0.0
 
@@ -59,4 +59,3 @@ The review used repository source, tests, manifests, licenses, and current AstrB
 - `Context.send_message` dispatches through the matching platform instance.
 - The current Discord adapter implements `send_by_session`, resolves the channel ID, and calls the Discord event sender. The included plugin uses that generic path and declares Discord support.
 - The reviewed third-party proactive plugin omits Discord from its declared support list, so this project does not depend on it.
-

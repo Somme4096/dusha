@@ -3,29 +3,23 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+SCHEMA_VERSION = 2
+
 SCHEMA = """
 PRAGMA foreign_keys = ON;
 
-CREATE TABLE IF NOT EXISTS companions (
-    id TEXT PRIMARY KEY,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS conversations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    companion_id TEXT NOT NULL REFERENCES companions(id) ON DELETE CASCADE,
     harness TEXT NOT NULL,
     external_id TEXT NOT NULL,
     route TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    UNIQUE(companion_id, harness, external_id)
+    UNIQUE(harness, external_id)
 );
 
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    companion_id TEXT NOT NULL REFERENCES companions(id) ON DELETE CASCADE,
     conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
     role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system', 'tool', 'event')),
     text TEXT NOT NULL,
@@ -40,8 +34,8 @@ ON messages(conversation_id, external_id)
 WHERE external_id IS NOT NULL AND external_id != '';
 CREATE INDEX IF NOT EXISTS messages_conversation_time
 ON messages(conversation_id, occurred_at, id);
-CREATE INDEX IF NOT EXISTS messages_companion_time
-ON messages(companion_id, occurred_at, id);
+CREATE INDEX IF NOT EXISTS messages_time
+ON messages(occurred_at, id);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     text,
@@ -63,10 +57,33 @@ CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE OF text ON messages BEGIN
     INSERT INTO messages_fts(rowid, text) VALUES (new.id, new.text);
 END;
 
+CREATE TABLE IF NOT EXISTS memory_chunks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    chunker_key TEXT NOT NULL,
+    ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
+    start_char INTEGER NOT NULL CHECK(start_char >= 0),
+    end_char INTEGER NOT NULL CHECK(end_char > start_char),
+    created_at TEXT NOT NULL,
+    UNIQUE(message_id, chunker_key, ordinal)
+);
+CREATE INDEX IF NOT EXISTS memory_chunks_message
+ON memory_chunks(message_id, chunker_key, ordinal);
+
+CREATE TABLE IF NOT EXISTS memory_chunk_embeddings (
+    chunk_id INTEGER NOT NULL REFERENCES memory_chunks(id) ON DELETE CASCADE,
+    embedding_key TEXT NOT NULL,
+    dimensions INTEGER NOT NULL CHECK(dimensions > 0),
+    embedding BLOB NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(chunk_id, embedding_key)
+);
+CREATE INDEX IF NOT EXISTS memory_chunk_embeddings_key
+ON memory_chunk_embeddings(embedding_key, dimensions, chunk_id);
+
 CREATE TABLE IF NOT EXISTS evergreen_fact_revisions (
     revision_id INTEGER PRIMARY KEY AUTOINCREMENT,
     fact_id TEXT NOT NULL,
-    companion_id TEXT NOT NULL REFERENCES companions(id) ON DELETE CASCADE,
     revision INTEGER NOT NULL CHECK(revision > 0),
     fact_key TEXT NOT NULL,
     text TEXT NOT NULL,
@@ -80,13 +97,13 @@ CREATE TABLE IF NOT EXISTS evergreen_fact_revisions (
     created_by TEXT NOT NULL CHECK(created_by IN ('agent', 'operator', 'api')),
     UNIQUE(fact_id, revision)
 );
-CREATE INDEX IF NOT EXISTS evergreen_fact_companion_key
-ON evergreen_fact_revisions(companion_id, fact_key, revision DESC);
+CREATE INDEX IF NOT EXISTS evergreen_fact_key
+ON evergreen_fact_revisions(fact_key, revision DESC);
 CREATE INDEX IF NOT EXISTS evergreen_fact_history
 ON evergreen_fact_revisions(fact_id, revision);
 
 CREATE TABLE IF NOT EXISTS affect_state (
-    companion_id TEXT PRIMARY KEY REFERENCES companions(id) ON DELETE CASCADE,
+    id INTEGER PRIMARY KEY CHECK(id = 1),
     state_json TEXT NOT NULL,
     last_updated_at TEXT NOT NULL,
     last_user_message_at TEXT,
@@ -98,7 +115,6 @@ CREATE TABLE IF NOT EXISTS affect_state (
 
 CREATE TABLE IF NOT EXISTS affect_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    companion_id TEXT NOT NULL REFERENCES companions(id) ON DELETE CASCADE,
     label TEXT NOT NULL,
     source_message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
     deltas_json TEXT NOT NULL,
@@ -109,11 +125,10 @@ CREATE TABLE IF NOT EXISTS affect_events (
     follow_up_consumed_at TEXT
 );
 CREATE INDEX IF NOT EXISTS affect_events_follow_up
-ON affect_events(companion_id, follow_up_at, follow_up_consumed_at);
+ON affect_events(follow_up_at, follow_up_consumed_at);
 
 CREATE TABLE IF NOT EXISTS proactive_events (
     id TEXT PRIMARY KEY,
-    companion_id TEXT NOT NULL REFERENCES companions(id) ON DELETE CASCADE,
     conversation_id INTEGER REFERENCES conversations(id) ON DELETE SET NULL,
     route TEXT NOT NULL,
     reason TEXT NOT NULL,
@@ -131,6 +146,8 @@ CREATE TABLE IF NOT EXISTS proactive_events (
 );
 CREATE INDEX IF NOT EXISTS proactive_events_poll
 ON proactive_events(status, available_at, created_at);
+
+PRAGMA user_version = 2;
 """
 
 
@@ -138,8 +155,23 @@ class Database:
     def __init__(self, path: str | Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._reject_incompatible_schema()
         with self.connect() as db:
             db.executescript(SCHEMA)
+
+    def _reject_incompatible_schema(self) -> None:
+        if not self.path.exists():
+            return
+        with sqlite3.connect(self.path) as db:
+            version = int(db.execute("PRAGMA user_version").fetchone()[0])
+            initialized = db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages'"
+            ).fetchone()
+        if initialized and version != SCHEMA_VERSION:
+            raise RuntimeError(
+                f"database schema version {version} is incompatible; "
+                "use an empty data directory or restore a schema version 2 backup"
+            )
 
     def connect(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.path, timeout=10)

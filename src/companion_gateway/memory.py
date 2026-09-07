@@ -5,10 +5,13 @@ import json
 import re
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .database import Database
 from .timeutil import isoformat, parse_time, utc_now
+
+if TYPE_CHECKING:
+    from .semantic import SemanticIndex
 
 
 def text_from_content(content: Any) -> str:
@@ -40,50 +43,39 @@ class StoredMessage:
 
 
 class MemoryStore:
-    """Canonical raw message storage with a disposable FTS5 index."""
+    """Canonical raw message storage with disposable retrieval indexes."""
 
-    def __init__(self, database: Database):
+    def __init__(self, database: Database, semantic: SemanticIndex | None = None):
         self.database = database
-
-    def ensure_companion(self, companion_id: str, now: datetime | None = None) -> None:
-        timestamp = isoformat(now or utc_now())
-        with self.database.connect() as db:
-            db.execute(
-                "INSERT INTO companions(id, created_at, updated_at) VALUES(?,?,?) "
-                "ON CONFLICT(id) DO UPDATE SET updated_at=excluded.updated_at",
-                (companion_id, timestamp, timestamp),
-            )
+        self.semantic = semantic
 
     def ensure_conversation(
         self,
-        companion_id: str,
         harness: str,
         external_id: str,
         route: str = "",
         now: datetime | None = None,
     ) -> int:
         timestamp = isoformat(now or utc_now())
-        self.ensure_companion(companion_id, now)
         with self.database.connect() as db:
             db.execute(
                 """INSERT INTO conversations
-                   (companion_id, harness, external_id, route, created_at, updated_at)
-                   VALUES(?,?,?,?,?,?)
-                   ON CONFLICT(companion_id, harness, external_id) DO UPDATE SET
+                   (harness, external_id, route, created_at, updated_at)
+                   VALUES(?,?,?,?,?)
+                   ON CONFLICT(harness, external_id) DO UPDATE SET
                      route=CASE WHEN excluded.route != '' THEN excluded.route ELSE conversations.route END,
                      updated_at=excluded.updated_at""",
-                (companion_id, harness, external_id, route, timestamp, timestamp),
+                (harness, external_id, route, timestamp, timestamp),
             )
             row = db.execute(
-                "SELECT id FROM conversations WHERE companion_id=? AND harness=? AND external_id=?",
-                (companion_id, harness, external_id),
+                "SELECT id FROM conversations WHERE harness=? AND external_id=?",
+                (harness, external_id),
             ).fetchone()
             return int(row["id"])
 
     def ingest(
         self,
         *,
-        companion_id: str,
         harness: str,
         conversation_id: str,
         role: str,
@@ -103,7 +95,7 @@ class MemoryStore:
         ingested = isoformat(utc_now())
         raw_json = _content_json(content if source_payload is None else source_payload)
         digest = hashlib.sha256(raw_json.encode("utf-8")).hexdigest()
-        internal_conversation = self.ensure_conversation(companion_id, harness, conversation_id, route, when)
+        internal_conversation = self.ensure_conversation(harness, conversation_id, route, when)
         with self.database.connect() as db:
             if external_id:
                 existing = db.execute(
@@ -116,11 +108,10 @@ class MemoryStore:
                     )
             cursor = db.execute(
                 """INSERT INTO messages
-                   (companion_id, conversation_id, role, text, content_json, external_id,
+                   (conversation_id, role, text, content_json, external_id,
                     occurred_at, ingested_at, sha256)
-                   VALUES(?,?,?,?,?,?,?,?,?)""",
+                   VALUES(?,?,?,?,?,?,?,?)""",
                 (
-                    companion_id,
                     internal_conversation,
                     role,
                     text,
@@ -143,22 +134,21 @@ class MemoryStore:
             ).fetchone()
             return self._row(row) if row else None
 
-    def context(self, companion_id: str, message_id: int, radius: int = 1) -> list[dict[str, Any]]:
+    def context(self, message_id: int, radius: int = 1) -> list[dict[str, Any]]:
         message = self.get(message_id)
-        if not message or message["companion_id"] != companion_id:
+        if not message:
             return []
         return self._surrounding(message["conversation_id"], message_id, max(0, min(radius, 10)))
 
     def recent(
         self,
-        companion_id: str,
         conversation_id: int | None = None,
         limit: int = 10,
         exclude_ids: set[int] | None = None,
     ) -> list[dict[str, Any]]:
         exclude_ids = exclude_ids or set()
-        clause = "m.companion_id=?"
-        args: list[Any] = [companion_id]
+        clause = "1=1"
+        args: list[Any] = []
         if conversation_id is not None:
             clause += " AND m.conversation_id=?"
             args.append(conversation_id)
@@ -187,37 +177,41 @@ class MemoryStore:
 
     def search(
         self,
-        companion_id: str,
         query: str,
         limit: int = 8,
         context_messages: int = 1,
         exclude_ids: set[int] | None = None,
     ) -> list[dict[str, Any]]:
         exclude_ids = exclude_ids or set()
-        terms = self._query_terms(query)
-        rows: list[Any] = []
-        with self.database.connect() as db:
-            if terms:
-                fts_query = " OR ".join('"' + term.replace('"', '""') + '"' for term in terms)
-                rows = db.execute(
-                    """SELECT m.id, bm25(messages_fts) AS rank
-                       FROM messages_fts JOIN messages m ON m.id=messages_fts.rowid
-                       WHERE messages_fts MATCH ? AND m.companion_id=?
-                       ORDER BY rank LIMIT ?""",
-                    (fts_query, companion_id, limit + len(exclude_ids) + 8),
-                ).fetchall()
-            if not rows:
-                token = (terms[0] if terms else query.strip())[:120]
-                rows = db.execute(
-                    "SELECT id, 0 AS rank FROM messages WHERE companion_id=? AND text LIKE ? "
-                    "ORDER BY occurred_at DESC, id DESC LIMIT ?",
-                    (companion_id, f"%{token}%", limit + len(exclude_ids) + 8),
-                ).fetchall()
+        candidate_limit = limit
+        if self.semantic and self.semantic.enabled:
+            candidate_limit = max(limit, self.semantic.config.lexical_candidates)
+        rows = self._lexical_candidates(
+            query,
+            candidate_limit + len(exclude_ids) + 8,
+        )
+        rows = [row for row in rows if int(row["id"]) not in exclude_ids][:candidate_limit]
+        semantic_rows = (
+            self.semantic.semantic_candidates(
+                query,
+                max(limit, self.semantic.config.semantic_candidates),
+                exclude_ids,
+            )
+            if self.semantic and self.semantic.enabled
+            else []
+        )
+        if semantic_rows:
+            candidates = self._fuse_candidates(rows, semantic_rows, self.semantic.config.rrf_k)
+        else:
+            candidates = [
+                {"id": int(row["id"]), "rank": float(row["rank"]), "retrieval": "lexical"}
+                for row in rows
+            ]
 
         results: list[dict[str, Any]] = []
         seen: set[int] = set()
-        for row in rows:
-            hit_id = int(row["id"])
+        for candidate in candidates:
+            hit_id = int(candidate["id"])
             if hit_id in exclude_ids or hit_id in seen:
                 continue
             hit = self.get(hit_id)
@@ -226,26 +220,107 @@ class MemoryStore:
             context = self._surrounding(hit["conversation_id"], hit_id, context_messages)
             for item in context:
                 seen.add(item["id"])
-            results.append({"hit_id": hit_id, "rank": float(row["rank"]), "messages": context})
+            result = {
+                "hit_id": hit_id,
+                "rank": float(candidate["rank"]),
+                "messages": context,
+            }
+            if candidate.get("fusion_score") is not None:
+                result["retrieval"] = {
+                    "method": "hybrid",
+                    "fusion_score": candidate["fusion_score"],
+                    "lexical_rank": candidate.get("lexical_rank"),
+                    "semantic_rank": candidate.get("semantic_rank"),
+                    "semantic_similarity": candidate.get("semantic_similarity"),
+                }
+            results.append(result)
             if len(results) >= limit:
                 break
         return results
 
-    def _surrounding(self, conversation_id: int, hit_id: int, radius: int) -> list[dict[str, Any]]:
+    def _lexical_candidates(self, query: str, limit: int) -> list[Any]:
+        terms = self._query_terms(query)
+        rows: list[Any] = []
         with self.database.connect() as db:
-            ids = [
-                int(row["id"])
-                for row in db.execute(
-                    "SELECT id FROM messages WHERE conversation_id=? ORDER BY occurred_at, id",
-                    (conversation_id,),
+            if terms:
+                fts_query = " OR ".join('"' + term.replace('"', '""') + '"' for term in terms)
+                rows = db.execute(
+                    """SELECT m.id, bm25(messages_fts) AS rank
+                       FROM messages_fts JOIN messages m ON m.id=messages_fts.rowid
+                       WHERE messages_fts MATCH ?
+                       ORDER BY rank LIMIT ?""",
+                    (fts_query, limit),
                 ).fetchall()
-            ]
-        try:
-            index = ids.index(hit_id)
-        except ValueError:
-            return []
-        selected = ids[max(0, index - radius) : index + radius + 1]
-        return [item for item in (self.get(message_id) for message_id in selected) if item]
+            if not rows:
+                token = (terms[0] if terms else query.strip())[:120]
+                rows = db.execute(
+                    "SELECT id, 0 AS rank FROM messages WHERE text LIKE ? "
+                    "ORDER BY occurred_at DESC, id DESC LIMIT ?",
+                    (f"%{token}%", limit),
+                ).fetchall()
+        return list(rows)
+
+    @staticmethod
+    def _fuse_candidates(
+        lexical_rows: list[Any], semantic_rows: list[dict[str, Any]], rrf_k: int
+    ) -> list[dict[str, Any]]:
+        candidates: dict[int, dict[str, Any]] = {}
+        for position, row in enumerate(lexical_rows, start=1):
+            message_id = int(row["id"])
+            item = candidates.setdefault(
+                message_id,
+                {"id": message_id, "fusion_score": 0.0, "rank": float(row["rank"])},
+            )
+            item["fusion_score"] += 1.0 / (rrf_k + position)
+            item["lexical_rank"] = position
+        for position, row in enumerate(semantic_rows, start=1):
+            message_id = int(row["message_id"])
+            item = candidates.setdefault(
+                message_id,
+                {"id": message_id, "fusion_score": 0.0, "rank": 0.0},
+            )
+            item["fusion_score"] += 1.0 / (rrf_k + position)
+            item["semantic_rank"] = position
+            item["semantic_similarity"] = float(row["similarity"])
+        ordered = sorted(
+            candidates.values(),
+            key=lambda item: (
+                -float(item["fusion_score"]),
+                int(item.get("lexical_rank", 1_000_000)),
+                int(item.get("semantic_rank", 1_000_000)),
+                int(item["id"]),
+            ),
+        )
+        for item in ordered:
+            item["rank"] = -float(item["fusion_score"])
+        return ordered
+
+    def _surrounding(self, conversation_id: int, hit_id: int, radius: int) -> list[dict[str, Any]]:
+        radius = max(0, radius)
+        select = """SELECT m.*, c.harness, c.external_id AS external_conversation_id, c.route
+                    FROM messages m JOIN conversations c ON c.id=m.conversation_id"""
+        with self.database.connect() as db:
+            hit = db.execute(
+                select + " WHERE m.conversation_id=? AND m.id=?",
+                (conversation_id, hit_id),
+            ).fetchone()
+            if not hit:
+                return []
+            before = db.execute(
+                select
+                + """ WHERE m.conversation_id=? AND
+                      (m.occurred_at < ? OR (m.occurred_at=? AND m.id < ?))
+                    ORDER BY m.occurred_at DESC, m.id DESC LIMIT ?""",
+                (conversation_id, hit["occurred_at"], hit["occurred_at"], hit_id, radius),
+            ).fetchall()
+            after = db.execute(
+                select
+                + """ WHERE m.conversation_id=? AND
+                      (m.occurred_at > ? OR (m.occurred_at=? AND m.id > ?))
+                    ORDER BY m.occurred_at, m.id LIMIT ?""",
+                (conversation_id, hit["occurred_at"], hit["occurred_at"], hit_id, radius),
+            ).fetchall()
+        return [self._row(row) for row in [*reversed(before), hit, *after]]
 
     def rebuild_index(self) -> None:
         with self.database.connect() as db:

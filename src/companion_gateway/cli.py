@@ -33,29 +33,31 @@ def parser() -> argparse.ArgumentParser:
     memory_commands = memory.add_subparsers(dest="memory_command", required=True)
     search = memory_commands.add_parser("search")
     search.add_argument("query")
-    search.add_argument("--companion", default="")
     search.add_argument("--limit", type=int, default=8)
     show = memory_commands.add_parser("show")
     show.add_argument("message_id", type=int)
     recent = memory_commands.add_parser("recent")
-    recent.add_argument("--companion", default="")
     recent.add_argument("--limit", type=int, default=20)
     memory_commands.add_parser("reindex")
+    index = memory_commands.add_parser("index", help="Manage the disposable semantic index")
+    index_commands = index.add_subparsers(dest="index_command", required=True)
+    index_commands.add_parser("status")
+    backfill = index_commands.add_parser("backfill")
+    backfill.add_argument("--limit", type=int, default=None)
+    backfill.add_argument("--force", action="store_true")
+    index_commands.add_parser("rebuild")
 
     evergreen = commands.add_parser("evergreen", help="Inspect or update evergreen facts")
     evergreen_commands = evergreen.add_subparsers(dest="evergreen_command", required=True)
     evergreen_list = evergreen_commands.add_parser("list")
-    evergreen_list.add_argument("--companion", default="")
     evergreen_list.add_argument("--include-inactive", action="store_true")
     evergreen_list.add_argument("--due-only", action="store_true")
     evergreen_list.add_argument("--limit", type=int, default=100)
     evergreen_history = evergreen_commands.add_parser("history")
     evergreen_history.add_argument("fact_id")
-    evergreen_history.add_argument("--companion", default="")
     evergreen_remember = evergreen_commands.add_parser("remember")
     evergreen_remember.add_argument("key")
     evergreen_remember.add_argument("text")
-    evergreen_remember.add_argument("--companion", default="")
     evergreen_remember.add_argument("--priority", type=int, default=50)
     evergreen_remember.add_argument("--source-message-id", type=int)
     evergreen_remember.add_argument("--reason", default="")
@@ -65,7 +67,6 @@ def parser() -> argparse.ArgumentParser:
     evergreen_revise.add_argument("fact_id")
     evergreen_revise.add_argument("expected_revision", type=int)
     evergreen_revise.add_argument("text")
-    evergreen_revise.add_argument("--companion", default="")
     evergreen_revise.add_argument("--priority", type=int)
     evergreen_revise.add_argument("--source-message-id", type=int)
     evergreen_revise.add_argument("--reason", default="")
@@ -78,27 +79,22 @@ def parser() -> argparse.ArgumentParser:
     evergreen_forget = evergreen_commands.add_parser("forget")
     evergreen_forget.add_argument("fact_id")
     evergreen_forget.add_argument("expected_revision", type=int)
-    evergreen_forget.add_argument("--companion", default="")
     evergreen_forget.add_argument("--source-message-id", type=int)
     evergreen_forget.add_argument("--reason", required=True)
 
     affect = commands.add_parser("affect", help="Inspect or update affect")
     affect_commands = affect.add_subparsers(dest="affect_command", required=True)
-    affect_show = affect_commands.add_parser("show")
-    affect_show.add_argument("--companion", default="")
+    affect_commands.add_parser("show")
     affect_event = affect_commands.add_parser("event")
     affect_event.add_argument("label", choices=sorted(LABEL_DELTAS))
-    affect_event.add_argument("--companion", default="")
     affect_event.add_argument("--note", default="")
     affect_event.add_argument("--follow-up-minutes", type=int, default=None)
 
     proactive = commands.add_parser("proactive", help="Manage proactive events")
     proactive_commands = proactive.add_subparsers(dest="proactive_command", required=True)
-    evaluate = proactive_commands.add_parser("evaluate")
-    evaluate.add_argument("--companion", default="")
+    proactive_commands.add_parser("evaluate")
     poll = proactive_commands.add_parser("poll")
     poll.add_argument("--consumer", default="cli")
-    poll.add_argument("--companion", default="")
     poll.add_argument("--limit", type=int, default=1)
     ack = proactive_commands.add_parser("ack")
     ack.add_argument("event_id")
@@ -118,15 +114,14 @@ def main() -> None:
 
     service = CompanionService(cfg)
     proactive = ProactiveEngine(service, cfg)
-    companion = getattr(args, "companion", "") or cfg.default_companion_id
 
     if args.command == "health":
-        _print({"database": service.database.integrity_check(), "companions": service.companion_ids()})
+        _print({"database": service.database.integrity_check()})
     elif args.command == "backup":
         _print({"backup": service.backup(args.destination)})
     elif args.command == "memory":
         if args.memory_command == "search":
-            _print({"results": service.memory.search(companion, args.query, args.limit)})
+            _print({"results": service.memory.search(args.query, args.limit)})
         elif args.memory_command == "show":
             result = service.memory.get(args.message_id)
             if result is None:
@@ -134,7 +129,14 @@ def main() -> None:
                 raise SystemExit(1)
             _print(result)
         elif args.memory_command == "recent":
-            _print({"messages": service.memory.recent(companion, limit=args.limit)})
+            _print({"messages": service.memory.recent(limit=args.limit)})
+        elif args.memory_command == "index":
+            if args.index_command == "status":
+                _print(service.semantic.status())
+            elif args.index_command == "backfill":
+                _print(service.semantic.backfill_once(args.limit, force=args.force))
+            else:
+                _print(service.semantic.rebuild_chunks())
         else:
             service.memory.rebuild_index()
             _print({"status": "rebuilt"})
@@ -143,7 +145,6 @@ def main() -> None:
             _print(
                 {
                     "facts": service.evergreen.list_current(
-                        companion,
                         include_inactive=args.include_inactive,
                         due_only=args.due_only,
                         limit=args.limit,
@@ -151,12 +152,11 @@ def main() -> None:
                 }
             )
         elif args.evergreen_command == "history":
-            _print({"revisions": service.evergreen.history(companion, args.fact_id)})
+            _print({"revisions": service.evergreen.history(args.fact_id)})
         elif args.evergreen_command == "remember":
             _print(
                 {
                     "fact": service.evergreen.remember(
-                        companion_id=companion,
                         key=args.key,
                         text=args.text,
                         priority=args.priority,
@@ -170,7 +170,6 @@ def main() -> None:
             )
         elif args.evergreen_command == "revise":
             revise_kwargs = {
-                "companion_id": companion,
                 "fact_id": args.fact_id,
                 "expected_revision": args.expected_revision,
                 "text": args.text,
@@ -192,7 +191,6 @@ def main() -> None:
             _print(
                 {
                     "fact": service.evergreen.forget(
-                        companion_id=companion,
                         fact_id=args.fact_id,
                         expected_revision=args.expected_revision,
                         reason=args.reason,
@@ -203,10 +201,9 @@ def main() -> None:
             )
     elif args.command == "affect":
         if args.affect_command == "show":
-            _print(service.affect.status(companion))
+            _print(service.affect.status())
         else:
             result = service.affect.apply_label(
-                companion,
                 args.label,
                 note=args.note,
                 follow_up_minutes=args.follow_up_minutes,
@@ -214,9 +211,9 @@ def main() -> None:
             _print({"label": result.label, "event_id": result.event_id, "state": result.state})
     elif args.command == "proactive":
         if args.proactive_command == "evaluate":
-            _print({"event": proactive.evaluate(companion)})
+            _print({"event": proactive.evaluate()})
         elif args.proactive_command == "poll":
-            _print({"events": proactive.poll(args.consumer, companion, args.limit)})
+            _print({"events": proactive.poll(args.consumer, args.limit)})
         else:
             _print(
                 proactive.acknowledge(
@@ -227,6 +224,7 @@ def main() -> None:
                     error=args.error,
                 )
             )
+    service.close()
 
 
 if __name__ == "__main__":

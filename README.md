@@ -8,6 +8,8 @@ The service adapts Omemo's OpenAI-compatible proxy boundary and Drivesoid v2.0.0
 
 Every message keeps its original JSON content, extracted text, timestamp, source, conversation, SHA-256 digest, and optional source message ID. SQLite FTS5 is a rebuildable index. Search results include the original hit and adjacent original messages.
 
+Hybrid retrieval uses each message as a parent and deterministic character ranges as children. SQLite stores only child offsets and embedding vectors. A semantic hit resolves back to the complete parent and adjacent canonical messages before injection. Derived chunks and vectors can be rebuilt without changing conversation history.
+
 Evergreen facts live in an append-only revision table in the same database. The agent creates, revises, and forgets them through explicit tools. The service injects the latest active, unexpired revisions in a fixed order. It does not extract facts, summarize conversations, merge claims, or call a model for lifecycle work.
 
 Affect has fast `base` values and slower `mood` values for:
@@ -31,10 +33,9 @@ Check it:
 curl http://127.0.0.1:8765/health
 ```
 
-The OpenAI-compatible base URL is `http://127.0.0.1:8765/v1`. A generic client should send these headers so state remains separated and routable:
+The OpenAI-compatible base URL is `http://127.0.0.1:8765/v1`. A generic client should send these headers so conversations remain separated and proactive delivery stays routable:
 
 ```text
-X-Companion-Id: sophia
 X-Conversation-Id: stable-conversation-id
 X-Harness: client-name
 X-Companion-Route: opaque-return-address
@@ -42,9 +43,27 @@ X-Companion-Route: opaque-return-address
 
 The proxy accepts streaming and non-streaming chat completions. It forwards the caller's `Authorization` header unless `upstream.api_key_env` supplies a key.
 
+## Hybrid retrieval
+
+Set `memory.retrieval_mode` to `hybrid`, then configure an OpenAI-compatible embedding endpoint under `memory.embedding`. The gateway appends `/embeddings` to `base_url`. It reads the API key from `api_key_env` and never stores that key in SQLite.
+
+```yaml
+memory:
+  retrieval_mode: hybrid
+  embedding:
+    base_url: http://127.0.0.1:11434/v1
+    api_key_env: EMBEDDING_API_KEY
+    model: your-embedding-model
+    dimensions:
+```
+
+New messages receive child offsets during ingestion. The service embeds missing children in small background batches. Search combines FTS5 parent ranks and sqlite-vec child ranks through reciprocal-rank fusion. An unavailable embedding endpoint causes lexical fallback and a short retry cooldown.
+
+Changing the endpoint, model, dimensions, or chunk settings selects a new derived index. Old vectors remain harmless until `memory index rebuild` removes all derived chunks and vectors.
+
 ## AstrBot and Discord
 
-Install the directory `integrations/astrbot_companion_gateway` as an AstrBot plugin and set its gateway URL and companion ID. Keep AstrBot's model provider pointed at the real upstream provider. The plugin supplies stable Discord session IDs, records both sides of each exchange, and injects state through AstrBot's request hook.
+Install the directory `integrations/astrbot_companion_gateway` as an AstrBot plugin and set its gateway URL. Keep AstrBot's model provider pointed at the real upstream provider. The plugin supplies stable Discord session IDs, records both sides of each exchange, and injects state through AstrBot's request hook.
 
 The plugin polls pending events with `harness=astrbot`. It loads the active AstrBot persona, asks the configured provider for one message, sends through `Context.send_message`, and acknowledges the event. AstrBot's current Discord adapter supports that generic session path.
 
@@ -78,6 +97,9 @@ Use `outcome: failed` to release it after the retry delay. A user reply cancels 
 mise exec -- uv run companion-gateway memory search '青い硝子'
 mise exec -- uv run companion-gateway memory show 42
 mise exec -- uv run companion-gateway memory recent
+mise exec -- uv run companion-gateway memory index status
+mise exec -- uv run companion-gateway memory index backfill --limit 256
+mise exec -- uv run companion-gateway memory index rebuild
 mise exec -- uv run companion-gateway evergreen list
 mise exec -- uv run companion-gateway evergreen remember user.preference.editor \
   'The user prefers Helix.' --reason 'The user stated this preference.'
@@ -110,9 +132,11 @@ journalctl --user -u companion-gateway -f
 
 Edit the unit if this repository or `mise` lives elsewhere. The data directory contains the only state database. Back up `state.sqlite3` with the CLI instead of copying it while writes are active.
 
+One gateway database represents one companion. Run another gateway with a separate configuration, data directory, port, and user service when you need another companion. Databases from schema version 0 are intentionally rejected because this change has no in-place migration. Start with an empty data directory or retain the old database as a backup.
+
 ## Limits
 
-FTS5 provides lexical and substring recall. It does not match paraphrases as well as an embedding index. The raw schema and message IDs allow a later embedding table without changing canonical data.
+Hybrid retrieval depends on the configured embedding model for semantic quality. The current sqlite-vec query scans stored vectors and suits a personal conversation archive. Large indexes may need an approximate nearest-neighbor adapter later.
 
 Evergreen facts can become stale when the agent misses a correction. Expiration and review dates follow deterministic clock checks, while semantic changes require an explicit agent or operator revision.
 

@@ -16,11 +16,31 @@ class UpstreamConfig:
 
 
 @dataclass(slots=True)
+class EmbeddingConfig:
+    base_url: str = ""
+    api_key_env: str = "EMBEDDING_API_KEY"
+    model: str = ""
+    dimensions: int | None = None
+    timeout_seconds: float = 10.0
+    batch_size: int = 32
+    backfill_interval_seconds: int = 10
+    failure_cooldown_seconds: int = 60
+
+
+@dataclass(slots=True)
 class MemoryConfig:
     recent_messages: int = 8
     search_hits: int = 4
     context_messages: int = 1
     injection_max_chars: int = 12_000
+    retrieval_mode: str = "lexical"
+    child_chars: int = 800
+    child_overlap_chars: int = 120
+    lexical_candidates: int = 24
+    semantic_candidates: int = 24
+    rrf_k: int = 60
+    semantic_min_similarity: float = 0.3
+    embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
 
 
 @dataclass(slots=True)
@@ -65,7 +85,6 @@ class AppConfig:
     host: str = "127.0.0.1"
     port: int = 8765
     timezone: str = "Asia/Taipei"
-    default_companion_id: str = "sophia"
     api_token_env: str = ""
     upstream: UpstreamConfig = field(default_factory=UpstreamConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
@@ -160,6 +179,14 @@ def _section(cls: type[Any], raw: dict[str, Any], name: str) -> Any:
     return cls(**{key: value for key, value in values.items() if key in fields})
 
 
+def _memory_section(raw: dict[str, Any]) -> MemoryConfig:
+    values = raw.get("memory") or {}
+    fields = MemoryConfig.__dataclass_fields__
+    kwargs = {key: value for key, value in values.items() if key in fields and key != "embedding"}
+    kwargs["embedding"] = _section(EmbeddingConfig, values, "embedding")
+    return MemoryConfig(**kwargs)
+
+
 def load_config(path: str | Path | None = None) -> AppConfig:
     config_path = Path(path or os.getenv("COMPANION_GATEWAY_CONFIG", "config.yaml"))
     raw: dict[str, Any] = {}
@@ -171,10 +198,9 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         host=str(raw.get("host", "127.0.0.1")),
         port=int(raw.get("port", 8765)),
         timezone=str(raw.get("timezone", "Asia/Taipei")),
-        default_companion_id=str(raw.get("default_companion_id", "sophia")),
         api_token_env=str(raw.get("api_token_env", "")),
         upstream=_section(UpstreamConfig, raw, "upstream"),
-        memory=_section(MemoryConfig, raw, "memory"),
+        memory=_memory_section(raw),
         evergreen=_section(EvergreenConfig, raw, "evergreen"),
         affect=_section(AffectConfig, raw, "affect"),
         proactive=_section(ProactiveConfig, raw, "proactive"),

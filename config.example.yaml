@@ -2,7 +2,6 @@ data_dir: ~/.local/share/companion-gateway
 host: 127.0.0.1
 port: 8765
 timezone: Asia/Taipei
-default_companion_id: sophia
 
 # Set this to an environment variable name to require X-Companion-Token.
 api_token_env: ""
@@ -18,6 +17,25 @@ memory:
   search_hits: 4
   context_messages: 1
   injection_max_chars: 12000
+  retrieval_mode: hybrid
+  child_chars: 800
+  child_overlap_chars: 120
+  lexical_candidates: 24
+  semantic_candidates: 24
+  rrf_k: 60
+  semantic_min_similarity: 0.30
+  embedding:
+    # Use an OpenAI-compatible base URL. The service appends /embeddings.
+    # Example: http://127.0.0.1:11434/v1
+    base_url: ""
+    api_key_env: EMBEDDING_API_KEY
+    model: ""
+    # Omit dimensions unless the endpoint supports this request field.
+    dimensions:
+    timeout_seconds: 10
+    batch_size: 32
+    backfill_interval_seconds: 10
+    failure_cooldown_seconds: 60
 
 evergreen:
   enabled: true

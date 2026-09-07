@@ -9,6 +9,7 @@ from .config import AppConfig
 from .database import Database
 from .evergreen import EvergreenStore
 from .memory import MemoryStore
+from .semantic import SemanticIndex
 from .timeutil import parse_time
 
 
@@ -16,14 +17,14 @@ class CompanionService:
     def __init__(self, config: AppConfig):
         self.config = config
         self.database = Database(config.database_path)
-        self.memory = MemoryStore(self.database)
+        self.semantic = SemanticIndex(self.database, config.memory)
+        self.memory = MemoryStore(self.database, self.semantic)
         self.evergreen = EvergreenStore(self.database)
-        self.affect = AffectEngine(self.database, self.memory, config.affect)
+        self.affect = AffectEngine(self.database, config.affect)
 
     def ingest_message(
         self,
         *,
-        companion_id: str,
         harness: str,
         conversation_id: str,
         role: str,
@@ -35,7 +36,6 @@ class CompanionService:
         source_payload: Any | None = None,
     ) -> dict[str, Any]:
         message = self.memory.ingest(
-            companion_id=companion_id,
             harness=harness,
             conversation_id=conversation_id,
             role=role,
@@ -45,12 +45,13 @@ class CompanionService:
             occurred_at=occurred_at,
             source_payload=source_payload,
         )
+        if self.semantic.enabled and not message.duplicate:
+            self.semantic.ensure_message_chunks(message.id)
         affect = None
         if role == "user" and not message.duplicate:
             text = self.memory.get(message.id)["text"]
             if affect_label:
                 result = self.affect.apply_label(
-                    companion_id,
                     affect_label,
                     now=parse_time(occurred_at),
                     source_message_id=message.id,
@@ -71,7 +72,7 @@ class CompanionService:
                     else None,
                 )
             else:
-                result = self.affect.apply_message(companion_id, text, message.id, parse_time(occurred_at))
+                result = self.affect.apply_message(text, message.id, parse_time(occurred_at))
             affect = {"label": result.label, "event_id": result.event_id, "state": result.state}
         return {
             "id": message.id,
@@ -84,7 +85,6 @@ class CompanionService:
     def build_context(
         self,
         *,
-        companion_id: str,
         query: str,
         harness: str = "",
         conversation_id: str = "",
@@ -95,13 +95,12 @@ class CompanionService:
         if harness and conversation_id:
             with self.database.connect() as db:
                 row = db.execute(
-                    "SELECT id FROM conversations WHERE companion_id=? AND harness=? AND external_id=?",
-                    (companion_id, harness, conversation_id),
+                    "SELECT id FROM conversations WHERE harness=? AND external_id=?",
+                    (harness, conversation_id),
                 ).fetchone()
                 internal_conversation = int(row["id"]) if row else None
 
         recent = self.memory.recent(
-            companion_id,
             internal_conversation,
             self.config.memory.recent_messages,
             excluded,
@@ -109,7 +108,6 @@ class CompanionService:
         recent_ids = {item["id"] for item in recent}
         hits = (
             self.memory.search(
-                companion_id,
                 query,
                 self.config.memory.search_hits,
                 self.config.memory.context_messages,
@@ -133,14 +131,13 @@ class CompanionService:
 
         evergreen_text, evergreen_facts = (
             self.evergreen.render(
-                companion_id,
                 self.config.evergreen.max_items,
                 self.config.evergreen.max_chars,
             )
             if self.config.evergreen.enabled
             else ("", [])
         )
-        affect_text = self.affect.prompt_context(companion_id)
+        affect_text = self.affect.prompt_context()
         header = (
             "<companion_state>\n"
             f"{affect_text}\n"
@@ -160,7 +157,7 @@ class CompanionService:
         lines.append(footer)
         return {
             "injection": "".join(lines),
-            "affect": self.affect.status(companion_id),
+            "affect": self.affect.status(),
             "evergreen_facts": evergreen_facts,
             "records": used_records,
             "search_hits": hits,
@@ -176,20 +173,18 @@ class CompanionService:
             "text": message["text"],
         }
 
-    def latest_route(self, companion_id: str) -> dict[str, Any] | None:
+    def latest_route(self) -> dict[str, Any] | None:
         with self.database.connect() as db:
             row = db.execute(
                 """SELECT id, harness, external_id, route
                    FROM conversations
-                   WHERE companion_id=? AND route != ''
+                   WHERE route != ''
                    ORDER BY updated_at DESC, id DESC LIMIT 1""",
-                (companion_id,),
             ).fetchone()
         return dict(row) if row else None
 
-    def companion_ids(self) -> list[str]:
-        with self.database.connect() as db:
-            return [str(row["id"]) for row in db.execute("SELECT id FROM companions ORDER BY id")]
-
     def backup(self, destination: str) -> str:
         return str(self.database.backup(destination))
+
+    def close(self) -> None:
+        self.semantic.close()

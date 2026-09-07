@@ -8,7 +8,6 @@ from companion_gateway.service import CompanionService
 
 def _old_user_message(service: CompanionService, when: datetime, external_id: str = "u1") -> None:
     service.ingest_message(
-        companion_id="sophia",
         harness="astrbot",
         conversation_id="discord-main:FriendMessage:123",
         route="discord-main:FriendMessage:123",
@@ -27,23 +26,23 @@ def test_queue_lease_ack_cooldown_and_restart(config):
     _old_user_message(service, start)
     engine = ProactiveEngine(service, config)
 
-    created = engine.evaluate("sophia", now)
+    created = engine.evaluate(now)
     assert created is not None
     assert created["target"]["route"] == "discord-main:FriendMessage:123"
     assert chr(0x2014) not in created["generation_instruction"]
-    assert engine.evaluate("sophia", now) is None
+    assert engine.evaluate(now) is None
 
-    leased = engine.poll("astrbot", "sophia", now=now, harness="astrbot")
+    leased = engine.poll("astrbot", now=now, harness="astrbot")
     assert [item["id"] for item in leased] == [created["id"]]
 
     restarted_service = CompanionService(config)
     restarted = ProactiveEngine(restarted_service, config)
-    assert restarted.poll("other", "sophia", now=now, harness="astrbot") == []
+    assert restarted.poll("other", now=now, harness="astrbot") == []
     restarted.acknowledge(created["id"], "astrbot", "sent", text="Checking in.", now=now)
-    assert restarted.evaluate("sophia", now + timedelta(minutes=359)) is None
-    state = restarted_service.affect.status("sophia", now)
+    assert restarted.evaluate(now + timedelta(minutes=359)) is None
+    state = restarted_service.affect.status(now)
     assert state["unanswered_proactive"] == 1
-    assert any(message["text"] == "Checking in." for message in restarted_service.memory.recent("sophia"))
+    assert any(message["text"] == "Checking in." for message in restarted_service.memory.recent())
 
 
 def test_user_reply_resets_unanswered_limit(config):
@@ -52,14 +51,14 @@ def test_user_reply_resets_unanswered_limit(config):
     service = CompanionService(config)
     _old_user_message(service, start)
     engine = ProactiveEngine(service, config)
-    event = engine.evaluate("sophia", first_send)
-    engine.poll("astrbot", "sophia", now=first_send, harness="astrbot")
+    event = engine.evaluate(first_send)
+    engine.poll("astrbot", now=first_send, harness="astrbot")
     engine.acknowledge(event["id"], "astrbot", "sent", now=first_send)
-    assert engine.evaluate("sophia", first_send + timedelta(hours=12)) is None
+    assert engine.evaluate(first_send + timedelta(hours=12)) is None
 
     reply_time = first_send + timedelta(hours=12)
     _old_user_message(service, reply_time, external_id="u2")
-    state = service.affect.status("sophia", reply_time)
+    state = service.affect.status(reply_time)
     assert state["unanswered_proactive"] == 0
 
 
@@ -71,7 +70,7 @@ def test_quiet_hours_block_creation(config):
     user_time = datetime(2026, 9, 5, 12, 0, tzinfo=UTC)
     _old_user_message(service, user_time)
     quiet_local_two_am = datetime(2026, 9, 5, 18, 0, tzinfo=UTC)
-    assert engine.evaluate("sophia", quiet_local_two_am) is None
+    assert engine.evaluate(quiet_local_two_am) is None
 
 
 def test_failed_delivery_waits_before_retry(config):
@@ -80,10 +79,10 @@ def test_failed_delivery_waits_before_retry(config):
     service = CompanionService(config)
     _old_user_message(service, start)
     engine = ProactiveEngine(service, config)
-    event = engine.evaluate("sophia", now)
+    event = engine.evaluate(now)
     assert event is not None
-    assert engine.poll("astrbot", "sophia", now=now, harness="astrbot")
+    assert engine.poll("astrbot", now=now, harness="astrbot")
     engine.acknowledge(event["id"], "astrbot", "failed", error="network", now=now)
-    assert engine.poll("astrbot", "sophia", now=now + timedelta(minutes=14), harness="astrbot") == []
-    retried = engine.poll("astrbot", "sophia", now=now + timedelta(minutes=15), harness="astrbot")
+    assert engine.poll("astrbot", now=now + timedelta(minutes=14), harness="astrbot") == []
+    retried = engine.poll("astrbot", now=now + timedelta(minutes=15), harness="astrbot")
     assert [item["id"] for item in retried] == [event["id"]]

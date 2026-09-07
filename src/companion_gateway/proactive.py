@@ -34,23 +34,23 @@ class ProactiveEngine:
             return start <= hour < end
         return hour >= start or hour < end
 
-    def _sent_today(self, companion_id: str, now: datetime) -> int:
+    def _sent_today(self, now: datetime) -> int:
         local = now.astimezone(self.timezone)
         day_start = local.replace(hour=0, minute=0, second=0, microsecond=0)
         day_end = day_start + timedelta(days=1)
         with self.database.connect() as db:
             row = db.execute(
                 """SELECT COUNT(*) AS count FROM proactive_events
-                   WHERE companion_id=? AND status='sent' AND sent_at>=? AND sent_at<?""",
-                (companion_id, isoformat(day_start), isoformat(day_end)),
+                   WHERE status='sent' AND sent_at>=? AND sent_at<?""",
+                (isoformat(day_start), isoformat(day_end)),
             ).fetchone()
         return int(row["count"])
 
-    def evaluate(self, companion_id: str, now: datetime | None = None) -> dict[str, Any] | None:
+    def evaluate(self, now: datetime | None = None) -> dict[str, Any] | None:
         current = now or utc_now()
         if not self.rules.enabled or self._quiet(current):
             return None
-        state = self.service.affect.status(companion_id, current)
+        state = self.service.affect.status(current)
         if not state["last_user_message_at"]:
             return None
         last_user = parse_time(state["last_user_message_at"])
@@ -59,30 +59,29 @@ class ProactiveEngine:
             return None
         if state["unanswered_proactive"] >= self.rules.max_unanswered:
             return None
-        if self._sent_today(companion_id, current) >= self.rules.max_per_day:
+        if self._sent_today(current) >= self.rules.max_per_day:
             return None
         if state["last_proactive_sent_at"]:
             elapsed = (current - parse_time(state["last_proactive_sent_at"])).total_seconds() / 60
             if elapsed < self.rules.cooldown_minutes:
                 return None
-        route = self.service.latest_route(companion_id)
+        route = self.service.latest_route()
         if not route:
             return None
         with self.database.connect() as db:
             active = db.execute(
                 """SELECT id FROM proactive_events
-                   WHERE companion_id=? AND status IN ('pending','leased') LIMIT 1""",
-                (companion_id,),
+                   WHERE status IN ('pending','leased') LIMIT 1""",
             ).fetchone()
             if active:
                 return None
             follow_up = db.execute(
                 """SELECT * FROM affect_events
-                   WHERE companion_id=? AND follow_up_at IS NOT NULL
+                   WHERE follow_up_at IS NOT NULL
                      AND follow_up_at<=? AND follow_up_expires_at>?
                      AND follow_up_consumed_at IS NULL
                    ORDER BY follow_up_at LIMIT 1""",
-                (companion_id, isoformat(current), isoformat(current)),
+                (isoformat(current), isoformat(current)),
             ).fetchone()
 
         reason = "silence"
@@ -96,12 +95,11 @@ class ProactiveEngine:
             return None
 
         context = self.service.build_context(
-            companion_id=companion_id,
             query="recent conversation unresolved concern fear care",
             harness=route["harness"],
             conversation_id=route["external_id"],
         )
-        sent_today = self._sent_today(companion_id, current)
+        sent_today = self._sent_today(current)
         if source_event_id:
             dedup_key = f"affect:{source_event_id}"
         else:
@@ -109,7 +107,6 @@ class ProactiveEngine:
             dedup_key = ":".join(
                 (
                     "silence",
-                    companion_id,
                     str(state["last_user_message_at"]),
                     str(local_date),
                     str(sent_today),
@@ -118,7 +115,6 @@ class ProactiveEngine:
         event_id = str(uuid.uuid4())
         payload = {
             "id": event_id,
-            "companion_id": companion_id,
             "target": {
                 "harness": route["harness"],
                 "conversation_id": route["external_id"],
@@ -133,12 +129,11 @@ class ProactiveEngine:
             with self.database.connect() as db:
                 db.execute(
                     """INSERT INTO proactive_events
-                       (id, companion_id, conversation_id, route, reason, dedup_key, payload_json,
+                       (id, conversation_id, route, reason, dedup_key, payload_json,
                         status, available_at, created_at, updated_at)
-                       VALUES(?,?,?,?,?,?,?,'pending',?,?,?)""",
+                       VALUES(?,?,?,?,?,?,'pending',?,?,?)""",
                     (
                         event_id,
-                        companion_id,
                         route["id"],
                         route["route"],
                         reason,
@@ -160,17 +155,9 @@ class ProactiveEngine:
             raise
         return payload
 
-    def evaluate_all(self, now: datetime | None = None) -> list[dict[str, Any]]:
-        return [
-            event
-            for companion_id in self.service.companion_ids()
-            if (event := self.evaluate(companion_id, now))
-        ]
-
     def poll(
         self,
         consumer: str,
-        companion_id: str = "",
         limit: int = 1,
         now: datetime | None = None,
         harness: str = "",
@@ -189,9 +176,6 @@ class ProactiveEngine:
             )
             clause = "p.status='pending' AND p.available_at<=?"
             args: list[Any] = [isoformat(current)]
-            if companion_id:
-                clause += " AND p.companion_id=?"
-                args.append(companion_id)
             if harness:
                 clause += " AND c.harness=?"
                 args.append(harness)
@@ -251,7 +235,7 @@ class ProactiveEngine:
                     (isoformat(available), isoformat(current), error[:1000], event_id),
                 )
         if outcome == "sent":
-            self.service.affect.on_proactive_sent(str(row["companion_id"]), current)
+            self.service.affect.on_proactive_sent(current)
             if text.strip():
                 with self.database.connect() as db:
                     conversation = db.execute(
@@ -259,7 +243,6 @@ class ProactiveEngine:
                     ).fetchone()
                 if conversation:
                     self.service.ingest_message(
-                        companion_id=str(row["companion_id"]),
                         harness=str(conversation["harness"]),
                         conversation_id=str(conversation["external_id"]),
                         role="assistant",
