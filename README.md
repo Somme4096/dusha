@@ -22,10 +22,12 @@ Supported event labels include `fear_separation`, `fear_death`, `fear_concern`, 
 
 ```sh
 cp config.example.yaml config.yaml
-mise exec -- uv sync
+mise exec -- uv tool install --editable .
 export UPSTREAM_API_KEY='replace-me'
-mise exec -- uv run companion-gateway serve
+companion-gateway serve
 ```
+
+The editable tool installation places `companion-gateway` in `~/.local/bin` and keeps its Python code linked to this checkout. Run the install command again after changing dependencies in `pyproject.toml`.
 
 Check it:
 
@@ -67,7 +69,7 @@ Install the directory `integrations/astrbot_companion_gateway` as an AstrBot plu
 
 The plugin polls pending events with `harness=astrbot`. It loads the active AstrBot persona, asks the configured provider for one message, sends through `Context.send_message`, and acknowledges the event. AstrBot's current Discord adapter supports that generic session path.
 
-The plugin registers four evergreen tools: `remember_evergreen_fact`, `revise_evergreen_fact`, `forget_evergreen_fact`, and `review_evergreen_facts`. It also registers the read-only `search_conversation_memory` and `get_conversation_record` tools. Episodic message ingestion remains automatic.
+The plugin registers four evergreen tools: `remember_evergreen_fact`, `revise_evergreen_fact`, `forget_evergreen_fact`, and `review_evergreen_facts`. It also registers the read-only `search_conversation_memory` and `get_conversation_record` tools. Episodic message ingestion remains automatic. AstrBot keeps its recent conversation history, so the plugin asks the gateway to omit those recent records from injected memory.
 
 Do not point AstrBot through the OpenAI proxy while the plugin is active. AstrBot cannot put its changing session ID into static provider headers, so that setup would create a second `default` conversation. Other harnesses can use the proxy when they can set the headers above.
 
@@ -94,19 +96,19 @@ Use `outcome: failed` to release it after the retry delay. A user reply cancels 
 ## Memory and affect access
 
 ```sh
-mise exec -- uv run companion-gateway memory search '青い硝子'
-mise exec -- uv run companion-gateway memory show 42
-mise exec -- uv run companion-gateway memory recent
-mise exec -- uv run companion-gateway memory index status
-mise exec -- uv run companion-gateway memory index backfill --limit 256
-mise exec -- uv run companion-gateway memory index rebuild
-mise exec -- uv run companion-gateway evergreen list
-mise exec -- uv run companion-gateway evergreen remember user.preference.editor \
+companion-gateway memory search '青い硝子'
+companion-gateway memory show 42
+companion-gateway memory recent
+companion-gateway memory index status
+companion-gateway memory index backfill --limit 256
+companion-gateway memory index rebuild
+companion-gateway evergreen list
+companion-gateway evergreen remember user.preference.editor \
   'The user prefers Helix.' --reason 'The user stated this preference.'
-mise exec -- uv run companion-gateway affect show
-mise exec -- uv run companion-gateway affect event fear_concern \
+companion-gateway affect show
+companion-gateway affect event fear_concern \
   --note 'Travel safety concern' --follow-up-minutes 180
-mise exec -- uv run companion-gateway proactive evaluate
+companion-gateway proactive evaluate
 ```
 
 The CLI supports episodic inspection and evergreen audit or repair without another model call. The REST API supplies the AstrBot tools and remains available to later MCP bridges.
@@ -116,7 +118,7 @@ The CLI supports episodic inspection and evergreen audit or repair without anoth
 Create a consistent live backup:
 
 ```sh
-mise exec -- uv run companion-gateway backup /path/to/backups/state-$(date +%F).sqlite3
+companion-gateway backup /path/to/backups/state-$(date +%F).sqlite3
 ```
 
 For `systemd --user`:
@@ -130,7 +132,7 @@ systemctl --user enable --now companion-gateway
 journalctl --user -u companion-gateway -f
 ```
 
-Edit the unit if this repository or `mise` lives elsewhere. The data directory contains the only state database. Back up `state.sqlite3` with the CLI instead of copying it while writes are active.
+The supplied unit runs `~/.local/bin/companion-gateway`, installed by the editable uv command above. The data directory contains the only state database. Back up `state.sqlite3` with the CLI instead of copying it while writes are active.
 
 One gateway database represents one companion. Run another gateway with a separate configuration, data directory, port, and user service when you need another companion. Databases from schema version 0 are intentionally rejected because this change has no in-place migration. Start with an empty data directory or retain the old database as a backup.
 

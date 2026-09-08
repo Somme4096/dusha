@@ -89,6 +89,7 @@ class CompanionService:
         harness: str = "",
         conversation_id: str = "",
         exclude_message_ids: set[int] | None = None,
+        include_recent: bool = True,
     ) -> dict[str, Any]:
         excluded = exclude_message_ids or set()
         internal_conversation = None
@@ -119,10 +120,13 @@ class CompanionService:
 
         records: list[dict[str, Any]] = []
         seen: set[int] = set()
-        for message in recent:
-            if message["id"] not in seen:
-                records.append(self._record(message, "recent"))
-                seen.add(message["id"])
+        if include_recent:
+            for message in recent:
+                if message["id"] not in seen:
+                    records.append(self._record(message, "recent"))
+                    seen.add(message["id"])
+        else:
+            seen.update(recent_ids)
         for hit in hits:
             for message in hit["messages"]:
                 if message["id"] not in seen and message["id"] not in excluded:

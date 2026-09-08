@@ -91,6 +91,23 @@ class CompanionGatewayPlugin(star.Star):
         return self._json({"ok": False, "error": "gateway access is disabled for this platform"})
 
     @staticmethod
+    def _inject_context(req: ProviderRequest, text: str) -> None:
+        parts = getattr(req, "extra_user_content_parts", None)
+        if parts is not None and hasattr(parts, "append"):
+            from astrbot.core.agent.message import TextPart
+
+            parts.append(TextPart(text=text))
+            return
+        req.system_prompt = (req.system_prompt or "") + "\n" + text
+
+    @staticmethod
+    def _has_context(req: ProviderRequest) -> bool:
+        if "<companion_state>" in (req.system_prompt or ""):
+            return True
+        parts = getattr(req, "extra_user_content_parts", None) or []
+        return any("<companion_state>" in str(getattr(part, "text", "")) for part in parts)
+
+    @staticmethod
     def _tool_error(error: Exception, fallback: str) -> str:
         result: dict[str, Any] = {"ok": False, "error": fallback}
         if isinstance(error, httpx.HTTPStatusError):
@@ -115,7 +132,7 @@ class CompanionGatewayPlugin(star.Star):
             self._remove_gateway_tools(req)
             return
         prompt = req.prompt or event.get_message_str()
-        if not prompt or "<companion_state>" in (req.system_prompt or ""):
+        if not prompt or self._has_context(req):
             return
         try:
             stored = await self._post(
@@ -139,9 +156,10 @@ class CompanionGatewayPlugin(star.Star):
                     "conversation_id": event.unified_msg_origin,
                     "query": prompt,
                     "exclude_message_ids": [stored["id"]],
+                    "include_recent": False,
                 },
             )
-            req.system_prompt = (req.system_prompt or "") + "\n" + context["injection"]
+            self._inject_context(req, context["injection"])
         except Exception as error:
             logger.warning(f"[companion-gateway] Context unavailable: {error}")
 

@@ -5,11 +5,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=%h/src/sophia
 Environment=PATH=/home/linuxbrew/.linuxbrew/bin:%h/.local/bin:/usr/local/bin:/usr/bin
 Environment=COMPANION_GATEWAY_CONFIG=%h/.config/companion-gateway/config.yaml
 EnvironmentFile=-%h/.config/companion-gateway/environment
-ExecStart=/usr/bin/env mise exec -- uv run --project %h/src/sophia companion-gateway serve
+ExecStart=%h/.local/bin/companion-gateway serve
 Restart=on-failure
 RestartSec=5
 

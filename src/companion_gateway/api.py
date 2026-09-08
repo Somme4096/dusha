@@ -45,6 +45,7 @@ class ContextInput(GatewayInput):
     harness: str = ""
     conversation_id: str = ""
     exclude_message_ids: list[int] = Field(default_factory=list)
+    include_recent: bool = True
 
 
 class SearchInput(GatewayInput):
@@ -320,6 +321,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             harness=body.harness,
             conversation_id=body.conversation_id,
             exclude_message_ids=set(body.exclude_message_ids),
+            include_recent=body.include_recent,
         )
 
     @app.get("/state/v1/affect", dependencies=[Depends(authorized)])
@@ -422,6 +424,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             harness=harness,
             conversation_id=conversation_id,
             exclude_message_ids={current_message_id} if current_message_id else set(),
+            include_recent=False,
         )
         body["messages"] = _inject_context(messages, state_context["injection"])
         if body.get("stream"):

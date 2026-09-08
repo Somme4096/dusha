@@ -132,3 +132,50 @@ def test_context_uses_original_records_without_persona(config):
     assert "personality" not in result["injection"].casefold()
     assert "architecture" not in result["injection"].casefold()
     assert chr(0x2014) not in result["injection"]
+
+
+def test_harness_context_excludes_native_recent_history(config):
+    service = CompanionService(config)
+    service.ingest_message(
+        harness="astrbot",
+        conversation_id="one",
+        role="user",
+        content="The orchid token is stored in the blue cabinet.",
+        external_id="m1",
+        affect_label="neutral",
+    )
+    service.ingest_message(
+        harness="astrbot",
+        conversation_id="one",
+        role="assistant",
+        content="This is the previous answer and must not be injected again.",
+        external_id="m2",
+    )
+    service.ingest_message(
+        harness="astrbot",
+        conversation_id="one",
+        role="user",
+        content="A newer unrelated turn.",
+        external_id="m3",
+        affect_label="neutral",
+    )
+    current = service.ingest_message(
+        harness="astrbot",
+        conversation_id="one",
+        role="user",
+        content="Where is the orchid token?",
+        external_id="m4",
+        affect_label="neutral",
+    )
+
+    result = service.build_context(
+        harness="astrbot",
+        conversation_id="one",
+        query="orchid token",
+        exclude_message_ids={current["id"]},
+        include_recent=False,
+    )
+
+    assert "orchid token is stored in the blue cabinet" in result["injection"]
+    assert "previous answer and must not be injected again" not in result["injection"]
+    assert {record["source"] for record in result["records"]} == {"recalled"}

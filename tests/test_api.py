@@ -84,6 +84,7 @@ async def test_state_api_and_openai_proxy_preserve_one_canonical_transcript(conf
     assert injected["role"] == "system"
     assert "<companion_state>" in injected["content"]
     assert "amber window" not in injected["content"]
+    assert "First reply." not in injected["content"]
 
 
 async def test_proxy_archives_tool_call_messages(config, monkeypatch):

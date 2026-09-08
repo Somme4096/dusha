@@ -33,7 +33,7 @@ The gateway must accept requests from AstrBot at `gateway_url`. Use a reachable 
 
 ## Behavior
 
-For each exchange, the plugin stores the user message and assistant response, then adds retrieved records and current affect to the existing AstrBot system prompt. It keeps AstrBot's active persona unchanged.
+For each exchange, the plugin stores the user message and assistant response, then adds recalled records and current affect to AstrBot's current user request. It leaves AstrBot's active persona and recent conversation history unchanged. Recent gateway records form an exclusion window, which prevents the model from receiving its last answer twice.
 
 The plugin exposes these LLM tools when the configured provider supports tools:
 
