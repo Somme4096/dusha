@@ -13,12 +13,24 @@ from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 from astrbot.api.provider import LLMResponse, ProviderRequest
 from astrbot.core.config.astrbot_config import AstrBotConfig
 
+from .routing import accepts_platform, platform_id_from_umo
+
+GATEWAY_TOOL_NAMES = (
+    "remember_evergreen_fact",
+    "revise_evergreen_fact",
+    "forget_evergreen_fact",
+    "review_evergreen_facts",
+    "search_conversation_memory",
+    "get_conversation_record",
+)
+
 
 class CompanionGatewayPlugin(star.Star):
     def __init__(self, context: star.Context, config: AstrBotConfig) -> None:
         super().__init__(context)
         self.config = config
         self.base_url = str(config.get("gateway_url", "http://127.0.0.1:8765")).rstrip("/")
+        self.platform_id = str(config.get("platform_id", "")).strip()
         self.poll_seconds = max(5, int(config.get("poll_seconds", 30)))
         self.enable_proactive = bool(config.get("enable_proactive", True))
         token = str(config.get("api_token", ""))
@@ -28,6 +40,9 @@ class CompanionGatewayPlugin(star.Star):
         self.latest_source_message_ids: dict[str, int] = {}
 
     async def initialize(self) -> None:
+        if not self.platform_id:
+            logger.warning("[companion-gateway] platform_id is empty; gateway routing is disabled")
+            return
         if self.enable_proactive and self.poll_task is None:
             self.poll_task = asyncio.create_task(self._poll_loop(), name="companion-gateway-poll")
 
@@ -62,6 +77,19 @@ class CompanionGatewayPlugin(star.Star):
     def _source_message_id(self, event: AstrMessageEvent) -> int | None:
         return self.latest_source_message_ids.get(event.unified_msg_origin)
 
+    def _accepts(self, event: AstrMessageEvent) -> bool:
+        return accepts_platform(self.platform_id, event.get_platform_id())
+
+    @staticmethod
+    def _remove_gateway_tools(req: ProviderRequest) -> None:
+        if req.func_tool is None:
+            return
+        for name in GATEWAY_TOOL_NAMES:
+            req.func_tool.remove_tool(name)
+
+    def _routing_error(self) -> str:
+        return self._json({"ok": False, "error": "gateway access is disabled for this platform"})
+
     @staticmethod
     def _tool_error(error: Exception, fallback: str) -> str:
         result: dict[str, Any] = {"ok": False, "error": fallback}
@@ -83,6 +111,9 @@ class CompanionGatewayPlugin(star.Star):
 
     @filter.on_llm_request()
     async def add_state_context(self, event: AstrMessageEvent, req: ProviderRequest) -> None:
+        if not self._accepts(event):
+            self._remove_gateway_tools(req)
+            return
         prompt = req.prompt or event.get_message_str()
         if not prompt or "<companion_state>" in (req.system_prompt or ""):
             return
@@ -138,6 +169,8 @@ class CompanionGatewayPlugin(star.Star):
             expires_at(string): Optional ISO 8601 expiration time.
             reason(string): A short reason for saving the fact.
         """
+        if not self._accepts(event):
+            return self._routing_error()
         payload: dict[str, Any] = {
             "key": key,
             "text": text,
@@ -182,6 +215,8 @@ class CompanionGatewayPlugin(star.Star):
             expires_at(string): An ISO 8601 time, clear, or an empty value to keep it unchanged.
             reason(string): A short reason for the revision.
         """
+        if not self._accepts(event):
+            return self._routing_error()
         payload: dict[str, Any] = {
             "expected_revision": expected_revision,
             "text": text,
@@ -219,6 +254,8 @@ class CompanionGatewayPlugin(star.Star):
             expected_revision(number): The revision currently visible to you.
             reason(string): A short reason for forgetting the fact.
         """
+        if not self._accepts(event):
+            return self._routing_error()
         payload: dict[str, Any] = {
             "expected_revision": expected_revision,
             "reason": reason,
@@ -250,6 +287,8 @@ class CompanionGatewayPlugin(star.Star):
             include_inactive(boolean): Include expired and forgotten facts.
             limit(number): Maximum number of facts from 1 to 100.
         """
+        if not self._accepts(event):
+            return self._routing_error()
         try:
             result = await self._get(
                 "/state/v1/evergreen/facts",
@@ -280,6 +319,8 @@ class CompanionGatewayPlugin(star.Star):
             query(string): Words or a short phrase likely to occur in the original conversation.
             limit(number): Maximum number of matches from 1 to 10.
         """
+        if not self._accepts(event):
+            return self._routing_error()
         if not query.strip():
             return self._json({"ok": False, "error": "query is required"})
         try:
@@ -322,6 +363,8 @@ class CompanionGatewayPlugin(star.Star):
             memory_id(number): The stored message ID.
             context_messages(number): Nearby messages on each side, from 0 to 10.
         """
+        if not self._accepts(event):
+            return self._routing_error()
         try:
             result = await self._get(
                 f"/state/v1/memory/{memory_id}",
@@ -345,6 +388,8 @@ class CompanionGatewayPlugin(star.Star):
 
     @filter.on_llm_response()
     async def store_response(self, event: AstrMessageEvent, response: LLMResponse) -> None:
+        if not self._accepts(event):
+            return
         text = (response.completion_text or "").strip()
         if not text:
             return
@@ -403,6 +448,8 @@ class CompanionGatewayPlugin(star.Star):
     async def _deliver(self, event: dict[str, Any]) -> None:
         route = str(event["target"]["route"])
         try:
+            if platform_id_from_umo(route) != self.platform_id:
+                raise RuntimeError("event target does not match the configured platform")
             persona = await self._persona_prompt(route)
             if not persona:
                 raise RuntimeError("no AstrBot persona is configured for this session")

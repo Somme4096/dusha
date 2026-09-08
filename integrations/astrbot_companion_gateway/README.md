@@ -22,9 +22,12 @@ Set these fields in AstrBot's plugin configuration.
 | Field | Required | Meaning |
 | --- | --- | --- |
 | `gateway_url` | Yes | Gateway address. Default: `http://127.0.0.1:8765` |
+| `platform_id` | Yes | Exact AstrBot platform ID allowed to use this gateway |
 | `api_token` | No | Value for `X-Companion-Token` when the gateway requires one |
 | `poll_seconds` | No | Seconds between proactive event polls. Default: `30` |
 | `enable_proactive` | No | Enable proactive event delivery. Default: `true` |
+
+Run `/sid` through the Discord bot that should own this companion and copy its `Bot ID` into `platform_id`. An empty value disables gateway routing and proactive polling. The plugin ignores other adapters in the same AstrBot process and removes its memory tools from their LLM requests.
 
 The gateway must accept requests from AstrBot at `gateway_url`. Use a reachable host address when AstrBot and the gateway run on different machines or containers.
 

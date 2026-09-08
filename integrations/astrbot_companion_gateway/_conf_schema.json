@@ -4,6 +4,11 @@
     "type": "string",
     "default": "http://127.0.0.1:8765"
   },
+  "platform_id": {
+    "description": "Exact AstrBot platform ID allowed to use this gateway. Run /sid on the selected bot and copy Bot ID. An empty value disables routing.",
+    "type": "string",
+    "default": ""
+  },
   "api_token": {
     "description": "Value for X-Companion-Token",
     "type": "string",

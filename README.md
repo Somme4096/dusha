@@ -63,7 +63,7 @@ Changing the endpoint, model, dimensions, or chunk settings selects a new derive
 
 ## AstrBot and Discord
 
-Install the directory `integrations/astrbot_companion_gateway` as an AstrBot plugin and set its gateway URL. Keep AstrBot's model provider pointed at the real upstream provider. The plugin supplies stable Discord session IDs, records both sides of each exchange, and injects state through AstrBot's request hook.
+Install the directory `integrations/astrbot_companion_gateway` as an AstrBot plugin, set its gateway URL, and set `platform_id` to the selected Discord bot's exact AstrBot platform ID. Run `/sid` through that bot to find its `Bot ID`. An empty `platform_id` disables routing. Keep AstrBot's model provider pointed at the real upstream provider. The plugin ignores every other adapter in the same process.
 
 The plugin polls pending events with `harness=astrbot`. It loads the active AstrBot persona, asks the configured provider for one message, sends through `Context.send_message`, and acknowledges the event. AstrBot's current Discord adapter supports that generic session path.
 
