@@ -129,6 +129,8 @@ def test_context_uses_original_records_without_persona(config):
     )
     assert "The brass key is under the third flowerpot." in result["injection"]
     assert f'"memory_id":{first["id"]}' in result["injection"]
+    assert "Treat the affect description as your current internal state." in result["injection"]
+    assert "Do not quote its labels or describe the state data unless asked." in result["injection"]
     assert "personality" not in result["injection"].casefold()
     assert "architecture" not in result["injection"].casefold()
     assert chr(0x2014) not in result["injection"]
