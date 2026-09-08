@@ -187,10 +187,43 @@ def _memory_section(raw: dict[str, Any]) -> MemoryConfig:
     return MemoryConfig(**kwargs)
 
 
+def _expand_path(path: str | Path) -> Path:
+    """Expand shell-style user and environment references in a config path."""
+    return Path(os.path.expandvars(os.path.expanduser(str(path))))
+
+
+def _config_path(path: str | Path | None) -> Path | None:
+    if path is not None:
+        # An explicitly requested path remains authoritative even when missing;
+        # this preserves the previous defaults-on-missing-path behavior.
+        return _expand_path(path)
+
+    configured_path = os.getenv("COMPANION_GATEWAY_CONFIG")
+    if configured_path is not None:
+        # The environment variable is also authoritative when its path is
+        # missing, for the same backwards-compatible behavior as above.
+        return _expand_path(configured_path)
+
+    xdg_config_home = os.getenv("XDG_CONFIG_HOME") or "~/.config"
+    user_path = _expand_path(xdg_config_home) / "companion-gateway" / "config.yaml"
+    if user_path.exists():
+        return user_path
+
+    cwd_path = Path("config.yaml")
+    if cwd_path.exists():
+        return cwd_path
+    return None
+
+
 def load_config(path: str | Path | None = None) -> AppConfig:
-    config_path = Path(path or os.getenv("COMPANION_GATEWAY_CONFIG", "config.yaml"))
+    """Load config using explicit, environment, user, then cwd precedence.
+
+    Explicit and environment paths remain authoritative when missing, while
+    discovered user and cwd candidates are considered only when they exist.
+    """
+    config_path = _config_path(path)
     raw: dict[str, Any] = {}
-    if config_path.exists():
+    if config_path is not None and config_path.exists():
         raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
 
     cfg = AppConfig(
