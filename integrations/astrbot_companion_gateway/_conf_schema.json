@@ -15,12 +15,12 @@
     "default": "",
     "obvious_hint": true
   },
-  "poll_seconds": {
+  "poll_interval_seconds": {
     "description": "Proactive event poll interval",
     "type": "int",
     "default": 30
   },
-  "enable_proactive": {
+  "proactive_enabled": {
     "description": "Poll and send proactive events",
     "type": "bool",
     "default": true

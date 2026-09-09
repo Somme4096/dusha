@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import hashlib
 import json
+from pathlib import Path
 from typing import Any
 
 import astrbot.api.star as star
@@ -12,8 +13,13 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 from astrbot.api.provider import LLMResponse, ProviderRequest
 from astrbot.core.config.astrbot_config import AstrBotConfig
+from astrbot.core.utils.astrbot_path import get_astrbot_config_path
 
+from .config_migration import migrate_config
 from .routing import accepts_platform, platform_id_from_umo
+
+# Plugin modules load before AstrBotConfig applies the new schema.
+migrate_config(Path(get_astrbot_config_path()) / f"{Path(__file__).parent.name}_config.json")
 
 GATEWAY_TOOL_NAMES = (
     "remember_evergreen_fact",
@@ -31,8 +37,8 @@ class CompanionGatewayPlugin(star.Star):
         self.config = config
         self.base_url = str(config.get("gateway_url", "http://127.0.0.1:8765")).rstrip("/")
         self.platform_id = str(config.get("platform_id", "")).strip()
-        self.poll_seconds = max(5, int(config.get("poll_seconds", 30)))
-        self.enable_proactive = bool(config.get("enable_proactive", True))
+        self.poll_interval_seconds = max(5, int(config.get("poll_interval_seconds", 30)))
+        self.proactive_enabled = bool(config.get("proactive_enabled", True))
         token = str(config.get("api_token", ""))
         self.headers = {"X-Companion-Token": token} if token else {}
         self.client = httpx.AsyncClient(timeout=15)
@@ -43,7 +49,7 @@ class CompanionGatewayPlugin(star.Star):
         if not self.platform_id:
             logger.warning("[companion-gateway] platform_id is empty; gateway routing is disabled")
             return
-        if self.enable_proactive and self.poll_task is None:
+        if self.proactive_enabled and self.poll_task is None:
             self.poll_task = asyncio.create_task(self._poll_loop(), name="companion-gateway-poll")
 
     async def terminate(self) -> None:
@@ -449,7 +455,7 @@ class CompanionGatewayPlugin(star.Star):
                 raise
             except Exception as error:
                 logger.warning(f"[companion-gateway] Proactive poll failed: {error}")
-            await asyncio.sleep(self.poll_seconds)
+            await asyncio.sleep(self.poll_interval_seconds)
 
     async def _persona_prompt(self, route: str) -> str:
         conversation = None
