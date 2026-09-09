@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import stat
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -34,13 +36,11 @@ class MemoryConfig:
     context_messages: int = 1
     injection_max_chars: int = 12_000
     retrieval_mode: str = "lexical"
-    child_chars: int = 800
-    child_overlap_chars: int = 120
+    chunk_max_chars: int = 800
+    chunk_overlap_chars: int = 120
     lexical_candidates: int = 24
     semantic_candidates: int = 24
     rrf_k: int = 60
-    semantic_min_similarity: float = 0.3
-    embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
 
 
 @dataclass(slots=True)
@@ -67,7 +67,7 @@ class AffectConfig:
 class ProactiveConfig:
     enabled: bool = True
     poll_interval_seconds: int = 60
-    minimum_silence_minutes: int = 180
+    min_silence_minutes: int = 180
     longing_threshold: float = 0.48
     fear_threshold: float = 0.55
     cooldown_minutes: int = 360
@@ -76,7 +76,7 @@ class ProactiveConfig:
     quiet_start_hour: int = 1
     quiet_end_hour: int = 8
     lease_seconds: int = 120
-    failed_retry_minutes: int = 15
+    retry_delay_minutes: int = 15
 
 
 @dataclass(slots=True)
@@ -87,6 +87,7 @@ class AppConfig:
     timezone: str = "Asia/Taipei"
     api_token_env: str = ""
     upstream: UpstreamConfig = field(default_factory=UpstreamConfig)
+    embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     evergreen: EvergreenConfig = field(default_factory=EvergreenConfig)
     affect: AffectConfig = field(default_factory=AffectConfig)
@@ -174,17 +175,54 @@ DEFAULT_LABEL_PATTERNS = {
 
 
 def _section(cls: type[Any], raw: dict[str, Any], name: str) -> Any:
-    values = raw.get(name) or {}
+    values = dict(raw.get(name) or {})
     fields = getattr(cls, "__dataclass_fields__", {})
     return cls(**{key: value for key, value in values.items() if key in fields})
 
 
-def _memory_section(raw: dict[str, Any]) -> MemoryConfig:
-    values = raw.get("memory") or {}
-    fields = MemoryConfig.__dataclass_fields__
-    kwargs = {key: value for key, value in values.items() if key in fields and key != "embedding"}
-    kwargs["embedding"] = _section(EmbeddingConfig, values, "embedding")
-    return MemoryConfig(**kwargs)
+def _migrate_config(raw: dict[str, Any]) -> bool:
+    """Consume obsolete keys once; normal configuration loading uses only current names."""
+    changed = False
+    renames = {
+        "memory": {"child_chars": "chunk_max_chars", "child_overlap_chars": "chunk_overlap_chars"},
+        "proactive": {
+            "minimum_silence_minutes": "min_silence_minutes",
+            "failed_retry_minutes": "retry_delay_minutes",
+        },
+    }
+    for section, keys in renames.items():
+        values = raw.get(section) or {}
+        for old, new in keys.items():
+            if old in values:
+                values.setdefault(new, values.pop(old))
+                changed = True
+    memory = raw.get("memory") or {}
+    if "embedding" in memory:
+        raw.setdefault("embedding", memory.pop("embedding"))
+        changed = True
+    for section in ("memory", "affect"):
+        values = raw.get(section) or {}
+        for key in ("semantic_enabled", "semantic_min_similarity"):
+            if key in values:
+                del values[key]
+                changed = True
+    return changed
+
+
+def _save_migrated_config(path: Path, raw: dict[str, Any]) -> None:
+    # Resolve symlinks and replace atomically so a failed write leaves the original intact.
+    path = path.resolve()
+    mode = stat.S_IMODE(path.stat().st_mode)
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            os.fchmod(stream.fileno(), mode)
+            yaml.safe_dump(raw, stream, sort_keys=False, allow_unicode=True)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
 
 
 def _expand_path(path: str | Path) -> Path:
@@ -226,6 +264,7 @@ def load_config(path: str | Path | None = None) -> AppConfig:
     if config_path is not None and config_path.exists():
         raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
 
+    migrated = _migrate_config(raw)
     cfg = AppConfig(
         data_dir=Path(raw.get("data_dir", "./data")).expanduser(),
         host=str(raw.get("host", "127.0.0.1")),
@@ -233,7 +272,8 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         timezone=str(raw.get("timezone", "Asia/Taipei")),
         api_token_env=str(raw.get("api_token_env", "")),
         upstream=_section(UpstreamConfig, raw, "upstream"),
-        memory=_memory_section(raw),
+        embedding=_section(EmbeddingConfig, raw, "embedding"),
+        memory=_section(MemoryConfig, raw, "memory"),
         evergreen=_section(EvergreenConfig, raw, "evergreen"),
         affect=_section(AffectConfig, raw, "affect"),
         proactive=_section(ProactiveConfig, raw, "proactive"),
@@ -241,5 +281,7 @@ def load_config(path: str | Path | None = None) -> AppConfig:
     patterns = dict(DEFAULT_LABEL_PATTERNS)
     patterns.update(cfg.affect.label_patterns)
     cfg.affect.label_patterns = patterns
+    if migrated and config_path is not None:
+        _save_migrated_config(config_path, raw)
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
     return cfg

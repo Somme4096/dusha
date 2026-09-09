@@ -17,6 +17,7 @@ from .database import Database
 from .timeutil import isoformat, utc_now
 
 logger = logging.getLogger("companion_gateway.semantic")
+MIN_SIMILARITY = 0.5
 
 
 class OpenAIEmbeddingClient:
@@ -115,14 +116,14 @@ class SQLiteVectorAdapter:
 class SemanticIndex:
     """Disposable child chunks and vectors backed by canonical message rows."""
 
-    def __init__(self, database: Database, config: MemoryConfig):
+    def __init__(self, database: Database, config: MemoryConfig, embedding: EmbeddingConfig):
         self.database = database
         self.config = config
-        self.embedding = config.embedding
+        self.embedding = embedding
         self.mode = config.retrieval_mode.strip().casefold()
         self._validate_config()
         self.chunker_key = self._fingerprint(
-            {"version": 1, "chars": config.child_chars, "overlap": config.child_overlap_chars}
+            {"version": 1, "chars": config.chunk_max_chars, "overlap": config.chunk_overlap_chars}
         )
         self.embedding_key = self._fingerprint(
             {
@@ -281,7 +282,7 @@ class SemanticIndex:
                 query_dimensions,
                 self.chunker_key,
                 *excluded,
-                1.0 - self.config.semantic_min_similarity,
+                1.0 - MIN_SIMILARITY,
                 max(1, limit),
             ]
             with self.database.connect() as db:
@@ -391,7 +392,7 @@ class SemanticIndex:
             )
 
     def _insert_chunks(self, db: Any, message_id: int, text: str, timestamp: str) -> int:
-        offsets = self.chunk_offsets(text, self.config.child_chars, self.config.child_overlap_chars)
+        offsets = self.chunk_offsets(text, self.config.chunk_max_chars, self.config.chunk_overlap_chars)
         before = db.total_changes
         db.executemany(
             """INSERT OR IGNORE INTO memory_chunks
@@ -433,26 +434,24 @@ class SemanticIndex:
     def _validate_config(self) -> None:
         if self.mode not in {"lexical", "hybrid"}:
             raise ValueError("memory.retrieval_mode must be lexical or hybrid")
-        if self.config.child_chars < 64:
-            raise ValueError("memory.child_chars must be at least 64")
-        if not 0 <= self.config.child_overlap_chars < self.config.child_chars:
-            raise ValueError("memory.child_overlap_chars must be smaller than child_chars")
+        if self.config.chunk_max_chars < 64:
+            raise ValueError("memory.chunk_max_chars must be at least 64")
+        if not 0 <= self.config.chunk_overlap_chars < self.config.chunk_max_chars:
+            raise ValueError("memory.chunk_overlap_chars must be smaller than chunk_max_chars")
         if self.config.lexical_candidates < 1 or self.config.semantic_candidates < 1:
             raise ValueError("memory candidate limits must be positive")
         if self.config.rrf_k < 1:
             raise ValueError("memory.rrf_k must be positive")
-        if not -1.0 <= self.config.semantic_min_similarity <= 1.0:
-            raise ValueError("memory.semantic_min_similarity must be between -1 and 1")
         if self.embedding.dimensions is not None and self.embedding.dimensions < 1:
-            raise ValueError("memory.embedding.dimensions must be positive")
+            raise ValueError("embedding.dimensions must be positive")
         if self.embedding.batch_size < 1:
-            raise ValueError("memory.embedding.batch_size must be positive")
+            raise ValueError("embedding.batch_size must be positive")
         if self.embedding.timeout_seconds <= 0:
-            raise ValueError("memory.embedding.timeout_seconds must be positive")
+            raise ValueError("embedding.timeout_seconds must be positive")
         if self.embedding.backfill_interval_seconds < 1:
-            raise ValueError("memory.embedding.backfill_interval_seconds must be positive")
+            raise ValueError("embedding.backfill_interval_seconds must be positive")
         if self.embedding.failure_cooldown_seconds < 0:
-            raise ValueError("memory.embedding.failure_cooldown_seconds cannot be negative")
+            raise ValueError("embedding.failure_cooldown_seconds cannot be negative")
 
     @staticmethod
     def _fingerprint(value: dict[str, Any]) -> str:

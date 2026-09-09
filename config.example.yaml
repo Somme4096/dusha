@@ -18,24 +18,24 @@ memory:
   context_messages: 1
   injection_max_chars: 12000
   retrieval_mode: hybrid
-  child_chars: 800
-  child_overlap_chars: 120
+  chunk_max_chars: 800
+  chunk_overlap_chars: 120
   lexical_candidates: 24
   semantic_candidates: 24
   rrf_k: 60
-  semantic_min_similarity: 0.30
-  embedding:
-    # Use an OpenAI-compatible base URL. The service appends /embeddings.
-    # Example: http://127.0.0.1:11434/v1
-    base_url: ""
-    api_key_env: EMBEDDING_API_KEY
-    model: ""
-    # Omit dimensions unless the endpoint supports this request field.
-    dimensions:
-    timeout_seconds: 10
-    batch_size: 32
-    backfill_interval_seconds: 10
-    failure_cooldown_seconds: 60
+
+embedding:
+  # Use an OpenAI-compatible base URL. The service appends /embeddings.
+  # Example: http://127.0.0.1:11434/v1
+  base_url: ""
+  api_key_env: EMBEDDING_API_KEY
+  model: ""
+  # Omit dimensions unless the endpoint supports this request field.
+  dimensions:
+  timeout_seconds: 10
+  batch_size: 32
+  backfill_interval_seconds: 10
+  failure_cooldown_seconds: 60
 
 evergreen:
   enabled: true
@@ -55,13 +55,13 @@ affect:
       neutral: 0.0
       floor: 0.0
       tau: 7
-  # Add phrases here if the built-in deterministic matcher misses your language.
+  # Used only when the embedding provider is unconfigured or unavailable.
   label_patterns: {}
 
 proactive:
   enabled: true
   poll_interval_seconds: 60
-  minimum_silence_minutes: 180
+  min_silence_minutes: 180
   longing_threshold: 0.48
   fear_threshold: 0.55
   cooldown_minutes: 360
@@ -70,4 +70,4 @@ proactive:
   quiet_start_hour: 1
   quiet_end_hour: 8
   lease_seconds: 120
-  failed_retry_minutes: 15
+  retry_delay_minutes: 15

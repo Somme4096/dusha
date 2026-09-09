@@ -16,7 +16,13 @@ Affect has fast `base` values and slower `mood` values for:
 
 `vitality`, `fatigue`, `longing`, `intimacy`, `possessiveness`, `lust`, `jealousy`, `anxiety`, `protectiveness`, `fear`, `contentment`, `elation`, `seeking`, `play`, `dejection`, and `irritability`.
 
-Supported event labels include `fear_separation`, `fear_death`, `fear_concern`, and `fear_general`. Phrase matching is deterministic and configurable. Harnesses and the CLI can submit an explicit label when wording alone is not enough.
+Supported event labels include `fear_separation`, `fear_death`, `fear_concern`, and `fear_general`. Harnesses and the CLI can submit an explicit label to bypass automatic appraisal.
+
+Automatic affect reuses `embedding` when its URL and model are configured, independently of memory retrieval mode. Inspired by [affective-longing](https://github.com/pearthink123/affective-longing)'s embedding similarity and event-driven emotion ideas, messages are compared with short emotional prototypes using cosine similarity. Each weight is `max(0, (similarity - threshold) / (1 - threshold))`, bounded to one. Weights are normalized if their sum exceeds one; otherwise the remaining weight is neutral. The weighted sum of existing label deltas drives the existing bounded, habituated state dynamics. This remains deterministic for fixed embeddings, but no longer depends on literal word matches.
+
+Memory retrieval and affect appraisal share an internal cosine similarity cutoff of `0.50`. Semantic affect is automatic when embeddings are configured; neither the cutoff nor an enable switch is exposed in configuration. Prototypes are cached in process; each new unlabeled user message adds one embedding request after initialization. No new dependency or database schema is required. Unrelated messages produce neutral deltas. If embeddings are missing or fail, the configurable phrase matcher is used, with the embedding failure cooldown preventing repeated requests during outages.
+
+The strongest blended label controls habituation and follow-up scheduling; soothing is weighted across the blend. Affect events record blended nominal deltas (before habituation and state-dependent scaling) and semantic weights in the note for inspection. Similarity is a heuristic, not a calibrated emotion probability: negation and mixed intent still require evaluation against real conversations.
 
 ## Install and run
 
@@ -47,21 +53,23 @@ The proxy accepts streaming and non-streaming chat completions. It forwards the 
 
 ## Hybrid retrieval
 
-Set `memory.retrieval_mode` to `hybrid`, then configure an OpenAI-compatible embedding endpoint under `memory.embedding`. The gateway appends `/embeddings` to `base_url`. It reads the API key from `api_key_env` and never stores that key in SQLite.
+Set `memory.retrieval_mode` to `hybrid`, then configure an OpenAI-compatible embedding endpoint under `embedding`. The gateway appends `/embeddings` to `base_url`. It reads the API key from `api_key_env` and never stores that key in SQLite.
 
 ```yaml
 memory:
   retrieval_mode: hybrid
-  embedding:
-    base_url: http://127.0.0.1:11434/v1
-    api_key_env: EMBEDDING_API_KEY
-    model: your-embedding-model
-    dimensions:
+embedding:
+  base_url: http://127.0.0.1:11434/v1
+  api_key_env: EMBEDDING_API_KEY
+  model: your-embedding-model
+  dimensions:
 ```
 
 New messages receive child offsets during ingestion. The service embeds missing children in small background batches. Search combines FTS5 parent ranks and sqlite-vec child ranks through reciprocal-rank fusion. An unavailable embedding endpoint causes lexical fallback and a short retry cooldown.
 
 Changing the endpoint, model, dimensions, or chunk settings selects a new derived index. Old vectors remain harmless until `memory index rebuild` removes all derived chunks and vectors.
+
+Configuration uses `chunk_*` for chunk sizing, `min_*`/`max_*` for limits, and explicit units for durations. The shared provider is configured once under `embedding`. Startup automatically migrates old configuration keys, removes obsolete semantic controls, and saves the configuration once. Later starts leave an already migrated file untouched. Existing canonical values win if both names are present. YAML is reserialized during migration, so comments and formatting are not retained. HTTP fields and stored database schemas are unchanged.
 
 ## AstrBot and Discord
 

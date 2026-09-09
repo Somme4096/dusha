@@ -135,7 +135,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         if service.semantic.enabled:
             tasks.append(
                 asyncio.create_task(
-                    _semantic_scheduler(service, cfg.memory.embedding.backfill_interval_seconds),
+                    _semantic_scheduler(service, cfg.embedding.backfill_interval_seconds),
                     name="memory-embedding-backfill",
                 )
             )

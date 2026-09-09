@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Any
 
 from .affect import AffectEngine
+from .affect_semantic import SemanticAppraisal
 from .config import AppConfig
 from .database import Database
 from .evergreen import EvergreenStore
@@ -17,10 +18,15 @@ class CompanionService:
     def __init__(self, config: AppConfig):
         self.config = config
         self.database = Database(config.database_path)
-        self.semantic = SemanticIndex(self.database, config.memory)
+        self.semantic = SemanticIndex(self.database, config.memory, config.embedding)
         self.memory = MemoryStore(self.database, self.semantic)
         self.evergreen = EvergreenStore(self.database)
-        self.affect = AffectEngine(self.database, config.affect)
+        appraisal = (
+            SemanticAppraisal(self.semantic.client)
+            if config.embedding.base_url and config.embedding.model
+            else None
+        )
+        self.affect = AffectEngine(self.database, config.affect, appraisal)
 
     def ingest_message(
         self,

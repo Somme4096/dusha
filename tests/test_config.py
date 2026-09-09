@@ -45,3 +45,90 @@ def test_missing_explicit_path_keeps_defaults(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
     assert load_config("~/missing-companion-gateway.yaml").port == 8765
+
+
+def test_startup_migrates_configuration_once(tmp_path):
+    from dataclasses import asdict
+
+    import yaml
+
+    legacy = {
+        "data_dir": str(tmp_path / "data"),
+        "memory": {
+            "child_chars": 900,
+            "child_overlap_chars": 80,
+            "embedding": {"base_url": "http://localhost/v1", "model": "local"},
+        },
+        "proactive": {"minimum_silence_minutes": 90, "failed_retry_minutes": 12},
+    }
+    canonical = {
+        "data_dir": str(tmp_path / "data"),
+        "embedding": legacy["memory"]["embedding"],
+        "memory": {"chunk_max_chars": 900, "chunk_overlap_chars": 80},
+        "proactive": {"min_silence_minutes": 90, "retry_delay_minutes": 12},
+    }
+    old_path, new_path = tmp_path / "old.yaml", tmp_path / "new.yaml"
+    old_path.write_text(yaml.safe_dump(legacy))
+    new_path.write_text(yaml.safe_dump(canonical))
+    old_path.chmod(0o600)
+    assert asdict(load_config(old_path)) == asdict(load_config(new_path))
+    assert yaml.safe_load(old_path.read_text()) == canonical
+    assert old_path.stat().st_mode & 0o777 == 0o600
+    first_write = old_path.stat().st_mtime_ns
+    load_config(old_path)
+    assert old_path.stat().st_mtime_ns == first_write
+
+
+def test_migration_keeps_canonical_keys_and_removes_semantic_controls(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text(f"""
+data_dir: {tmp_path / "data"}
+embedding:
+  base_url: http://localhost/v1
+  model: canonical
+memory:
+  embedding:
+    model: legacy
+  child_chars: 900
+  chunk_max_chars: 1000
+  semantic_min_similarity: 0.99
+affect:
+  semantic_enabled: false
+  semantic_min_similarity: 0.99
+proactive:
+  minimum_silence_minutes: 90
+  min_silence_minutes: 100
+""")
+    config = load_config(path)
+    assert config.embedding.model == "canonical"
+    assert config.memory.chunk_max_chars == 1000
+    assert config.proactive.min_silence_minutes == 100
+    from companion_gateway.service import CompanionService
+
+    service = CompanionService(config)
+    assert service.affect.appraisal is not None
+    assert not hasattr(config.affect, "semantic_enabled")
+    assert not hasattr(config.memory, "semantic_min_similarity")
+    import yaml
+
+    saved = yaml.safe_load(path.read_text())
+    assert saved["affect"] == {}
+    assert saved["memory"] == {"chunk_max_chars": 1000}
+    assert saved["proactive"] == {"min_silence_minutes": 100}
+
+
+def test_failed_migration_write_preserves_original(tmp_path, monkeypatch):
+    import pytest
+
+    path = tmp_path / "config.yaml"
+    original = f"data_dir: {tmp_path / 'data'}\nmemory:\n  child_chars: 900\n"
+    path.write_text(original)
+
+    def fail_replace(*args):
+        raise OSError("write failed")
+
+    monkeypatch.setattr("companion_gateway.config.os.replace", fail_replace)
+    with pytest.raises(OSError, match="write failed"):
+        load_config(path)
+    assert path.read_text() == original
+    assert list(tmp_path.iterdir()) == [path]

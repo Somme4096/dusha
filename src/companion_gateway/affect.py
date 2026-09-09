@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
+from .affect_semantic import SemanticAppraisal
 from .config import DEFAULT_LABEL_PATTERNS, AffectConfig
 from .database import Database
 from .timeutil import isoformat, parse_time, utc_now
@@ -130,9 +131,12 @@ class AffectResult:
 
 
 class AffectEngine:
-    def __init__(self, database: Database, config: AffectConfig):
+    def __init__(
+        self, database: Database, config: AffectConfig, appraisal: SemanticAppraisal | None = None
+    ):
         self.database = database
         self.config = config
+        self.appraisal = appraisal
         self.label_patterns = dict(DEFAULT_LABEL_PATTERNS)
         self.label_patterns.update(config.label_patterns)
         self.spec = {name: values.copy() for name, values in DIMENSIONS.items()}
@@ -254,9 +258,15 @@ class AffectEngine:
         note: str = "",
         is_user_message: bool = False,
         follow_up_minutes: int | None = None,
+        weights: dict[str, float] | None = None,
     ) -> AffectResult:
         if label not in LABEL_DELTAS:
             raise ValueError(f"unsupported affect label: {label}")
+        weights = weights if weights is not None else {label: 1.0}
+        deltas: dict[str, float] = {}
+        for name, weight in weights.items():
+            for dimension, delta in LABEL_DELTAS[name].items():
+                deltas[dimension] = deltas.get(dimension, 0.0) + weight * delta
         current = now or utc_now()
         row, state = self._load_row(current)
         self._advance(row, state, current)
@@ -268,9 +278,10 @@ class AffectEngine:
         scale = self.config.habituation_factor**repeats
         if is_user_message:
             self._apply_deltas(state, CONTACT_DELTAS)
-            if label in SOOTHING_LABELS:
-                self._apply_deltas(state, SOOTHING_DELTAS)
-        self._apply_deltas(state, LABEL_DELTAS[label], scale)
+            soothing = sum(weight for name, weight in weights.items() if name in SOOTHING_LABELS)
+            if soothing:
+                self._apply_deltas(state, SOOTHING_DELTAS, soothing)
+        self._apply_deltas(state, deltas, scale)
         recent.append({"label": label, "at": isoformat(current)})
         state["recent_labels"] = recent[-8:]
 
@@ -287,7 +298,7 @@ class AffectEngine:
                 (
                     label,
                     source_message_id,
-                    json.dumps(LABEL_DELTAS[label], separators=(",", ":")),
+                    json.dumps(deltas, separators=(",", ":")),
                     note,
                     isoformat(current),
                     follow_up_at,
@@ -312,7 +323,8 @@ class AffectEngine:
     def apply_message(
         self, text: str, message_id: int, now: datetime | None = None
     ) -> AffectResult:
-        label = self.classify(text)
+        weights = self.appraisal.weights(text) if self.appraisal else None
+        label = max(weights, key=weights.get) if weights else self.classify(text)
         follow_up = 180 if label in NEGATIVE_LABELS else None
         return self.apply_label(
             label,
@@ -320,6 +332,9 @@ class AffectEngine:
             source_message_id=message_id,
             is_user_message=True,
             follow_up_minutes=follow_up,
+            weights=weights,
+            note=json.dumps({"method": "semantic", "weights": weights}, separators=(",", ":"))
+            if weights else "",
         )
 
     def status(self, now: datetime | None = None) -> dict[str, Any]:

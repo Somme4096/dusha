@@ -35,12 +35,11 @@ class FailingEmbeddingClient:
 
 def _enable_hybrid(config, model: str = "test-embedding") -> None:
     config.memory.retrieval_mode = "hybrid"
-    config.memory.child_chars = 64
-    config.memory.child_overlap_chars = 16
+    config.memory.chunk_max_chars = 64
+    config.memory.chunk_overlap_chars = 16
     config.memory.lexical_candidates = 8
     config.memory.semantic_candidates = 8
-    config.memory.semantic_min_similarity = 0.3
-    config.memory.embedding = EmbeddingConfig(
+    config.embedding = EmbeddingConfig(
         base_url="https://embedding.invalid/v1",
         model=model,
         dimensions=2,
@@ -202,7 +201,7 @@ def test_nested_embedding_configuration_loads_from_yaml(tmp_path):
     path.write_text(
         """memory:
   retrieval_mode: hybrid
-  child_chars: 900
+  chunk_max_chars: 900
   embedding:
     base_url: https://embedding.invalid/v1
     api_key_env: CUSTOM_KEY
@@ -215,11 +214,11 @@ def test_nested_embedding_configuration_loads_from_yaml(tmp_path):
     config = load_config(path)
 
     assert config.memory.retrieval_mode == "hybrid"
-    assert config.memory.child_chars == 900
-    assert config.memory.embedding.base_url == "https://embedding.invalid/v1"
-    assert config.memory.embedding.api_key_env == "CUSTOM_KEY"
-    assert config.memory.embedding.model == "chosen-model"
-    assert config.memory.embedding.dimensions == 768
+    assert config.memory.chunk_max_chars == 900
+    assert config.embedding.base_url == "https://embedding.invalid/v1"
+    assert config.embedding.api_key_env == "CUSTOM_KEY"
+    assert config.embedding.model == "chosen-model"
+    assert config.embedding.dimensions == 768
 
 
 def test_reciprocal_rank_fusion_rewards_both_retrievers():
@@ -232,3 +231,20 @@ def test_reciprocal_rank_fusion_rewards_both_retrievers():
     results = MemoryStore._fuse_candidates(lexical, semantic, rrf_k=60)
     assert [item["id"] for item in results] == [2, 1, 3]
     assert results[0]["rank"] == -results[0]["fusion_score"]
+
+
+def test_shared_similarity_cutoff_filters_weak_memory_matches(config):
+    from unittest.mock import Mock
+
+    _enable_hybrid(config)
+    service = CompanionService(config)
+    service.ingest_message(
+        harness="test", conversation_id="one", role="user", content="A keepsake", affect_label="neutral"
+    )
+    service.semantic.client = Mock()
+    service.semantic.client.embed.return_value = [[1.0, 0.0]]
+    assert service.semantic.backfill_once(force=True)["embedded"] == 1
+    service.semantic.client.embed.return_value = [[0.4, (1 - 0.4**2) ** 0.5]]
+    assert service.semantic.semantic_candidates("weak", 4) == []
+    service.semantic.client.embed.return_value = [[0.6, 0.8]]
+    assert len(service.semantic.semantic_candidates("strong", 4)) == 1
