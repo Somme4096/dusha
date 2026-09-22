@@ -59,6 +59,7 @@ class AffectConfig:
     silence_longing_per_hour: float = 0.04
     silence_anxiety_per_hour: float = 0.02
     silence_seeking_per_hour: float = 0.02
+    classification_fallback_seconds: int = 120
     dimensions: dict[str, dict[str, float]] = field(default_factory=dict)
     label_patterns: dict[str, list[str]] = field(default_factory=dict)
 

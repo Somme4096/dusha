@@ -16,6 +16,7 @@ from astrbot.core.config.astrbot_config import AstrBotConfig
 from .routing import accepts_platform, platform_id_from_umo
 
 GATEWAY_TOOL_NAMES = (
+    "record_affect_event",
     "remember_evergreen_fact",
     "revise_evergreen_fact",
     "forget_evergreen_fact",
@@ -162,6 +163,37 @@ class CompanionGatewayPlugin(star.Star):
             self._inject_context(req, context["injection"])
         except Exception as error:
             logger.warning(f"[companion-gateway] Context unavailable: {error}")
+
+    @filter.llm_tool(name="record_affect_event")
+    async def record_affect_event(
+        self,
+        event: AstrMessageEvent,
+        label: str,
+    ) -> str:
+        """Record one affect classification for the current user message.
+
+        The gateway accepts one label for the message and applies its configured deterministic
+        state change. A repeated call with the same label returns the existing event.
+
+        Args:
+            label(string): One of affectionate, playful, vulnerable, reassuring,
+                intimate_reference, intimate_event, struggling, cold, distant, conflict,
+                hostile, fear_separation, fear_death, fear_concern, fear_general, or neutral.
+        """
+        if not self._accepts(event):
+            return self._routing_error()
+        source_message_id = self._source_message_id(event)
+        if source_message_id is None:
+            return self._json({"ok": False, "error": "current source message is unavailable"})
+        try:
+            result = await self._post(
+                f"/state/v1/messages/{source_message_id}/affect",
+                {"label": label},
+            )
+            return self._json({"ok": True, **result})
+        except Exception as error:
+            logger.warning(f"[companion-gateway] Affect event save failed: {error}")
+            return self._tool_error(error, "affect event save failed")
 
     @filter.llm_tool(name="remember_evergreen_fact")
     async def remember_evergreen_fact(

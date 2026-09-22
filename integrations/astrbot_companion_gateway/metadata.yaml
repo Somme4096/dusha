@@ -1,13 +1,13 @@
 name: astrbot_companion_gateway
 display_name: Companion State Gateway
 author: local
-version: 0.1.0
-desc: Stores raw conversation history, injects recalled context, and delivers proactive events.
+version: 0.2.0
+desc: Stores conversation memory and affect, injects context, and delivers proactive events.
 repo: ""
 astrbot_version: ">=4.8.0"
 support_platforms:
   - discord
 tags:
   - memory
+  - affect
   - proactive
-

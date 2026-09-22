@@ -79,6 +79,8 @@ async def test_state_api_and_openai_proxy_preserve_one_canonical_transcript(conf
         "Second reply.",
     ]
     assert stored[0]["content"] == {"role": "user", "content": "Hello."}
+    assert app.state.service.affect.classification(stored[0]["id"])["status"] == "applied"
+    assert app.state.service.affect.classification(stored[2]["id"])["status"] == "applied"
     assert len(captured) == 2
     injected = captured[1]["messages"][0]
     assert injected["role"] == "system"
@@ -122,6 +124,7 @@ async def test_proxy_archives_tool_call_messages(config, monkeypatch):
     stored = app.state.service.memory.recent(limit=10)
     assert stored[-1]["content"] == tool_message
     assert '"name":"lookup"' in stored[-1]["text"]
+    assert app.state.service.affect.classification(stored[0]["id"])["status"] == "pending"
 
 
 async def test_message_api_rejects_empty_content(config, monkeypatch):
@@ -140,6 +143,49 @@ async def test_message_api_rejects_empty_content(config, monkeypatch):
         )
     assert response.status_code == 422
     assert response.json()["detail"] == "message content is empty"
+
+
+async def test_agent_affect_update_has_resource_wrapper_and_conflict_rules(config, monkeypatch):
+    monkeypatch.setattr(api.asyncio, "to_thread", _run_inline)
+    app = api.create_app(config)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        message = await client.post(
+            "/state/v1/messages",
+            json={
+                "harness": "astrbot",
+                "conversation_id": "one",
+                "role": "user",
+                "content": "I hate you.",
+                "external_id": "affect-source",
+            },
+        )
+        message_id = message.json()["id"]
+
+        recorded = await client.post(
+            f"/state/v1/messages/{message_id}/affect",
+            json={"label": "neutral"},
+        )
+        retry = await client.post(
+            f"/state/v1/messages/{message_id}/affect",
+            json={"label": "neutral"},
+        )
+        conflict = await client.post(
+            f"/state/v1/messages/{message_id}/affect",
+            json={"label": "hostile"},
+        )
+        invalid = await client.post(
+            f"/state/v1/messages/{message_id}/affect",
+            json={"label": "angsty"},
+        )
+
+    assert recorded.status_code == 200
+    assert set(recorded.json()) == {"event"}
+    assert recorded.json()["event"]["label"] == "neutral"
+    assert recorded.json()["event"]["decision_source"] == "agent"
+    assert retry.json() == recorded.json()
+    assert conflict.status_code == 409
+    assert invalid.status_code == 422
 
 
 async def test_evergreen_api_lifecycle_and_memory_context(config, monkeypatch):

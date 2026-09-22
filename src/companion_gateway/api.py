@@ -15,6 +15,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from .affect import AffectClassificationConflict
 from .config import AppConfig, load_config
 from .evergreen import EvergreenConflict
 from .memory import text_from_content
@@ -87,6 +88,10 @@ class AffectEventInput(GatewayInput):
     follow_up_minutes: int | None = None
 
 
+class RecordAffectInput(GatewayInput):
+    label: str
+
+
 class AckInput(GatewayInput):
     consumer: str
     outcome: str
@@ -98,6 +103,7 @@ class AckInput(GatewayInput):
 async def _scheduler(proactive: ProactiveEngine, interval: int) -> None:
     while True:
         try:
+            await asyncio.to_thread(proactive.service.affect.finalize_due)
             await asyncio.to_thread(proactive.evaluate)
         except asyncio.CancelledError:
             raise
@@ -327,6 +333,25 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     @app.get("/state/v1/affect", dependencies=[Depends(authorized)])
     async def affect_status() -> dict[str, Any]:
         return await asyncio.to_thread(service.affect.status)
+
+    @app.post(
+        "/state/v1/messages/{message_id}/affect",
+        dependencies=[Depends(authorized)],
+    )
+    async def record_message_affect(message_id: int, body: RecordAffectInput) -> dict[str, Any]:
+        try:
+            event = await asyncio.to_thread(
+                service.affect.record_agent_label,
+                message_id,
+                body.label,
+            )
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="affect classification not found") from error
+        except AffectClassificationConflict as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        return {"event": event}
 
     @app.post("/state/v1/affect/events", dependencies=[Depends(authorized)])
     async def affect_event(body: AffectEventInput) -> dict[str, Any]:

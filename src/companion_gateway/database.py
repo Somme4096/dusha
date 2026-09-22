@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -127,6 +127,21 @@ CREATE TABLE IF NOT EXISTS affect_events (
 CREATE INDEX IF NOT EXISTS affect_events_follow_up
 ON affect_events(follow_up_at, follow_up_consumed_at);
 
+CREATE TABLE IF NOT EXISTS affect_classifications (
+    source_message_id INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+    automatic_label TEXT NOT NULL,
+    agent_label TEXT,
+    chosen_label TEXT,
+    decision_source TEXT CHECK(decision_source IN ('agent', 'automatic', 'provided')),
+    status TEXT NOT NULL CHECK(status IN ('pending', 'applied')),
+    occurred_at TEXT NOT NULL,
+    finalize_after TEXT NOT NULL,
+    resolved_at TEXT,
+    affect_event_id INTEGER REFERENCES affect_events(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS affect_classifications_pending
+ON affect_classifications(status, finalize_after, source_message_id);
+
 CREATE TABLE IF NOT EXISTS proactive_events (
     id TEXT PRIMARY KEY,
     conversation_id INTEGER REFERENCES conversations(id) ON DELETE SET NULL,
@@ -147,7 +162,30 @@ CREATE TABLE IF NOT EXISTS proactive_events (
 CREATE INDEX IF NOT EXISTS proactive_events_poll
 ON proactive_events(status, available_at, created_at);
 
-PRAGMA user_version = 2;
+PRAGMA user_version = 3;
+"""
+
+MIGRATE_2_TO_3 = """
+PRAGMA foreign_keys = ON;
+BEGIN IMMEDIATE;
+
+CREATE TABLE IF NOT EXISTS affect_classifications (
+    source_message_id INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+    automatic_label TEXT NOT NULL,
+    agent_label TEXT,
+    chosen_label TEXT,
+    decision_source TEXT CHECK(decision_source IN ('agent', 'automatic', 'provided')),
+    status TEXT NOT NULL CHECK(status IN ('pending', 'applied')),
+    occurred_at TEXT NOT NULL,
+    finalize_after TEXT NOT NULL,
+    resolved_at TEXT,
+    affect_event_id INTEGER REFERENCES affect_events(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS affect_classifications_pending
+ON affect_classifications(status, finalize_after, source_message_id);
+
+PRAGMA user_version = 3;
+COMMIT;
 """
 
 
@@ -155,11 +193,11 @@ class Database:
     def __init__(self, path: str | Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._reject_incompatible_schema()
+        self._prepare_schema()
         with self.connect() as db:
             db.executescript(SCHEMA)
 
-    def _reject_incompatible_schema(self) -> None:
+    def _prepare_schema(self) -> None:
         if not self.path.exists():
             return
         with sqlite3.connect(self.path) as db:
@@ -167,10 +205,16 @@ class Database:
             initialized = db.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages'"
             ).fetchone()
-        if initialized and version != SCHEMA_VERSION:
+        if not initialized or version == SCHEMA_VERSION:
+            return
+        if version == 2:
+            with self.connect() as db:
+                db.executescript(MIGRATE_2_TO_3)
+            return
+        if initialized:
             raise RuntimeError(
                 f"database schema version {version} is incompatible; "
-                "use an empty data directory or restore a schema version 2 backup"
+                "use an empty data directory or restore a schema version 2 or 3 backup"
             )
 
     def connect(self) -> sqlite3.Connection:

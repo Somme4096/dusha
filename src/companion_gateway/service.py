@@ -21,6 +21,7 @@ class CompanionService:
         self.memory = MemoryStore(self.database, self.semantic)
         self.evergreen = EvergreenStore(self.database)
         self.affect = AffectEngine(self.database, config.affect)
+        self.affect.finalize_due()
 
     def ingest_message(
         self,
@@ -48,32 +49,19 @@ class CompanionService:
         if self.semantic.enabled and not message.duplicate:
             self.semantic.ensure_message_chunks(message.id)
         affect = None
-        if role == "user" and not message.duplicate:
-            text = self.memory.get(message.id)["text"]
+        stored_message = self.memory.get(message.id)
+        message_time = parse_time(stored_message["occurred_at"])
+        if role == "user":
+            classification = self.affect.stage_message(message.id)
             if affect_label:
-                result = self.affect.apply_label(
+                classification = self.affect.record_provided_label(
+                    message.id,
                     affect_label,
-                    now=parse_time(occurred_at),
-                    source_message_id=message.id,
-                    is_user_message=True,
-                    follow_up_minutes=180
-                    if affect_label
-                    in {
-                        "cold",
-                        "conflict",
-                        "distant",
-                        "hostile",
-                        "struggling",
-                        "fear_separation",
-                        "fear_death",
-                        "fear_concern",
-                        "fear_general",
-                    }
-                    else None,
+                    now=message_time,
                 )
-            else:
-                result = self.affect.apply_message(text, message.id, parse_time(occurred_at))
-            affect = {"label": result.label, "event_id": result.event_id, "state": result.state}
+            affect = {"classification": classification}
+        elif role == "assistant" and not self._has_tool_calls(stored_message["content"]):
+            self.affect.finalize_conversation(message.conversation_id, now=message_time)
         return {
             "id": message.id,
             "duplicate": message.duplicate,
@@ -179,6 +167,10 @@ class CompanionService:
             "role": message["role"],
             "text": message["text"],
         }
+
+    @staticmethod
+    def _has_tool_calls(content: Any) -> bool:
+        return isinstance(content, dict) and bool(content.get("tool_calls"))
 
     def latest_route(self) -> dict[str, Any] | None:
         with self.database.connect() as db:

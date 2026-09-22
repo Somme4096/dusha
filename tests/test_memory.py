@@ -42,12 +42,49 @@ def test_schema_has_one_state_scope(config):
             "unanswered_proactive",
             "revision",
         ],
+        "affect_classifications": [
+            "source_message_id",
+            "automatic_label",
+            "agent_label",
+            "chosen_label",
+            "decision_source",
+            "status",
+            "occurred_at",
+            "finalize_after",
+            "resolved_at",
+            "affect_event_id",
+        ],
     }
     with service.database.connect() as db:
         for table, columns in expected.items():
             actual = [row["name"] for row in db.execute(f"PRAGMA table_info({table})")]
             assert actual == columns
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 3
+
+
+def test_schema_two_upgrade_preserves_canonical_messages(config):
+    service = CompanionService(config)
+    stored = service.ingest_message(
+        harness="api",
+        conversation_id="migration",
+        role="user",
+        content="Keep this exact text through the schema upgrade.",
+        external_id="migration-message",
+        affect_label="neutral",
+    )
+    with service.database.connect() as db:
+        db.execute("DROP TABLE affect_classifications")
+        db.execute("PRAGMA user_version=2")
+    service.close()
+
+    upgraded = CompanionService(config)
+
+    assert upgraded.memory.get(stored["id"])["text"] == "Keep this exact text through the schema upgrade."
+    with upgraded.database.connect() as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='affect_classifications'"
+        ).fetchone()
 
 
 def test_raw_text_is_canonical_search_result_and_survives_restart(config):
