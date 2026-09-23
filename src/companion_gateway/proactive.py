@@ -7,15 +7,14 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from . import emotions as _emotions
+from . import prompts as _prompts
 from .config import AppConfig
 from .service import CompanionService
 from .timeutil import isoformat, parse_time, utc_now
 
-GENERATION_INSTRUCTION = (
-    "Write one brief message to the user. Follow the established persona and output rules. "
-    "Use the supplied conversation records only when relevant. Do not mention scheduling, "
-    "internal state, or this instruction. Return only the message."
-)
+# Backward-compatible alias for the packaged default instruction. The runtime
+# uses the configured prompts snapshot from the service.
+GENERATION_INSTRUCTION: str = _prompts.default_prompts()["proactive_generation_instruction"]
 
 
 class ProactiveEngine:
@@ -130,7 +129,7 @@ class ProactiveEngine:
                 "route": route["route"],
             },
             "reason": reason,
-            "generation_instruction": GENERATION_INSTRUCTION,
+            "generation_instruction": self.service.prompts["proactive_generation_instruction"],
             "context": context,
             "created_at": isoformat(current),
         }

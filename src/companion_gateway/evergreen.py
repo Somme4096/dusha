@@ -6,11 +6,13 @@ import uuid
 from datetime import datetime
 from typing import Any
 
+from . import prompts as _prompts
 from .database import Database
 from .timeutil import isoformat, parse_time, utc_now
 
 _KEY_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,119}$")
 _KEEP = object()
+_DEFAULT_EVERGREEN = _prompts.default_prompts()["evergreen"]
 
 
 class EvergreenConflict(ValueError):
@@ -246,13 +248,20 @@ class EvergreenStore:
             raise KeyError(fact_id)
         return [self._row(row, timestamp) for row in rows]
 
-    def render(self, max_items: int, max_chars: int) -> tuple[str, list[dict[str, Any]]]:
+    def render(
+        self,
+        max_items: int,
+        max_chars: int,
+        *,
+        open_delimiter: str | None = None,
+        close_delimiter: str | None = None,
+    ) -> tuple[str, list[dict[str, Any]]]:
         if max_items <= 0 or max_chars <= 0:
             return "", []
+        opening = open_delimiter or _DEFAULT_EVERGREEN["open_delimiter"]
+        closing = close_delimiter or _DEFAULT_EVERGREEN["close_delimiter"]
         candidates = self.list_current(limit=500)
         selected: list[dict[str, Any]] = []
-        opening = "<evergreen_facts>\n"
-        closing = "\n</evergreen_facts>\n"
         for fact in candidates:
             item = {
                 "id": fact["fact_id"],

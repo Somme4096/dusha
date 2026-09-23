@@ -8,6 +8,12 @@
   "port": 8765,
   "timezone": "Asia/Taipei",
   "api_token_env": "",
+  "identity_prompt": {
+    "path": ""
+  },
+  "prompts": {
+    "path": ""
+  },
   "upstream": {
     "base_url": "https://api.openai.com/v1",
     "api_key_env": "UPSTREAM_API_KEY",

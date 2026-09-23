@@ -26,6 +26,8 @@ _EVERGREEN = _DEFAULTS["evergreen"]
 _AFFECT_KNOBS = _EMOTIONS["affect"]
 _PROACTIVE_EMOTIONAL = _EMOTIONS["proactive"]
 _PROACTIVE = _DEFAULTS["proactive"]
+_IDENTITY_PROMPT = _DEFAULTS["identity_prompt"]
+_PROMPTS = _DEFAULTS["prompts"]
 
 # Config fields for emotional knobs default to this sentinel. __post_init__
 # fills unset fields from the packaged emotional defaults and records which
@@ -133,12 +135,26 @@ class ProactiveConfig:
 
 
 @dataclass(slots=True)
+class IdentityPromptConfig:
+    path: str = _IDENTITY_PROMPT["path"]
+
+
+@dataclass(slots=True)
+class PromptsConfig:
+    path: str = _PROMPTS["path"]
+
+
+@dataclass(slots=True)
 class AppConfig:
     data_dir: Path = Path(_DEFAULTS["data_dir"])
     host: str = _DEFAULTS["host"]
     port: int = _DEFAULTS["port"]
     timezone: str = _DEFAULTS["timezone"]
     api_token_env: str = _DEFAULTS["api_token_env"]
+    identity_prompt: IdentityPromptConfig = field(
+        default_factory=lambda: IdentityPromptConfig()
+    )
+    prompts: PromptsConfig = field(default_factory=lambda: PromptsConfig())
     upstream: UpstreamConfig = field(default_factory=UpstreamConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     evergreen: EvergreenConfig = field(default_factory=EvergreenConfig)
@@ -248,6 +264,14 @@ def _read_config_file(path: Path, is_json: bool) -> dict:
     return data
 
 
+def _path_section(cls: type[Any], raw: Any, name: str, source_dir: Path) -> Any:
+    """Parse a section with a single config-relative `path` field."""
+    section = _strict_section(cls, raw, name)
+    if section.path and not Path(section.path).is_absolute():
+        section.path = str((source_dir / Path(section.path).expanduser()).resolve())
+    return section
+
+
 def _app_config_from_raw(raw: dict[str, Any], source_dir: Path, is_json: bool) -> AppConfig:
     allowed = set(typing.get_type_hints(AppConfig)) | {"emotions"}
     unknown = sorted(set(raw) - allowed)
@@ -255,6 +279,10 @@ def _app_config_from_raw(raw: dict[str, Any], source_dir: Path, is_json: bool) -
         raise ValueError(f"unknown top-level field(s): {unknown}")
 
     affect = _strict_section(AffectConfig, raw.get("affect"), "affect")
+    identity_prompt = _path_section(
+        IdentityPromptConfig, raw.get("identity_prompt"), "identity_prompt", source_dir
+    )
+    prompts = _path_section(PromptsConfig, raw.get("prompts"), "prompts", source_dir)
     emotions_raw = raw.get("emotions")
     if emotions_raw is not None:
         if not isinstance(emotions_raw, dict):
@@ -294,6 +322,8 @@ def _app_config_from_raw(raw: dict[str, Any], source_dir: Path, is_json: bool) -
 
     return AppConfig(
         **kwargs,
+        identity_prompt=identity_prompt,
+        prompts=prompts,
         upstream=_strict_section(UpstreamConfig, raw.get("upstream"), "upstream"),
         memory=_memory_section(raw.get("memory")),
         evergreen=_strict_section(EvergreenConfig, raw.get("evergreen"), "evergreen"),
@@ -351,6 +381,10 @@ def _validate_packaged_defaults() -> None:
     _memory_section(_DEFAULTS["memory"])
     _strict_section(EvergreenConfig, _DEFAULTS["evergreen"], "packaged defaults evergreen")
     _strict_section(ProactiveConfig, _DEFAULTS["proactive"], "packaged defaults proactive")
+    _strict_section(
+        IdentityPromptConfig, _DEFAULTS["identity_prompt"], "packaged defaults identity_prompt"
+    )
+    _strict_section(PromptsConfig, _DEFAULTS["prompts"], "packaged defaults prompts")
 
 
 _validate_packaged_defaults()
@@ -373,6 +407,8 @@ _CREDENTIAL_PATTERNS = [
 
 _MIGRATION_ORDER = [
     "emotions",
+    "identity_prompt",
+    "prompts",
     "data_dir",
     "host",
     "port",
@@ -384,6 +420,8 @@ _MIGRATION_ORDER = [
     "affect",
     "proactive",
 ]
+
+_PATH_SECTIONS = {"emotions", "identity_prompt", "prompts"}
 
 
 def _scrub_secrets(value: Any, path: str = "") -> None:
@@ -415,14 +453,14 @@ def _transform_for_migration(raw: dict[str, Any], src: Path, is_json: bool) -> d
                 base = src.parent if is_json else Path.cwd()
                 value = (base / value).resolve()
             out[key] = str(value)
-        elif key == "emotions":
-            emotions = dict(raw["emotions"])
-            if "path" in emotions and emotions["path"]:
-                value = Path(str(emotions["path"])).expanduser()
+        elif key in _PATH_SECTIONS:
+            section = dict(raw[key])
+            if "path" in section and section["path"]:
+                value = Path(str(section["path"])).expanduser()
                 if not value.is_absolute():
                     value = (src.parent / value).resolve()
-                emotions["path"] = str(value)
-            out[key] = emotions
+                section["path"] = str(value)
+            out[key] = section
         else:
             out[key] = copy.deepcopy(raw[key])
     return out

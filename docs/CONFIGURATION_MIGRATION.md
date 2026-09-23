@@ -7,9 +7,12 @@ This document covers the new layout, the resolution order, path rules, the migra
 ## Files
 
 - `config.json`: the user runtime configuration. Strict JSON, no comments (no JSONC), duplicate keys and unknown fields are rejected.
-- `config.example.json`: a usable starting point at the repository root. The `emotions.path` is empty, which selects the packaged emotional defaults.
+- `config.example.json`: a usable starting point at the repository root. The `emotions.path`, `identity_prompt.path`, and `prompts.path` are empty, which selects the packaged defaults.
+- `identity_prompt.path`: an optional raw user-authored Markdown identity file. Relative paths resolve against the config file. An empty path means identity is explicitly unconfigured. A configured missing file or invalid UTF-8 is an actionable error. The identity is loaded once per service and supplied on every context; it is never archived or inferred from memory.
+- `prompts.path`: an optional prompts overlay file. Relative paths resolve against the config file. Recognized text slots replace the packaged slot completely; unknown slots or unknown keys inside a slot are errors.
 - `src/companion_gateway/resources/emotions.json`: the authoritative emotional data shipped with the package. It owns the 16 dimensions (`neutral`, `floor`, `tau`), `label_deltas`, `contact_deltas`, `soothing_deltas`, `negative_labels`, `soothing_labels`, `negative_dimensions`, silence caps and rates, the dejection gate, the recent-labels limit, the negative follow-up minutes, the follow-up expiration hours, `proactive_sent_deltas`, the impact scale, the mood-follow gain bounds, the prompt selection thresholds, `label_patterns`, the affect knob defaults, and the proactive emotional thresholds.
-- `src/companion_gateway/resources/defaults.json`: the packaged defaults for non-emotional runtime settings (host, port, timezone, memory, evergreen, upstream, proactive scheduling). Dataclass field defaults in `src/companion_gateway/config.py` read from this file, so no default value is duplicated in Python. The packaged defaults are validated at import with the same schema rules used for user config.
+- `src/companion_gateway/resources/prompts.json`: every core-owned prompt and instruction text slot (`affect_presentation`, `companion_state`, `evergreen`, `proactive_generation_instruction`). A user prompts file can replace any slot completely; omitted slots inherit the packaged defaults.
+- `src/companion_gateway/resources/defaults.json`: the packaged defaults for non-emotional runtime settings (host, port, timezone, memory, evergreen, upstream, proactive scheduling, `identity_prompt`, `prompts`). Dataclass field defaults in `src/companion_gateway/config.py` read from this file, so no default value is duplicated in Python. The packaged defaults are validated at import with the same schema rules used for user config.
 
 Emotional algorithms stay in code (`src/companion_gateway/affect.py` and `src/companion_gateway/proactive.py`); every emotional value they use comes from the resolved `emotions.json` snapshot. The affect engine reads all affect knobs from the snapshot; the proactive engine reads the emotional thresholds from the snapshot.
 
@@ -120,3 +123,15 @@ companion-gateway migrate-config config.yaml config.json
 - The `affect event` CLI subcommand no longer restricts labels to the packaged set; the loaded engine validates labels against its effective snapshot.
 - `DEFAULT_LABEL_PATTERNS` was removed from `config.py`; it had no consumers. `LABEL_DELTAS` in `affect.py` remains as a packaged-default view for backward-compatible inspection.
 - Database schema is unchanged in this phase; the stored affect state uses the same dimension values.
+
+## Context composition
+
+`build_context` returns the existing five keys (`injection`, `affect`, `evergreen_facts`, `records`, `search_hits`) plus a structured `context` object (`version`, `identity`, `memory`, `emotion`).
+
+The injection is assembled as: raw identity text (optional), the evergreen facts block (optional), then a single JSON companion state block containing the memory instruction, emotion values, and the selected session records. The companion state and evergreen blocks are JSON serialized with `<`, `>`, and `&` escaped so untrusted memory text cannot break the delimiters.
+
+The full injection budget (including identity, wrappers, evergreen, and state) is enforced. Identity and the mandatory companion state are never truncated: if they exceed `memory.injection_max_chars`, a `ContextBudgetError` is raised and the context API returns a 422 with a useful detail. Evergreen facts and session records are selected greedily using their actual serialized sizes: the mandatory identity plus empty companion block is reserved first, evergreen facts are then selected to fit the residual, and a final guard raises `ContextBudgetError` if the composed injection ever exceeds the budget.
+
+Prompt text slots are configured in `prompts.json`; the proactive generation instruction, affect presentation wording (including the `level_connector` between a dimension name and its level), companion instructions, and evergreen delimiters are all replaceable there. A configured slot is replaced completely: all keys in the slot must be present (missing keys fail validation), and omitted slots inherit the packaged defaults. The prompt snapshot is loaded once per service and fingerprinted for diagnostics.
+
+The structured `context` object exposes `instructions.memory` so independent consumers can read the memory guidance without parsing the injection, and `emotion.preface` carries the affect instruction.

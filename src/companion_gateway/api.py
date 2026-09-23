@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .affect import AffectClassificationConflict
 from .config import AppConfig, load_config
+from .context import ContextBudgetError
 from .evergreen import EvergreenConflict
 from .memory import text_from_content
 from .proactive import ProactiveEngine
@@ -321,14 +322,17 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
 
     @app.post("/state/v1/context", dependencies=[Depends(authorized)])
     async def context(body: ContextInput) -> dict[str, Any]:
-        return await asyncio.to_thread(
-            service.build_context,
-            query=body.query,
-            harness=body.harness,
-            conversation_id=body.conversation_id,
-            exclude_message_ids=set(body.exclude_message_ids),
-            include_recent=body.include_recent,
-        )
+        try:
+            return await asyncio.to_thread(
+                service.build_context,
+                query=body.query,
+                harness=body.harness,
+                conversation_id=body.conversation_id,
+                exclude_message_ids=set(body.exclude_message_ids),
+                include_recent=body.include_recent,
+            )
+        except ContextBudgetError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
 
     @app.get("/state/v1/affect", dependencies=[Depends(authorized)])
     async def affect_status() -> dict[str, Any]:
@@ -443,14 +447,17 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                 current_message_id = result["id"]
                 current_query = service.memory.get(current_message_id)["text"]
 
-        state_context = await asyncio.to_thread(
-            service.build_context,
-            query=current_query,
-            harness=harness,
-            conversation_id=conversation_id,
-            exclude_message_ids={current_message_id} if current_message_id else set(),
-            include_recent=False,
-        )
+        try:
+            state_context = await asyncio.to_thread(
+                service.build_context,
+                query=current_query,
+                harness=harness,
+                conversation_id=conversation_id,
+                exclude_message_ids={current_message_id} if current_message_id else set(),
+                include_recent=False,
+            )
+        except ContextBudgetError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
         body["messages"] = _inject_context(messages, state_context["injection"])
         if body.get("stream"):
             return await _proxy_stream(

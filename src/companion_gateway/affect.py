@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from . import emotions as _emotions
+from . import prompts as _prompts
 from .config import AffectConfig
 from .database import Database
 from .timeutil import isoformat, parse_time, utc_now
@@ -30,7 +31,9 @@ class AffectClassificationConflict(RuntimeError):
 
 
 class AffectEngine:
-    def __init__(self, database: Database, config: AffectConfig):
+    def __init__(
+        self, database: Database, config: AffectConfig, prompts: dict[str, Any] | None = None
+    ):
         self.database = database
         self.config = config
         self._lock = threading.RLock()
@@ -42,6 +45,9 @@ class AffectEngine:
         value_range = self.emotions["value_range"]
         self.value_min = float(value_range["min"])
         self.value_max = float(value_range["max"])
+        self.affect_presentation = dict(
+            (prompts or _prompts.default_prompts())["affect_presentation"]
+        )
 
     def initial_state(self) -> dict[str, Any]:
         base = {name: values["neutral"] for name, values in self.spec.items()}
@@ -454,10 +460,11 @@ class AffectEngine:
                 unanswered_proactive=int(row["unanswered_proactive"]) + 1,
             )
 
-    def prompt_context(self, now: datetime | None = None) -> str:
-        status = self.status(now)
-        values = status["base"]
+    def describe(self, snapshot: dict[str, Any]) -> str:
+        """Render the affect presentation text for a status snapshot."""
+        values = snapshot["base"]
         prompt = self.emotions["prompt"]
+        presentation = self.affect_presentation
         deviations = sorted(
             ((abs(values[name] - self.spec[name]["neutral"]), name, values[name]) for name in values),
             reverse=True,
@@ -472,18 +479,25 @@ class AffectEngine:
         ):
             selected.append(("fear", values["fear"]))
         if not selected:
-            return "Affect is near its usual baseline."
+            return presentation["baseline"]
         labels = []
         for name, value in selected:
             level = (
-                "high"
+                presentation["level_high"]
                 if value >= prompt["level_high"]
-                else "elevated"
+                else presentation["level_elevated"]
                 if value >= prompt["level_elevated"]
-                else "noticeable"
+                else presentation["level_noticeable"]
             )
-            labels.append(f"{name} is {level}")
-        return "Affect: " + "; ".join(labels) + "."
+            labels.append(f"{name}{presentation['level_connector']}{level}")
+        return (
+            presentation["prefix"]
+            + presentation["separator"].join(labels)
+            + presentation["suffix"]
+        )
+
+    def prompt_context(self, now: datetime | None = None) -> str:
+        return self.describe(self.status(now))
 
     def _public_state(self, state: dict[str, Any], row: Any, now: datetime) -> dict[str, Any]:
         return {
