@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import hashlib
 import json
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import astrbot.api.star as star
@@ -119,6 +120,44 @@ class CompanionGatewayPlugin(star.Star):
                     result["error"] = detail
         return CompanionGatewayPlugin._json(result)
 
+    async def _run_tool_call(
+        self,
+        event: AstrMessageEvent,
+        fallback: str,
+        operation: Callable[[], Awaitable[dict[str, Any]]],
+        prepare: Callable[[], str | None] | None = None,
+    ) -> str:
+        """Run one gateway tool body under the shared routing guard and error mapping.
+
+        The routing guard runs first so a rejected platform short-circuits before
+        any payload or validation work. ``prepare`` then runs outside the error
+        handler; a non-None return value is serialized as-is (used for local
+        validation results), while an exception raised there propagates to the
+        caller unchanged. ``operation`` performs the request and returns the
+        response payload; ``ok`` is prepended to it on success. Request errors
+        are logged and mapped to the standard tool error JSON response.
+        """
+        if not self._accepts(event):
+            return self._routing_error()
+        if prepare is not None:
+            prepared = prepare()
+            if prepared is not None:
+                return prepared
+        try:
+            return self._json({"ok": True, **(await operation())})
+        except Exception as error:
+            logger.warning(f"[companion-gateway] {fallback.capitalize()}: {error}")
+            return self._tool_error(error, fallback)
+
+    @staticmethod
+    def _record_dict(message: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "memory_id": message["id"],
+            "time": message["occurred_at"],
+            "role": message["role"],
+            "text": message["text"],
+        }
+
     @staticmethod
     def _set_optional_time(payload: dict[str, Any], name: str, value: str) -> None:
         normalized = value.strip()
@@ -180,20 +219,23 @@ class CompanionGatewayPlugin(star.Star):
                 intimate_reference, intimate_event, struggling, cold, distant, conflict,
                 hostile, fear_separation, fear_death, fear_concern, fear_general, or neutral.
         """
-        if not self._accepts(event):
-            return self._routing_error()
-        source_message_id = self._source_message_id(event)
-        if source_message_id is None:
-            return self._json({"ok": False, "error": "current source message is unavailable"})
-        try:
-            result = await self._post(
-                f"/state/v1/messages/{source_message_id}/affect",
+
+        state: dict[str, Any] = {}
+
+        def prepare() -> str | None:
+            source_message_id = self._source_message_id(event)
+            if source_message_id is None:
+                return self._json({"ok": False, "error": "current source message is unavailable"})
+            state["source_message_id"] = source_message_id
+            return None
+
+        async def operation() -> dict[str, Any]:
+            return await self._post(
+                f"/state/v1/messages/{state['source_message_id']}/affect",
                 {"label": label},
             )
-            return self._json({"ok": True, **result})
-        except Exception as error:
-            logger.warning(f"[companion-gateway] Affect event save failed: {error}")
-            return self._tool_error(error, "affect event save failed")
+
+        return await self._run_tool_call(event, "affect event save failed", operation, prepare)
 
     @filter.llm_tool(name="remember_evergreen_fact")
     async def remember_evergreen_fact(
@@ -219,25 +261,23 @@ class CompanionGatewayPlugin(star.Star):
             expires_at(string): Optional ISO 8601 expiration time.
             reason(string): A short reason for saving the fact.
         """
-        if not self._accepts(event):
-            return self._routing_error()
-        payload: dict[str, Any] = {
-            "key": key,
-            "text": text,
-            "priority": priority,
-            "reason": reason,
-        }
-        source_message_id = self._source_message_id(event)
-        if source_message_id is not None:
-            payload["source_message_id"] = source_message_id
-        self._set_optional_time(payload, "review_after", review_after)
-        self._set_optional_time(payload, "expires_at", expires_at)
-        try:
-            result = await self._post("/state/v1/evergreen/facts", payload)
-            return self._json({"ok": True, **result})
-        except Exception as error:
-            logger.warning(f"[companion-gateway] Evergreen fact save failed: {error}")
-            return self._tool_error(error, "evergreen fact save failed")
+        payload: dict[str, Any] = {}
+
+        def prepare() -> None:
+            payload["key"] = key
+            payload["text"] = text
+            payload["priority"] = priority
+            payload["reason"] = reason
+            source_message_id = self._source_message_id(event)
+            if source_message_id is not None:
+                payload["source_message_id"] = source_message_id
+            self._set_optional_time(payload, "review_after", review_after)
+            self._set_optional_time(payload, "expires_at", expires_at)
+
+        async def operation() -> dict[str, Any]:
+            return await self._post("/state/v1/evergreen/facts", payload)
+
+        return await self._run_tool_call(event, "evergreen fact save failed", operation, prepare)
 
     @filter.llm_tool(name="revise_evergreen_fact")
     async def revise_evergreen_fact(
@@ -265,26 +305,24 @@ class CompanionGatewayPlugin(star.Star):
             expires_at(string): An ISO 8601 time, clear, or an empty value to keep it unchanged.
             reason(string): A short reason for the revision.
         """
-        if not self._accepts(event):
-            return self._routing_error()
-        payload: dict[str, Any] = {
-            "expected_revision": expected_revision,
-            "text": text,
-            "reason": reason,
-        }
-        if priority >= 0:
-            payload["priority"] = priority
-        source_message_id = self._source_message_id(event)
-        if source_message_id is not None:
-            payload["source_message_id"] = source_message_id
-        self._set_optional_time(payload, "review_after", review_after)
-        self._set_optional_time(payload, "expires_at", expires_at)
-        try:
-            result = await self._post(f"/state/v1/evergreen/facts/{fact_id}/revisions", payload)
-            return self._json({"ok": True, **result})
-        except Exception as error:
-            logger.warning(f"[companion-gateway] Evergreen fact revision failed: {error}")
-            return self._tool_error(error, "evergreen fact revision failed")
+        payload: dict[str, Any] = {}
+
+        def prepare() -> None:
+            payload["expected_revision"] = expected_revision
+            payload["text"] = text
+            payload["reason"] = reason
+            if priority >= 0:
+                payload["priority"] = priority
+            source_message_id = self._source_message_id(event)
+            if source_message_id is not None:
+                payload["source_message_id"] = source_message_id
+            self._set_optional_time(payload, "review_after", review_after)
+            self._set_optional_time(payload, "expires_at", expires_at)
+
+        async def operation() -> dict[str, Any]:
+            return await self._post(f"/state/v1/evergreen/facts/{fact_id}/revisions", payload)
+
+        return await self._run_tool_call(event, "evergreen fact revision failed", operation, prepare)
 
     @filter.llm_tool(name="forget_evergreen_fact")
     async def forget_evergreen_fact(
@@ -304,21 +342,19 @@ class CompanionGatewayPlugin(star.Star):
             expected_revision(number): The revision currently visible to you.
             reason(string): A short reason for forgetting the fact.
         """
-        if not self._accepts(event):
-            return self._routing_error()
-        payload: dict[str, Any] = {
-            "expected_revision": expected_revision,
-            "reason": reason,
-        }
-        source_message_id = self._source_message_id(event)
-        if source_message_id is not None:
-            payload["source_message_id"] = source_message_id
-        try:
-            result = await self._post(f"/state/v1/evergreen/facts/{fact_id}/forget", payload)
-            return self._json({"ok": True, **result})
-        except Exception as error:
-            logger.warning(f"[companion-gateway] Evergreen fact forget failed: {error}")
-            return self._tool_error(error, "evergreen fact forget failed")
+        payload: dict[str, Any] = {}
+
+        def prepare() -> None:
+            payload["expected_revision"] = expected_revision
+            payload["reason"] = reason
+            source_message_id = self._source_message_id(event)
+            if source_message_id is not None:
+                payload["source_message_id"] = source_message_id
+
+        async def operation() -> dict[str, Any]:
+            return await self._post(f"/state/v1/evergreen/facts/{fact_id}/forget", payload)
+
+        return await self._run_tool_call(event, "evergreen fact forget failed", operation, prepare)
 
     @filter.llm_tool(name="review_evergreen_facts")
     async def review_evergreen_facts(
@@ -337,10 +373,9 @@ class CompanionGatewayPlugin(star.Star):
             include_inactive(boolean): Include expired and forgotten facts.
             limit(number): Maximum number of facts from 1 to 100.
         """
-        if not self._accepts(event):
-            return self._routing_error()
-        try:
-            result = await self._get(
+
+        async def operation() -> dict[str, Any]:
+            return await self._get(
                 "/state/v1/evergreen/facts",
                 {
                     "due_only": due_only,
@@ -348,10 +383,8 @@ class CompanionGatewayPlugin(star.Star):
                     "limit": max(1, min(limit, 100)),
                 },
             )
-            return self._json({"ok": True, **result})
-        except Exception as error:
-            logger.warning(f"[companion-gateway] Evergreen fact review failed: {error}")
-            return self._tool_error(error, "evergreen fact review failed")
+
+        return await self._run_tool_call(event, "evergreen fact review failed", operation)
 
     @filter.llm_tool(name="search_conversation_memory")
     async def search_conversation_memory(
@@ -369,11 +402,13 @@ class CompanionGatewayPlugin(star.Star):
             query(string): Words or a short phrase likely to occur in the original conversation.
             limit(number): Maximum number of matches from 1 to 10.
         """
-        if not self._accepts(event):
-            return self._routing_error()
-        if not query.strip():
-            return self._json({"ok": False, "error": "query is required"})
-        try:
+
+        def prepare() -> str | None:
+            if not query.strip():
+                return self._json({"ok": False, "error": "query is required"})
+            return None
+
+        async def operation() -> dict[str, Any]:
             result = await self._post(
                 "/state/v1/memory/search",
                 {
@@ -382,20 +417,15 @@ class CompanionGatewayPlugin(star.Star):
                     "context_messages": 0,
                 },
             )
-            records = [
-                {
-                    "memory_id": message["id"],
-                    "time": message["occurred_at"],
-                    "role": message["role"],
-                    "text": message["text"],
-                }
-                for hit in result.get("results", [])
-                for message in hit.get("messages", [])
-            ]
-            return self._json({"ok": True, "records": records})
-        except Exception as error:
-            logger.warning(f"[companion-gateway] Conversation memory search failed: {error}")
-            return self._tool_error(error, "conversation memory search failed")
+            return {
+                "records": [
+                    self._record_dict(message)
+                    for hit in result.get("results", [])
+                    for message in hit.get("messages", [])
+                ],
+            }
+
+        return await self._run_tool_call(event, "conversation memory search failed", operation, prepare)
 
     @filter.llm_tool(name="get_conversation_record")
     async def get_conversation_record(
@@ -413,28 +443,19 @@ class CompanionGatewayPlugin(star.Star):
             memory_id(number): The stored message ID.
             context_messages(number): Nearby messages on each side, from 0 to 10.
         """
-        if not self._accepts(event):
-            return self._routing_error()
-        try:
+
+        async def operation() -> dict[str, Any]:
             result = await self._get(
                 f"/state/v1/memory/{memory_id}",
                 {
                     "context_messages": max(0, min(context_messages, 10)),
                 },
             )
-            records = [
-                {
-                    "memory_id": message["id"],
-                    "time": message["occurred_at"],
-                    "role": message["role"],
-                    "text": message["text"],
-                }
-                for message in result.get("messages", [])
-            ]
-            return self._json({"ok": True, "records": records})
-        except Exception as error:
-            logger.warning(f"[companion-gateway] Conversation record read failed: {error}")
-            return self._tool_error(error, "conversation record read failed")
+            return {
+                "records": [self._record_dict(message) for message in result.get("messages", [])],
+            }
+
+        return await self._run_tool_call(event, "conversation record read failed", operation)
 
     @filter.on_llm_response()
     async def store_response(self, event: AstrMessageEvent, response: LLMResponse) -> None:
