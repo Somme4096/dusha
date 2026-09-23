@@ -7,9 +7,8 @@ from typing import Any
 
 import uvicorn
 
-from .affect import LABEL_DELTAS
 from .api import create_app
-from .config import load_config
+from .config import load_config, migrate_config
 from .proactive import ProactiveEngine
 from .service import CompanionService
 
@@ -25,6 +24,14 @@ def parser() -> argparse.ArgumentParser:
 
     commands.add_parser("serve", help="Run the HTTP service")
     commands.add_parser("health", help="Check the database")
+
+    migrate = commands.add_parser(
+        "migrate-config",
+        help="Convert a legacy YAML (or JSON) config file to config.json",
+    )
+    migrate.add_argument("source")
+    migrate.add_argument("destination")
+    migrate.add_argument("--force", action="store_true", help="Overwrite the destination")
 
     backup = commands.add_parser("backup", help="Create a consistent SQLite backup")
     backup.add_argument("destination")
@@ -86,7 +93,7 @@ def parser() -> argparse.ArgumentParser:
     affect_commands = affect.add_subparsers(dest="affect_command", required=True)
     affect_commands.add_parser("show")
     affect_event = affect_commands.add_parser("event")
-    affect_event.add_argument("label", choices=sorted(LABEL_DELTAS))
+    affect_event.add_argument("label")
     affect_event.add_argument("--note", default="")
     affect_event.add_argument("--follow-up-minutes", type=int, default=None)
 
@@ -107,6 +114,9 @@ def parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = parser().parse_args()
+    if args.command == "migrate-config":
+        _print(migrate_config(args.source, args.destination, force=args.force))
+        return
     cfg = load_config(args.config)
     if args.command == "serve":
         uvicorn.run(create_app(cfg), host=cfg.host, port=cfg.port, log_level="info")
@@ -203,11 +213,15 @@ def main() -> None:
         if args.affect_command == "show":
             _print(service.affect.status())
         else:
-            result = service.affect.apply_label(
-                args.label,
-                note=args.note,
-                follow_up_minutes=args.follow_up_minutes,
-            )
+            try:
+                result = service.affect.apply_label(
+                    args.label,
+                    note=args.note,
+                    follow_up_minutes=args.follow_up_minutes,
+                )
+            except ValueError as error:
+                print(f"error: {error}", file=sys.stderr)
+                raise SystemExit(2) from error
             _print({"label": result.label, "event_id": result.event_id, "state": result.state})
     elif args.command == "proactive":
         if args.proactive_command == "evaluate":

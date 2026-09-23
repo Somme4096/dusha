@@ -7,120 +7,15 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
-from .config import DEFAULT_LABEL_PATTERNS, AffectConfig
+from . import emotions as _emotions
+from .config import AffectConfig
 from .database import Database
 from .timeutil import isoformat, parse_time, utc_now
 
-# This deterministic two-timescale model is adapted from Drivesoid v2.0.0.
-# Drivesoid v2.0.0 is MIT licensed. See THIRD_PARTY_NOTICES.md.
-DIMENSIONS: dict[str, dict[str, float]] = {
-    "vitality": {"neutral": 0.50, "floor": 0.08, "tau": 6},
-    "fatigue": {"neutral": 0.20, "floor": 0.02, "tau": 6},
-    "longing": {"neutral": 0.30, "floor": 0.15, "tau": 6},
-    "intimacy": {"neutral": 0.35, "floor": 0.06, "tau": 10},
-    "possessiveness": {"neutral": 0.30, "floor": 0.05, "tau": 4},
-    "lust": {"neutral": 0.30, "floor": 0.05, "tau": 4},
-    "jealousy": {"neutral": 0.22, "floor": 0.00, "tau": 2},
-    "anxiety": {"neutral": 0.20, "floor": 0.02, "tau": 5},
-    "protectiveness": {"neutral": 0.25, "floor": 0.05, "tau": 4},
-    "fear": {"neutral": 0.00, "floor": 0.00, "tau": 7},
-    "contentment": {"neutral": 0.35, "floor": 0.06, "tau": 8},
-    "elation": {"neutral": 0.20, "floor": 0.02, "tau": 3},
-    "seeking": {"neutral": 0.25, "floor": 0.12, "tau": 4},
-    "play": {"neutral": 0.25, "floor": 0.03, "tau": 3},
-    "dejection": {"neutral": 0.15, "floor": 0.00, "tau": 8},
-    "irritability": {"neutral": 0.15, "floor": 0.00, "tau": 3},
-}
-
-
-LABEL_DELTAS: dict[str, dict[str, float]] = {
-    "affectionate": {
-        "intimacy": 0.20,
-        "contentment": 0.15,
-        "anxiety": -0.18,
-        "lust": 0.12,
-        "longing": -0.10,
-        "fear": -0.08,
-    },
-    "playful": {
-        "play": 0.20,
-        "elation": 0.18,
-        "contentment": 0.12,
-        "seeking": 0.10,
-        "irritability": -0.10,
-        "lust": 0.10,
-    },
-    "vulnerable": {"intimacy": 0.25, "protectiveness": 0.20, "anxiety": 0.12, "dejection": 0.08},
-    "reassuring": {"anxiety": -0.25, "jealousy": -0.20, "contentment": 0.15, "intimacy": 0.15, "fear": -0.15},
-    "cold": {"anxiety": 0.15, "dejection": 0.12, "longing": 0.10, "intimacy": -0.10},
-    "conflict": {
-        "anxiety": 0.20,
-        "irritability": 0.15,
-        "dejection": 0.15,
-        "possessiveness": 0.18,
-        "intimacy": -0.15,
-        "contentment": -0.15,
-    },
-    "distant": {"anxiety": 0.12, "dejection": 0.10, "longing": 0.12, "intimacy": -0.08},
-    "struggling": {
-        "protectiveness": 0.30,
-        "anxiety": 0.12,
-        "dejection": 0.12,
-        "contentment": -0.08,
-        "fatigue": 0.12,
-    },
-    "intimate_reference": {"lust": 0.18, "intimacy": 0.10},
-    "intimate_event": {"lust": 0.25, "intimacy": 0.18},
-    "neutral": {"anxiety": -0.05, "longing": -0.04, "contentment": 0.03},
-    "hostile": {
-        "dejection": 0.22,
-        "anxiety": 0.18,
-        "irritability": 0.12,
-        "intimacy": -0.22,
-        "contentment": -0.18,
-    },
-    "fear_separation": {
-        "fear": 0.20,
-        "longing": 0.15,
-        "possessiveness": 0.12,
-        "anxiety": 0.15,
-        "protectiveness": 0.10,
-        "dejection": 0.10,
-        "irritability": 0.08,
-    },
-    "fear_death": {
-        "fear": 0.35,
-        "anxiety": 0.30,
-        "irritability": 0.20,
-        "contentment": -0.12,
-        "play": -0.15,
-        "elation": -0.10,
-    },
-    "fear_concern": {
-        "fear": 0.28,
-        "longing": 0.12,
-        "possessiveness": 0.15,
-        "anxiety": 0.20,
-        "protectiveness": 0.25,
-        "contentment": -0.10,
-    },
-    "fear_general": {"fear": 0.20, "anxiety": 0.10},
-}
-
-CONTACT_DELTAS = {"longing": -0.06, "seeking": -0.04}
-SOOTHING_DELTAS = {"dejection": -0.08, "contentment": 0.03, "anxiety": -0.025, "irritability": -0.02}
-NEGATIVE_LABELS = {
-    "cold",
-    "conflict",
-    "distant",
-    "hostile",
-    "struggling",
-    "fear_separation",
-    "fear_death",
-    "fear_concern",
-    "fear_general",
-}
-SOOTHING_LABELS = {"affectionate", "playful", "reassuring", "neutral"}
+# Backward-compatible view of the packaged default label deltas. The engine
+# itself reads the resolved emotions snapshot; this module-level constant keeps
+# CLI choices and existing tests working against the default set.
+LABEL_DELTAS: dict[str, dict[str, float]] = _emotions.default_emotions()["label_deltas"]
 
 
 @dataclass(slots=True)
@@ -138,21 +33,15 @@ class AffectEngine:
     def __init__(self, database: Database, config: AffectConfig):
         self.database = database
         self.config = config
-        if config.classification_fallback_seconds < 1:
-            raise ValueError("affect.classification_fallback_seconds must be positive")
         self._lock = threading.RLock()
-        self.label_patterns = dict(DEFAULT_LABEL_PATTERNS)
-        self.label_patterns.update(config.label_patterns)
-        self.spec = {name: values.copy() for name, values in DIMENSIONS.items()}
-        for name, override in config.dimensions.items():
-            if name in self.spec:
-                self.spec[name].update(
-                    {
-                        key: float(value)
-                        for key, value in override.items()
-                        if key in {"neutral", "floor", "tau"}
-                    }
-                )
+        self.emotions = _emotions.resolve_emotions(config)
+        self.emotions_version = str(self.emotions["emotion_version"])
+        self.emotions_fingerprint = _emotions.fingerprint(self.emotions)
+        self.label_patterns = dict(self.emotions["label_patterns"])
+        self.spec = {name: values.copy() for name, values in self.emotions["dimensions"].items()}
+        value_range = self.emotions["value_range"]
+        self.value_min = float(value_range["min"])
+        self.value_max = float(value_range["max"])
 
     def initial_state(self) -> dict[str, Any]:
         base = {name: values["neutral"] for name, values in self.spec.items()}
@@ -172,20 +61,22 @@ class AffectEngine:
         row = db.execute("SELECT * FROM affect_state WHERE id=1").fetchone()
         return row, json.loads(row["state_json"])
 
-    @staticmethod
-    def _clamp(value: float, floor: float = 0.0) -> float:
-        return min(1.0, max(floor, value))
+    def _clamp(self, value: float, floor: float = 0.0) -> float:
+        return min(self.value_max, max(floor, value))
 
     def _apply_deltas(self, state: dict[str, Any], deltas: dict[str, float], scale: float = 1.0) -> None:
         base = state["base"]
         mood = state["mood"]
-        negative = {"dejection", "irritability", "anxiety", "fear"}
+        negative = set(self.emotions["negative_dimensions"])
+        impact = float(self.emotions["impact_scale"])
         for name, nominal in deltas.items():
             if name not in base:
                 continue
             delta = nominal * scale
             current = float(base[name])
-            effective = delta * 2 * (1 - current) if delta > 0 else delta * 2 * current
+            effective = (
+                delta * impact * (1 - current) if delta > 0 else delta * impact * current
+            )
             next_value = max(current + effective, self.spec[name]["floor"])
             if delta < 0 and name in negative:
                 next_value = max(next_value, min(current, float(mood[name])))
@@ -194,15 +85,20 @@ class AffectEngine:
     def _advance_values(self, state: dict[str, Any], hours: float) -> None:
         if hours <= 0:
             return
+        gain_cfg = self.emotions["mood_follow_gain"]
+        mood_follow_hours = self.emotions["affect"]["mood_follow_hours"]
+        mood_return_hours = self.emotions["affect"]["mood_return_hours"]
         for name, params in self.spec.items():
             base = float(state["base"].get(name, params["neutral"]))
             mood = float(state["mood"].get(name, params["neutral"]))
             deviation = abs(base - mood)
-            gain = max(0.25, min(2.5, 4 * deviation))
-            follow = 1 - math.exp(-hours * gain / self.config.mood_follow_hours)
+            gain = max(
+                gain_cfg["min"], min(gain_cfg["max"], gain_cfg["factor"] * deviation)
+            )
+            follow = 1 - math.exp(-hours * gain / mood_follow_hours)
             mood += (base - mood) * follow
             mood = params["neutral"] + (mood - params["neutral"]) * math.exp(
-                -hours / self.config.mood_return_hours
+                -hours / mood_return_hours
             )
             floor = params["floor"]
             state["mood"][name] = self._clamp(mood, floor)
@@ -219,20 +115,22 @@ class AffectEngine:
         if last_user and now > last_updated:
             silence_start = max(last_updated, last_user)
             silence_hours = max(0.0, (now - silence_start).total_seconds() / 3600)
-            caps = {"longing": 0.35, "anxiety": 0.18, "seeking": 0.12, "dejection": 0.08}
+            caps = self.emotions["silence"]["caps"]
+            affect = self.emotions["affect"]
             rates = {
-                "longing": self.config.silence_longing_per_hour,
-                "anxiety": self.config.silence_anxiety_per_hour,
-                "seeking": self.config.silence_seeking_per_hour,
+                "longing": affect["silence_longing_per_hour"],
+                "anxiety": affect["silence_anxiety_per_hour"],
+                "seeking": affect["silence_seeking_per_hour"],
             }
             for name, rate in rates.items():
                 neutral = self.spec[name]["neutral"]
                 state["base"][name] = min(neutral + caps[name], state["base"][name] + rate * silence_hours)
             total_silence = (now - last_user).total_seconds() / 3600
-            if total_silence >= 6:
+            if total_silence >= self.emotions["silence"]["dejection_gate_hours"]:
                 state["base"]["dejection"] = min(
                     self.spec["dejection"]["neutral"] + caps["dejection"],
-                    state["base"]["dejection"] + 0.01 * silence_hours,
+                    state["base"]["dejection"]
+                    + self.emotions["silence"]["dejection_rate_per_hour"] * silence_hours,
                 )
 
     def _save(self, db: Any, state: dict[str, Any], now: datetime, **fields: Any) -> None:
@@ -246,7 +144,9 @@ class AffectEngine:
     def classify(self, text: str) -> str:
         folded = text.casefold()
         for label, patterns in self.label_patterns.items():
-            if label in LABEL_DELTAS and any(pattern.casefold() in folded for pattern in patterns):
+            if label in self.emotions["label_deltas"] and any(
+                pattern.casefold() in folded for pattern in patterns
+            ):
                 return label
         return "neutral"
 
@@ -260,7 +160,7 @@ class AffectEngine:
         is_user_message: bool = False,
         follow_up_minutes: int | None = None,
     ) -> AffectResult:
-        if label not in LABEL_DELTAS:
+        if label not in self.emotions["label_deltas"]:
             raise ValueError(f"unsupported affect label: {label}")
         current = now or utc_now()
         with self._lock, self.database.connect() as db:
@@ -290,24 +190,31 @@ class AffectEngine:
     ) -> AffectResult:
         row, state = self._load_row(db, current)
         self._advance(row, state, current)
-        window_start = current - timedelta(minutes=self.config.habituation_window_minutes)
+        affect = self.emotions["affect"]
+        window_start = current - timedelta(minutes=affect["habituation_window_minutes"])
         recent = [
             item for item in state.get("recent_labels", []) if parse_time(item.get("at")) >= window_start
         ]
         repeats = sum(item.get("label") == label for item in recent)
-        scale = self.config.habituation_factor**repeats
+        scale = affect["habituation_factor"] ** repeats
         if is_user_message:
-            self._apply_deltas(state, CONTACT_DELTAS)
-            if label in SOOTHING_LABELS:
-                self._apply_deltas(state, SOOTHING_DELTAS)
-        self._apply_deltas(state, LABEL_DELTAS[label], scale)
+            self._apply_deltas(state, self.emotions["contact_deltas"])
+            if label in set(self.emotions["soothing_labels"]):
+                self._apply_deltas(state, self.emotions["soothing_deltas"])
+        self._apply_deltas(state, self.emotions["label_deltas"][label], scale)
         recent.append({"label": label, "at": isoformat(current)})
-        state["recent_labels"] = recent[-8:]
+        state["recent_labels"] = recent[-self.emotions["recent_labels_limit"] :]
 
         follow_up_at = (
             isoformat(current + timedelta(minutes=follow_up_minutes)) if follow_up_minutes else None
         )
-        follow_up_expires = isoformat(current + timedelta(hours=24)) if follow_up_minutes else None
+        follow_up_expires = (
+            isoformat(
+                current + timedelta(hours=self.emotions["follow_up_expiration_hours"])
+            )
+            if follow_up_minutes
+            else None
+        )
         cursor = db.execute(
             """INSERT INTO affect_events
                (label, source_message_id, deltas_json, note, occurred_at,
@@ -316,7 +223,7 @@ class AffectEngine:
             (
                 label,
                 source_message_id,
-                json.dumps(LABEL_DELTAS[label], separators=(",", ":")),
+                json.dumps(self.emotions["label_deltas"][label], separators=(",", ":")),
                 note,
                 isoformat(event_time),
                 follow_up_at,
@@ -358,7 +265,10 @@ class AffectEngine:
                     automatic_label,
                     isoformat(occurred),
                     isoformat(
-                        occurred + timedelta(seconds=self.config.classification_fallback_seconds)
+                        occurred
+                        + timedelta(
+                            seconds=self.emotions["affect"]["classification_fallback_seconds"]
+                        )
                     ),
                 ),
             )
@@ -451,7 +361,7 @@ class AffectEngine:
         label: str | None,
         current: datetime,
     ) -> dict[str, Any]:
-        if label is not None and label not in LABEL_DELTAS:
+        if label is not None and label not in self.emotions["label_deltas"]:
             raise ValueError(f"unsupported affect label: {label}")
         with self._lock, self.database.connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -469,7 +379,10 @@ class AffectEngine:
                 return self._public_classification(row)
 
             chosen_label = label if label is not None else str(row["automatic_label"])
-            follow_up = 180 if chosen_label in NEGATIVE_LABELS else None
+            negative_labels = set(self.emotions["negative_labels"])
+            follow_up = (
+                self.emotions["negative_follow_up_minutes"] if chosen_label in negative_labels else None
+            )
             result = self._apply_label_in_db(
                 db,
                 chosen_label,
@@ -532,7 +445,7 @@ class AffectEngine:
         with self._lock, self.database.connect() as db:
             row, state = self._load_row(db, current)
             self._advance(row, state, current)
-            self._apply_deltas(state, {"longing": -0.08, "seeking": -0.05, "anxiety": 0.03})
+            self._apply_deltas(state, self.emotions["proactive_sent_deltas"])
             self._save(
                 db,
                 state,
@@ -544,18 +457,31 @@ class AffectEngine:
     def prompt_context(self, now: datetime | None = None) -> str:
         status = self.status(now)
         values = status["base"]
+        prompt = self.emotions["prompt"]
         deviations = sorted(
             ((abs(values[name] - self.spec[name]["neutral"]), name, values[name]) for name in values),
             reverse=True,
         )
-        selected = [(name, value) for deviation, name, value in deviations if deviation >= 0.08][:5]
-        if values["fear"] >= 0.05 and not any(name == "fear" for name, _ in selected):
+        selected = [
+            (name, value)
+            for deviation, name, value in deviations
+            if deviation >= prompt["deviation_threshold"]
+        ][: prompt["top_n"]]
+        if values["fear"] >= prompt["fear_minimum"] and not any(
+            name == "fear" for name, _ in selected
+        ):
             selected.append(("fear", values["fear"]))
         if not selected:
             return "Affect is near its usual baseline."
         labels = []
         for name, value in selected:
-            level = "high" if value >= 0.7 else "elevated" if value >= 0.5 else "noticeable"
+            level = (
+                "high"
+                if value >= prompt["level_high"]
+                else "elevated"
+                if value >= prompt["level_elevated"]
+                else "noticeable"
+            )
             labels.append(f"{name} is {level}")
         return "Affect: " + "; ".join(labels) + "."
 

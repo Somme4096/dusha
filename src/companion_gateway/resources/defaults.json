@@ -1,0 +1,52 @@
+{
+  "data_dir": "./data",
+  "host": "127.0.0.1",
+  "port": 8765,
+  "timezone": "Asia/Taipei",
+  "api_token_env": "",
+  "upstream": {
+    "base_url": "",
+    "api_key_env": "UPSTREAM_API_KEY",
+    "timeout_seconds": 120.0
+  },
+  "memory": {
+    "recent_messages": 8,
+    "search_hits": 4,
+    "context_messages": 1,
+    "injection_max_chars": 12000,
+    "retrieval_mode": "lexical",
+    "child_chars": 800,
+    "child_overlap_chars": 120,
+    "lexical_candidates": 24,
+    "semantic_candidates": 24,
+    "rrf_k": 60,
+    "semantic_min_similarity": 0.3,
+    "embedding": {
+      "base_url": "",
+      "api_key_env": "EMBEDDING_API_KEY",
+      "model": "",
+      "dimensions": null,
+      "timeout_seconds": 10.0,
+      "batch_size": 32,
+      "backfill_interval_seconds": 10,
+      "failure_cooldown_seconds": 60
+    }
+  },
+  "evergreen": {
+    "enabled": true,
+    "max_items": 32,
+    "max_chars": 4000
+  },
+  "proactive": {
+    "enabled": true,
+    "poll_interval_seconds": 60,
+    "minimum_silence_minutes": 180,
+    "cooldown_minutes": 360,
+    "max_per_day": 2,
+    "max_unanswered": 2,
+    "quiet_start_hour": 1,
+    "quiet_end_hour": 8,
+    "lease_seconds": 120,
+    "failed_retry_minutes": 15
+  }
+}

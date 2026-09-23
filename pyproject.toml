@@ -25,6 +25,7 @@ companion-gateway = "companion_gateway.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/companion_gateway"]
+artifacts = ["src/companion_gateway/resources/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

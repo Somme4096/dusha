@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from . import emotions as _emotions
 from .config import AppConfig
 from .service import CompanionService
 from .timeutil import isoformat, parse_time, utc_now
@@ -24,6 +25,14 @@ class ProactiveEngine:
         self.config = config
         self.rules = config.proactive
         self.timezone = ZoneInfo(config.timezone)
+        effective = _emotions.resolve_emotions(service.affect.config, config.proactive)
+        self._emotional = dict(effective["proactive"])
+        # Proactive thresholds are part of the emotional definition snapshot.
+        # Fold the resolved thresholds into the affect engine snapshot and
+        # recompute its fingerprint so the fingerprint reflects the exact
+        # effective behavior-driving configuration at assembly time.
+        service.affect.emotions["proactive"] = dict(self._emotional)
+        service.affect.emotions_fingerprint = _emotions.fingerprint(effective)
 
     def _quiet(self, now: datetime) -> bool:
         hour = now.astimezone(self.timezone).hour
@@ -89,9 +98,9 @@ class ProactiveEngine:
         if follow_up:
             reason = f"follow_up:{follow_up['label']}"
             source_event_id = int(follow_up["id"])
-        elif state["base"]["fear"] >= self.rules.fear_threshold:
+        elif state["base"]["fear"] >= self._emotional["fear_threshold"]:
             reason = "fear"
-        elif state["base"]["longing"] < self.rules.longing_threshold:
+        elif state["base"]["longing"] < self._emotional["longing_threshold"]:
             return None
 
         context = self.service.build_context(
