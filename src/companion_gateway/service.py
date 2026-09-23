@@ -99,12 +99,7 @@ class CompanionService:
         excluded = exclude_message_ids or set()
         internal_conversation = None
         if harness and conversation_id:
-            with self.database.connect() as db:
-                row = db.execute(
-                    "SELECT id FROM conversations WHERE harness=? AND external_id=?",
-                    (harness, conversation_id),
-                ).fetchone()
-                internal_conversation = int(row["id"]) if row else None
+            internal_conversation = self.memory.conversation_id(harness, conversation_id)
 
         recent = self.memory.recent(
             internal_conversation,

@@ -8,7 +8,7 @@ import logging
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, NoReturn
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
@@ -22,6 +22,7 @@ from .context import ContextBudgetError
 from .evergreen import EvergreenConflict
 from .memory import text_from_content
 from .proactive import ProactiveEngine
+from .serialization import canonical
 from .service import CompanionService
 from .timeutil import parse_time
 
@@ -38,6 +39,28 @@ _ERROR_DOCS = {
     409: {"model": _schema.ErrorDetail, "description": "Conflicting state change"},
     422: {"model": _schema.ErrorDetail, "description": "Malformed request or unsupported value"},
 }
+
+
+def _raise_http(
+    error: Exception,
+    *,
+    not_found: str | None = None,
+    conflict: type[Exception] | tuple[type[Exception], ...] = (),
+    invalid: int = 422,
+) -> NoReturn:
+    """Translate a service exception into the equivalent HTTP error.
+
+    KeyError becomes 404 (with ``not_found`` when provided), the ``conflict``
+    exception types become 409, and ValueError becomes ``invalid`` (422 by
+    default). Anything else is re-raised unchanged.
+    """
+    if isinstance(error, KeyError):
+        raise HTTPException(status_code=404, detail=not_found or "resource not found") from error
+    if isinstance(error, conflict):
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    if isinstance(error, ValueError):
+        raise HTTPException(status_code=invalid, detail=str(error)) from error
+    raise error
 
 
 class GatewayInput(BaseModel):
@@ -239,7 +262,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                 affect_label=body.affect_label,
             )
         except ValueError as error:
-            raise HTTPException(status_code=422, detail=str(error)) from error
+            _raise_http(error)
 
     @app.get(
         "/state/v1/messages/{message_id}",
@@ -315,10 +338,8 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                 expires_at=body.expires_at,
                 created_by="agent",
             )
-        except EvergreenConflict as error:
-            raise HTTPException(status_code=409, detail=str(error)) from error
-        except ValueError as error:
-            raise HTTPException(status_code=422, detail=str(error)) from error
+        except (EvergreenConflict, ValueError) as error:
+            _raise_http(error, conflict=EvergreenConflict)
         return {"fact": fact}
 
     @app.get(
@@ -355,7 +376,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                 fact_id,
             )
         except KeyError as error:
-            raise HTTPException(status_code=404, detail="evergreen fact not found") from error
+            _raise_http(error, not_found="evergreen fact not found")
         return {"revisions": revisions}
 
     @app.post(
@@ -387,12 +408,8 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             kwargs["expires_at"] = body.expires_at
         try:
             fact = await asyncio.to_thread(service.evergreen.revise, **kwargs)
-        except KeyError as error:
-            raise HTTPException(status_code=404, detail="evergreen fact not found") from error
-        except EvergreenConflict as error:
-            raise HTTPException(status_code=409, detail=str(error)) from error
-        except ValueError as error:
-            raise HTTPException(status_code=422, detail=str(error)) from error
+        except (KeyError, EvergreenConflict, ValueError) as error:
+            _raise_http(error, not_found="evergreen fact not found", conflict=EvergreenConflict)
         return {"fact": fact}
 
     @app.post(
@@ -417,12 +434,8 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                 source_message_id=body.source_message_id,
                 created_by="agent",
             )
-        except KeyError as error:
-            raise HTTPException(status_code=404, detail="evergreen fact not found") from error
-        except EvergreenConflict as error:
-            raise HTTPException(status_code=409, detail=str(error)) from error
-        except ValueError as error:
-            raise HTTPException(status_code=422, detail=str(error)) from error
+        except (KeyError, EvergreenConflict, ValueError) as error:
+            _raise_http(error, not_found="evergreen fact not found", conflict=EvergreenConflict)
         return {"fact": fact}
 
     @app.post(
@@ -444,7 +457,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                 include_recent=body.include_recent,
             )
         except ContextBudgetError as error:
-            raise HTTPException(status_code=422, detail=str(error)) from error
+            _raise_http(error)
 
     @app.get(
         "/state/v1/affect",
@@ -477,12 +490,12 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                 message_id,
                 body.label,
             )
-        except KeyError as error:
-            raise HTTPException(status_code=404, detail="affect classification not found") from error
-        except AffectClassificationConflict as error:
-            raise HTTPException(status_code=409, detail=str(error)) from error
-        except ValueError as error:
-            raise HTTPException(status_code=422, detail=str(error)) from error
+        except (KeyError, AffectClassificationConflict, ValueError) as error:
+            _raise_http(
+                error,
+                not_found="affect classification not found",
+                conflict=AffectClassificationConflict,
+            )
         return {"event": event}
 
     @app.post(
@@ -503,7 +516,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                 follow_up_minutes=body.follow_up_minutes,
             )
         except ValueError as error:
-            raise HTTPException(status_code=422, detail=str(error)) from error
+            _raise_http(error)
         return {"label": result.label, "event_id": result.event_id, "state": result.state}
 
     @app.post(
@@ -551,14 +564,12 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                 external_id=body.external_id,
                 error=body.error,
             )
-        except KeyError as error:
-            raise HTTPException(status_code=404, detail="event not found") from error
-        except ValueError as error:
-            raise HTTPException(status_code=409, detail=str(error)) from error
+        except (KeyError, ValueError) as error:
+            _raise_http(error, not_found="event not found", invalid=409)
 
     @app.get("/v1/models", tags=["proxy"])
     async def models(request: Request) -> Response:
-        return await _proxy_simple(request, cfg, "/models")
+        return await _proxy_passthrough(request, cfg, "/models")
 
     @app.post("/v1/chat/completions", tags=["proxy"])
     async def chat_completions(request: Request) -> Response:
@@ -572,34 +583,13 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         conversation_id = request.headers.get("x-conversation-id", "default")
         harness = request.headers.get("x-harness", "openai")
         route = request.headers.get("x-companion-route", "")
-        transcript_key = ""
-        current_message_id = None
-        current_query = ""
-        for message in messages:
-            if not isinstance(message, dict) or message.get("role") not in {
-                "user",
-                "assistant",
-                "tool",
-            }:
-                continue
-            canonical = json.dumps(message, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-            transcript_key = hashlib.sha256(f"{transcript_key}\n{canonical}".encode()).hexdigest()
-            message_content = message.get("content")
-            if not text_from_content(message_content).strip():
-                message_content = message
-            result = await asyncio.to_thread(
-                service.ingest_message,
-                harness=harness,
-                conversation_id=conversation_id,
-                role=message["role"],
-                content=message_content,
-                route=route,
-                external_id=f"proxy:{transcript_key}",
-                source_payload=message,
-            )
-            if message["role"] == "user":
-                current_message_id = result["id"]
-                current_query = service.memory.get(current_message_id)["text"]
+        transcript_key, current_message_id, current_query = await _ingest_transcript(
+            service,
+            messages,
+            harness=harness,
+            conversation_id=conversation_id,
+            route=route,
+        )
 
         try:
             state_context = await asyncio.to_thread(
@@ -611,7 +601,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                 include_recent=False,
             )
         except ContextBudgetError as error:
-            raise HTTPException(status_code=422, detail=str(error)) from error
+            _raise_http(error)
         body["messages"] = _inject_context(messages, state_context["injection"])
         if body.get("stream"):
             return await _proxy_stream(
@@ -629,25 +619,16 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             with contextlib.suppress(Exception):
                 data = response.json()
                 response_message = data["choices"][0]["message"]
-                content = response_message.get("content")
-                if not text_from_content(content).strip():
-                    content = response_message
-                response_key = _next_transcript_key(transcript_key, response_message)
-                await asyncio.to_thread(
-                    service.ingest_message,
+                await _ingest_assistant_response(
+                    service,
+                    transcript_key=transcript_key,
                     harness=harness,
                     conversation_id=conversation_id,
-                    role="assistant",
-                    content=content,
                     route=route,
-                    external_id=f"proxy:{response_key}",
+                    message=response_message,
                     source_payload=response_message,
                 )
-        return Response(
-            content=response.content,
-            status_code=response.status_code,
-            media_type=response.headers.get("content-type", "application/json"),
-        )
+        return _passthrough_response(response)
 
     return app
 
@@ -682,15 +663,22 @@ async def _upstream_request(request: Request, cfg: AppConfig, path: str, body: A
         return await client.request(request.method, _upstream_url(cfg, path), **kwargs)
 
 
-async def _proxy_simple(request: Request, cfg: AppConfig, path: str) -> Response:
-    if not cfg.upstream.base_url:
-        raise HTTPException(status_code=503, detail="upstream.base_url is not configured")
-    response = await _upstream_request(request, cfg, path, None)
+def _passthrough_response(
+    response: httpx.Response, *, media_type: str | None = "application/json"
+) -> Response:
+    """Forward an upstream response body and status unchanged."""
     return Response(
         content=response.content,
         status_code=response.status_code,
-        media_type=response.headers.get("content-type", "application/json"),
+        media_type=response.headers.get("content-type", media_type),
     )
+
+
+async def _proxy_passthrough(request: Request, cfg: AppConfig, path: str) -> Response:
+    if not cfg.upstream.base_url:
+        raise HTTPException(status_code=503, detail="upstream.base_url is not configured")
+    response = await _upstream_request(request, cfg, path, None)
+    return _passthrough_response(response)
 
 
 async def _proxy_stream(
@@ -712,14 +700,10 @@ async def _proxy_stream(
     )
     response = await client.send(upstream_request, stream=True)
     if response.status_code >= 400:
-        content = await response.aread()
+        await response.aread()
         await response.aclose()
         await client.aclose()
-        return Response(
-            content=content,
-            status_code=response.status_code,
-            media_type=response.headers.get("content-type"),
-        )
+        return _passthrough_response(response, media_type=None)
 
     async def chunks() -> AsyncIterator[bytes]:
         pending = ""
@@ -743,20 +727,87 @@ async def _proxy_stream(
             await client.aclose()
             text = "".join(assistant_parts)
             if text:
-                response_key = _next_transcript_key(transcript_key, {"role": "assistant", "content": text})
-                await asyncio.to_thread(
-                    service.ingest_message,
+                await _ingest_assistant_response(
+                    service,
+                    transcript_key=transcript_key,
                     harness=harness,
                     conversation_id=conversation_id,
-                    role="assistant",
-                    content=text,
                     route=route,
-                    external_id=f"proxy:{response_key}",
+                    message={"role": "assistant", "content": text},
                 )
 
     return StreamingResponse(chunks(), status_code=response.status_code, media_type="text/event-stream")
 
 
 def _next_transcript_key(previous: str, message: dict[str, Any]) -> str:
-    canonical = json.dumps(message, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(f"{previous}\n{canonical}".encode()).hexdigest()
+    return hashlib.sha256(f"{previous}\n{canonical(message)}".encode()).hexdigest()
+
+
+async def _ingest_transcript(
+    service: CompanionService,
+    messages: list[Any],
+    *,
+    harness: str,
+    conversation_id: str,
+    route: str,
+) -> tuple[str, int | None, str]:
+    """Persist the proxy transcript's user/assistant/tool turns in order.
+
+    Returns the rolling transcript key, the id of the latest user message, and
+    that message's stored text (used to seed the state context query).
+    """
+    transcript_key = ""
+    current_message_id: int | None = None
+    current_query = ""
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") not in {
+            "user",
+            "assistant",
+            "tool",
+        }:
+            continue
+        transcript_key = _next_transcript_key(transcript_key, message)
+        message_content = message.get("content")
+        if not text_from_content(message_content).strip():
+            message_content = message
+        result = await asyncio.to_thread(
+            service.ingest_message,
+            harness=harness,
+            conversation_id=conversation_id,
+            role=message["role"],
+            content=message_content,
+            route=route,
+            external_id=f"proxy:{transcript_key}",
+            source_payload=message,
+        )
+        if message["role"] == "user":
+            current_message_id = result["id"]
+            current_query = service.memory.get(current_message_id)["text"]
+    return transcript_key, current_message_id, current_query
+
+
+async def _ingest_assistant_response(
+    service: CompanionService,
+    *,
+    transcript_key: str,
+    harness: str,
+    conversation_id: str,
+    route: str,
+    message: dict[str, Any],
+    source_payload: Any | None = None,
+) -> None:
+    """Persist an upstream assistant reply as the next transcript turn."""
+    content = message.get("content")
+    if not text_from_content(content).strip():
+        content = message
+    response_key = _next_transcript_key(transcript_key, message)
+    await asyncio.to_thread(
+        service.ingest_message,
+        harness=harness,
+        conversation_id=conversation_id,
+        role="assistant",
+        content=content,
+        route=route,
+        external_id=f"proxy:{response_key}",
+        source_payload=source_payload,
+    )

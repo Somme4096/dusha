@@ -16,7 +16,3 @@ _DEFAULTS = load_packaged("defaults.json")
 
 def all_defaults() -> dict:
     return copy.deepcopy(_DEFAULTS)
-
-
-def section(name: str) -> dict:
-    return copy.deepcopy(_DEFAULTS[name])

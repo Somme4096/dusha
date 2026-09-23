@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
 import math
 import os
@@ -14,6 +12,7 @@ import httpx
 
 from .config import EmbeddingConfig, MemoryConfig
 from .database import Database
+from .serialization import short_fingerprint
 from .timeutil import isoformat, utc_now
 
 logger = logging.getLogger("companion_gateway.semantic")
@@ -456,5 +455,6 @@ class SemanticIndex:
 
     @staticmethod
     def _fingerprint(value: dict[str, Any]) -> str:
-        raw = json.dumps(value, sort_keys=True, separators=(",", ":"))
-        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+        # Legacy json.dumps default (ensure_ascii=True) must be preserved so
+        # existing index keys are stable for every input, including non-ASCII.
+        return short_fingerprint(value, ensure_ascii=True)

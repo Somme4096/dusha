@@ -11,6 +11,7 @@ from . import emotions as _emotions
 from . import prompts as _prompts
 from .config import AffectConfig
 from .database import Database
+from .serialization import compact_json
 from .timeutil import isoformat, parse_time, utc_now
 
 # Backward-compatible view of the packaged default label deltas. The engine
@@ -59,7 +60,7 @@ class AffectEngine:
             """INSERT OR IGNORE INTO affect_state
                (id, state_json, last_updated_at, last_interaction_at)
                VALUES(1,?,?,?)""",
-            (json.dumps(state, separators=(",", ":")), isoformat(now), isoformat(now)),
+            (compact_json(state, ensure_ascii=True), isoformat(now), isoformat(now)),
         )
 
     def _load_row(self, db: Any, now: datetime) -> tuple[Any, dict[str, Any]]:
@@ -141,7 +142,7 @@ class AffectEngine:
 
     def _save(self, db: Any, state: dict[str, Any], now: datetime, **fields: Any) -> None:
         assignments = ["state_json=?", "last_updated_at=?", "revision=revision+1"]
-        values: list[Any] = [json.dumps(state, separators=(",", ":")), isoformat(now)]
+        values: list[Any] = [compact_json(state, ensure_ascii=True), isoformat(now)]
         for name, value in fields.items():
             assignments.append(f"{name}=?")
             values.append(value)
@@ -229,7 +230,7 @@ class AffectEngine:
             (
                 label,
                 source_message_id,
-                json.dumps(self.emotions["label_deltas"][label], separators=(",", ":")),
+                compact_json(self.emotions["label_deltas"][label], ensure_ascii=True),
                 note,
                 isoformat(event_time),
                 follow_up_at,

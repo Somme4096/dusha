@@ -36,6 +36,18 @@ _PROMPTS = _DEFAULTS["prompts"]
 _UNSET: Any = _emotions.UNSET
 
 
+def _fill_unset(config_obj: Any, knobs: dict[str, Any], explicit_attr: str) -> None:
+    """Fill UNSET fields from packaged defaults and record explicitly provided ones."""
+    explicit: set[str] = set()
+    for name, default in knobs.items():
+        value = getattr(config_obj, name)
+        if value is _UNSET:
+            setattr(config_obj, name, default)
+        else:
+            explicit.add(name)
+    setattr(config_obj, explicit_attr, frozenset(explicit))
+
+
 @dataclass(slots=True)
 class UpstreamConfig:
     base_url: str = _UPSTREAM["base_url"]
@@ -95,14 +107,7 @@ class AffectConfig:
     explicit_knobs: frozenset[str] = field(default=frozenset(), init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
-        explicit: set[str] = set()
-        for name, default in _AFFECT_KNOBS.items():
-            value = getattr(self, name)
-            if value is _UNSET:
-                setattr(self, name, default)
-            else:
-                explicit.add(name)
-        self.explicit_knobs = frozenset(explicit)
+        _fill_unset(self, _AFFECT_KNOBS, "explicit_knobs")
 
 
 @dataclass(slots=True)
@@ -124,14 +129,7 @@ class ProactiveConfig:
     )
 
     def __post_init__(self) -> None:
-        explicit: set[str] = set()
-        for name, default in _PROACTIVE_EMOTIONAL.items():
-            value = getattr(self, name)
-            if value is _UNSET:
-                setattr(self, name, default)
-            else:
-                explicit.add(name)
-        self.explicit_emotional = frozenset(explicit)
+        _fill_unset(self, _PROACTIVE_EMOTIONAL, "explicit_emotional")
 
 
 @dataclass(slots=True)

@@ -7,14 +7,10 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from . import emotions as _emotions
-from . import prompts as _prompts
 from .config import AppConfig
+from .serialization import compact_json
 from .service import CompanionService
 from .timeutil import isoformat, parse_time, utc_now
-
-# Backward-compatible alias for the packaged default instruction. The runtime
-# uses the configured prompts snapshot from the service.
-GENERATION_INSTRUCTION: str = _prompts.default_prompts()["proactive_generation_instruction"]
 
 
 class ProactiveEngine:
@@ -146,7 +142,7 @@ class ProactiveEngine:
                         route["route"],
                         reason,
                         dedup_key,
-                        json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+                        compact_json(payload),
                         isoformat(current),
                         isoformat(current),
                         isoformat(current),

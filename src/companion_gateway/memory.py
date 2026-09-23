@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from .database import Database
+from .serialization import compact_json
 from .timeutil import isoformat, parse_time, utc_now
 
 if TYPE_CHECKING:
@@ -27,11 +28,11 @@ def text_from_content(content: Any) -> str:
         return "\n".join(part for part in parts if part)
     if content is None:
         return ""
-    return json.dumps(content, ensure_ascii=False, separators=(",", ":"))
+    return compact_json(content)
 
 
 def _content_json(content: Any) -> str:
-    return json.dumps(content, ensure_ascii=False, separators=(",", ":"))
+    return compact_json(content)
 
 
 @dataclass(slots=True)
@@ -133,6 +134,15 @@ class MemoryStore:
                 (message_id,),
             ).fetchone()
             return self._row(row) if row else None
+
+    def conversation_id(self, harness: str, external_id: str) -> int | None:
+        """Resolve the internal conversation id, or None when unknown."""
+        with self.database.connect() as db:
+            row = db.execute(
+                "SELECT id FROM conversations WHERE harness=? AND external_id=?",
+                (harness, external_id),
+            ).fetchone()
+            return int(row["id"]) if row else None
 
     def context(self, message_id: int, radius: int = 1) -> list[dict[str, Any]]:
         message = self.get(message_id)

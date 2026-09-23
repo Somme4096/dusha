@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections.abc import Callable
 from typing import Any
 
 import uvicorn
@@ -11,6 +12,9 @@ from .api import create_app
 from .config import load_config, migrate_config
 from .proactive import ProactiveEngine
 from .service import CompanionService
+
+# Command handlers receive the fully constructed service and proactive engine.
+Handler = Callable[[CompanionService, ProactiveEngine, argparse.Namespace], None]
 
 
 def _print(value: Any) -> None:
@@ -112,6 +116,233 @@ def parser() -> argparse.ArgumentParser:
     return root
 
 
+# ---------------------------------------------------------------------------
+# Handlers and dispatch tables
+# ---------------------------------------------------------------------------
+
+
+def _cmd_health(service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace) -> None:
+    _print({"database": service.database.integrity_check()})
+
+
+def _cmd_backup(service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace) -> None:
+    _print({"backup": service.backup(args.destination)})
+
+
+def _cmd_memory(service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace) -> None:
+    _MEMORY_HANDLERS[args.memory_command](service, proactive, args)
+
+
+def _memory_search(service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace) -> None:
+    _print({"results": service.memory.search(args.query, args.limit)})
+
+
+def _memory_show(service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace) -> None:
+    result = service.memory.get(args.message_id)
+    if result is None:
+        print("message not found", file=sys.stderr)
+        raise SystemExit(1)
+    _print(result)
+
+
+def _memory_recent(service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace) -> None:
+    _print({"messages": service.memory.recent(limit=args.limit)})
+
+
+def _memory_reindex(service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace) -> None:
+    service.memory.rebuild_index()
+    _print({"status": "rebuilt"})
+
+
+def _memory_index(service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace) -> None:
+    _MEMORY_INDEX_HANDLERS[args.index_command](service, proactive, args)
+
+
+def _index_status(service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace) -> None:
+    _print(service.semantic.status())
+
+
+def _index_backfill(service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace) -> None:
+    _print(service.semantic.backfill_once(args.limit, force=args.force))
+
+
+def _index_rebuild(service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace) -> None:
+    _print(service.semantic.rebuild_chunks())
+
+
+_MEMORY_INDEX_HANDLERS: dict[str, Handler] = {
+    "status": _index_status,
+    "backfill": _index_backfill,
+    "rebuild": _index_rebuild,
+}
+
+_MEMORY_HANDLERS: dict[str, Handler] = {
+    "search": _memory_search,
+    "show": _memory_show,
+    "recent": _memory_recent,
+    "index": _memory_index,
+    "reindex": _memory_reindex,
+}
+
+
+def _cmd_evergreen(service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace) -> None:
+    _EVERGREEN_HANDLERS[args.evergreen_command](service, proactive, args)
+
+
+def _evergreen_list(service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace) -> None:
+    _print(
+        {
+            "facts": service.evergreen.list_current(
+                include_inactive=args.include_inactive,
+                due_only=args.due_only,
+                limit=args.limit,
+            )
+        }
+    )
+
+
+def _evergreen_history(
+    service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace
+) -> None:
+    _print({"revisions": service.evergreen.history(args.fact_id)})
+
+
+def _evergreen_remember(
+    service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace
+) -> None:
+    _print(
+        {
+            "fact": service.evergreen.remember(
+                key=args.key,
+                text=args.text,
+                priority=args.priority,
+                source_message_id=args.source_message_id,
+                reason=args.reason,
+                review_after=args.review_after,
+                expires_at=args.expires_at,
+                created_by="operator",
+            )
+        }
+    )
+
+
+def _evergreen_revise(
+    service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace
+) -> None:
+    revise_kwargs = {
+        "fact_id": args.fact_id,
+        "expected_revision": args.expected_revision,
+        "text": args.text,
+        "priority": args.priority,
+        "source_message_id": args.source_message_id,
+        "reason": args.reason,
+        "created_by": "operator",
+    }
+    if args.clear_review_after:
+        revise_kwargs["review_after"] = None
+    elif args.review_after is not None:
+        revise_kwargs["review_after"] = args.review_after
+    if args.clear_expires_at:
+        revise_kwargs["expires_at"] = None
+    elif args.expires_at is not None:
+        revise_kwargs["expires_at"] = args.expires_at
+    _print({"fact": service.evergreen.revise(**revise_kwargs)})
+
+
+def _evergreen_forget(
+    service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace
+) -> None:
+    _print(
+        {
+            "fact": service.evergreen.forget(
+                fact_id=args.fact_id,
+                expected_revision=args.expected_revision,
+                reason=args.reason,
+                source_message_id=args.source_message_id,
+                created_by="operator",
+            )
+        }
+    )
+
+
+_EVERGREEN_HANDLERS: dict[str, Handler] = {
+    "list": _evergreen_list,
+    "history": _evergreen_history,
+    "remember": _evergreen_remember,
+    "revise": _evergreen_revise,
+    "forget": _evergreen_forget,
+}
+
+
+def _cmd_affect(service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace) -> None:
+    _AFFECT_HANDLERS[args.affect_command](service, proactive, args)
+
+
+def _affect_show(service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace) -> None:
+    _print(service.affect.status())
+
+
+def _affect_event(service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace) -> None:
+    try:
+        result = service.affect.apply_label(
+            args.label,
+            note=args.note,
+            follow_up_minutes=args.follow_up_minutes,
+        )
+    except ValueError as error:
+        print(f"error: {error}", file=sys.stderr)
+        raise SystemExit(2) from error
+    _print({"label": result.label, "event_id": result.event_id, "state": result.state})
+
+
+_AFFECT_HANDLERS: dict[str, Handler] = {
+    "show": _affect_show,
+    "event": _affect_event,
+}
+
+
+def _cmd_proactive(service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace) -> None:
+    _PROACTIVE_HANDLERS[args.proactive_command](service, proactive, args)
+
+
+def _proactive_evaluate(
+    service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace
+) -> None:
+    _print({"event": proactive.evaluate()})
+
+
+def _proactive_poll(service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace) -> None:
+    _print({"events": proactive.poll(args.consumer, args.limit)})
+
+
+def _proactive_ack(service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace) -> None:
+    _print(
+        proactive.acknowledge(
+            args.event_id,
+            args.consumer,
+            args.outcome,
+            text=args.text,
+            error=args.error,
+        )
+    )
+
+
+_PROACTIVE_HANDLERS: dict[str, Handler] = {
+    "evaluate": _proactive_evaluate,
+    "poll": _proactive_poll,
+    "ack": _proactive_ack,
+}
+
+_COMMANDS: dict[str, Handler] = {
+    "health": _cmd_health,
+    "backup": _cmd_backup,
+    "memory": _cmd_memory,
+    "evergreen": _cmd_evergreen,
+    "affect": _cmd_affect,
+    "proactive": _cmd_proactive,
+}
+
+
 def main() -> None:
     args = parser().parse_args()
     if args.command == "migrate-config":
@@ -124,120 +355,7 @@ def main() -> None:
 
     service = CompanionService(cfg)
     proactive = ProactiveEngine(service, cfg)
-
-    if args.command == "health":
-        _print({"database": service.database.integrity_check()})
-    elif args.command == "backup":
-        _print({"backup": service.backup(args.destination)})
-    elif args.command == "memory":
-        if args.memory_command == "search":
-            _print({"results": service.memory.search(args.query, args.limit)})
-        elif args.memory_command == "show":
-            result = service.memory.get(args.message_id)
-            if result is None:
-                print("message not found", file=sys.stderr)
-                raise SystemExit(1)
-            _print(result)
-        elif args.memory_command == "recent":
-            _print({"messages": service.memory.recent(limit=args.limit)})
-        elif args.memory_command == "index":
-            if args.index_command == "status":
-                _print(service.semantic.status())
-            elif args.index_command == "backfill":
-                _print(service.semantic.backfill_once(args.limit, force=args.force))
-            else:
-                _print(service.semantic.rebuild_chunks())
-        else:
-            service.memory.rebuild_index()
-            _print({"status": "rebuilt"})
-    elif args.command == "evergreen":
-        if args.evergreen_command == "list":
-            _print(
-                {
-                    "facts": service.evergreen.list_current(
-                        include_inactive=args.include_inactive,
-                        due_only=args.due_only,
-                        limit=args.limit,
-                    )
-                }
-            )
-        elif args.evergreen_command == "history":
-            _print({"revisions": service.evergreen.history(args.fact_id)})
-        elif args.evergreen_command == "remember":
-            _print(
-                {
-                    "fact": service.evergreen.remember(
-                        key=args.key,
-                        text=args.text,
-                        priority=args.priority,
-                        source_message_id=args.source_message_id,
-                        reason=args.reason,
-                        review_after=args.review_after,
-                        expires_at=args.expires_at,
-                        created_by="operator",
-                    )
-                }
-            )
-        elif args.evergreen_command == "revise":
-            revise_kwargs = {
-                "fact_id": args.fact_id,
-                "expected_revision": args.expected_revision,
-                "text": args.text,
-                "priority": args.priority,
-                "source_message_id": args.source_message_id,
-                "reason": args.reason,
-                "created_by": "operator",
-            }
-            if args.clear_review_after:
-                revise_kwargs["review_after"] = None
-            elif args.review_after is not None:
-                revise_kwargs["review_after"] = args.review_after
-            if args.clear_expires_at:
-                revise_kwargs["expires_at"] = None
-            elif args.expires_at is not None:
-                revise_kwargs["expires_at"] = args.expires_at
-            _print({"fact": service.evergreen.revise(**revise_kwargs)})
-        else:
-            _print(
-                {
-                    "fact": service.evergreen.forget(
-                        fact_id=args.fact_id,
-                        expected_revision=args.expected_revision,
-                        reason=args.reason,
-                        source_message_id=args.source_message_id,
-                        created_by="operator",
-                    )
-                }
-            )
-    elif args.command == "affect":
-        if args.affect_command == "show":
-            _print(service.affect.status())
-        else:
-            try:
-                result = service.affect.apply_label(
-                    args.label,
-                    note=args.note,
-                    follow_up_minutes=args.follow_up_minutes,
-                )
-            except ValueError as error:
-                print(f"error: {error}", file=sys.stderr)
-                raise SystemExit(2) from error
-            _print({"label": result.label, "event_id": result.event_id, "state": result.state})
-    elif args.command == "proactive":
-        if args.proactive_command == "evaluate":
-            _print({"event": proactive.evaluate()})
-        elif args.proactive_command == "poll":
-            _print({"events": proactive.poll(args.consumer, args.limit)})
-        else:
-            _print(
-                proactive.acknowledge(
-                    args.event_id,
-                    args.consumer,
-                    args.outcome,
-                    text=args.text,
-                    error=args.error,
-                )
-            )
+    _COMMANDS[args.command](service, proactive, args)
     service.close()
 
 

@@ -16,13 +16,13 @@ to a packaged default) is never confused with an unfilled default.
 from __future__ import annotations
 
 import copy
-import hashlib
-import json
 import math
 from pathlib import Path
 from typing import Any
 
 from .resources import load_packaged, loads_strict
+from .serialization import canonical as _serialization_canonical
+from .serialization import fingerprint as _serialization_fingerprint
 
 SCHEMA_VERSION = 1
 
@@ -329,12 +329,13 @@ def default_emotions() -> dict:
 
 
 def canonical(snapshot: dict[str, Any]) -> str:
-    return json.dumps(snapshot, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    """Canonical sort-keyed JSON of an effective emotions snapshot."""
+    return _serialization_canonical(snapshot)
 
 
 def fingerprint(snapshot: dict[str, Any]) -> str:
     """Stable canonical fingerprint of an effective emotions snapshot."""
-    return "sha256:" + hashlib.sha256(canonical(snapshot).encode("utf-8")).hexdigest()
+    return _serialization_fingerprint(snapshot)
 
 
 def default_fingerprint() -> str:

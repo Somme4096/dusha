@@ -13,24 +13,15 @@ budget.
 
 from __future__ import annotations
 
-import json
 from typing import Any
+
+from .serialization import safe_json
 
 CONTEXT_VERSION = 1
 
 
 class ContextBudgetError(ValueError):
     """Raised when mandatory context exceeds the configured injection budget."""
-
-
-def safe_json(value: Any) -> str:
-    """Serialize to compact JSON with delimiter characters escaped."""
-    return (
-        json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-        .replace("&", "\\u0026")
-        .replace("<", "\\u003c")
-        .replace(">", "\\u003e")
-    )
 
 
 class ContextComposer:
@@ -53,26 +44,31 @@ class ContextComposer:
         self.emotions_fingerprint = emotions_fingerprint
         self.prompts_fingerprint = prompts_fingerprint
 
+    def _instructions_and_emotion(
+        self, affect_snapshot: dict[str, Any], affect_text: str
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Shared instructions and emotion metadata for injection and context."""
+        companion = self.prompts["companion_state"]
+        instructions = {"memory": companion["memory_instruction"]}
+        emotion = {
+            "values": {
+                "base": affect_snapshot["base"],
+                "mood": affect_snapshot["mood"],
+            },
+            "description": affect_text,
+            "preface": companion["affect_instruction"],
+            "fingerprints": {
+                "emotions": self.emotions_fingerprint,
+                "prompts": self.prompts_fingerprint,
+            },
+        }
+        return instructions, emotion
+
     def _companion_payload(
         self, affect_snapshot: dict[str, Any], affect_text: str, session: list[dict[str, Any]]
     ) -> dict[str, Any]:
-        companion = self.prompts["companion_state"]
-        return {
-            "instructions": {"memory": companion["memory_instruction"]},
-            "emotion": {
-                "values": {
-                    "base": affect_snapshot["base"],
-                    "mood": affect_snapshot["mood"],
-                },
-                "description": affect_text,
-                "preface": companion["affect_instruction"],
-                "fingerprints": {
-                    "emotions": self.emotions_fingerprint,
-                    "prompts": self.prompts_fingerprint,
-                },
-            },
-            "session": session,
-        }
+        instructions, emotion = self._instructions_and_emotion(affect_snapshot, affect_text)
+        return {"instructions": instructions, "emotion": emotion, "session": session}
 
     def _companion_block(
         self, affect_snapshot: dict[str, Any], affect_text: str, session: list[dict[str, Any]]
@@ -95,7 +91,6 @@ class ContextComposer:
         evergreen_facts: list[dict[str, Any]],
         session_records: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        companion = self.prompts["companion_state"]
         empty_companion = self._companion_block(affect_snapshot, affect_text, [])
         mandatory_len = len(self.identity_text) + len(empty_companion)
         if mandatory_len > self.budget:
@@ -135,6 +130,7 @@ class ContextComposer:
                 f"(requires {len(injection)} characters)"
             )
 
+        instructions, emotion = self._instructions_and_emotion(affect_snapshot, affect_text)
         context = {
             "version": CONTEXT_VERSION,
             "identity": {
@@ -142,20 +138,9 @@ class ContextComposer:
                 "text": self.identity_text,
                 "revision": self.identity_revision,
             },
-            "instructions": {"memory": companion["memory_instruction"]},
+            "instructions": instructions,
             "memory": {"evergreen": used_evergreen, "session": used_records},
-            "emotion": {
-                "values": {
-                    "base": affect_snapshot["base"],
-                    "mood": affect_snapshot["mood"],
-                },
-                "description": affect_text,
-                "preface": companion["affect_instruction"],
-                "fingerprints": {
-                    "emotions": self.emotions_fingerprint,
-                    "prompts": self.prompts_fingerprint,
-                },
-            },
+            "emotion": emotion,
         }
         return {
             "injection": injection,

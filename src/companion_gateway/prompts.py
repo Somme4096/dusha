@@ -9,12 +9,12 @@ replaces the packaged slot entirely, with no appended hidden defaults.
 from __future__ import annotations
 
 import copy
-import hashlib
-import json
 from pathlib import Path
 from typing import Any
 
 from .resources import loads_strict, read_packaged
+from .serialization import canonical as _serialization_canonical
+from .serialization import fingerprint as _serialization_fingerprint
 
 SCHEMA_VERSION = 1
 
@@ -143,12 +143,13 @@ def resolve_prompts(prompts_config: Any) -> dict:
 
 
 def canonical(snapshot: dict[str, Any]) -> str:
-    return json.dumps(snapshot, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    """Canonical sort-keyed JSON of the effective prompts snapshot."""
+    return _serialization_canonical(snapshot)
 
 
 def fingerprint(snapshot: dict[str, Any]) -> str:
     """Stable canonical fingerprint of the effective prompts snapshot."""
-    return "sha256:" + hashlib.sha256(canonical(snapshot).encode("utf-8")).hexdigest()
+    return _serialization_fingerprint(snapshot)
 
 
 def default_fingerprint() -> str:
