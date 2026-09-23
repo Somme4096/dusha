@@ -2,7 +2,9 @@
 
 Phase 1 moves every emotional definition, default, table value, and tuning knob out of Python and into a packaged `emotions.json`, and moves non-emotional runtime defaults into a packaged `defaults.json`. Runtime configuration becomes JSON (`config.json`). Legacy `config.yaml` still loads with a deprecation warning.
 
-This document covers the new layout, the resolution order, path rules, the migration command, and validation. It does not cover the decision module design (see `docs/DECISION_MODULE_DESIGN.md`).
+This document covers the new layout, the resolution order, path rules, the migration command, and validation. It does not cover the decision module design (see `docs/DECISION_MODULE_DESIGN.md`). For the full per-section configuration reference see `docs/CONFIGURATION.md`; for endpoints see `docs/API.md`; for the quick start see `README.md`.
+
+`config.example.json` is the current example. `config.example.yaml` remains as the legacy example for the migration path only.
 
 ## Files
 
@@ -28,7 +30,7 @@ When both `config.json` and `config.yaml` exist, `config.json` wins. They are no
 
 ## Emotional value precedence
 
-Effective emotional values resolve once, in this order:
+Effective emotional values resolve in this order at each engine assembly:
 
 1. Packaged `emotions.json` defaults.
 2. A custom `emotions.json` referenced by `emotions.path`, if configured (version-pinned when `expected_version` is set).

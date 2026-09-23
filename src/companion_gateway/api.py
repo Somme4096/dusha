@@ -15,6 +15,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from . import schema as _schema
 from .affect import AffectClassificationConflict
 from .config import AppConfig, load_config
 from .context import ContextBudgetError
@@ -25,6 +26,18 @@ from .service import CompanionService
 from .timeutil import parse_time
 
 logger = logging.getLogger("companion_gateway")
+
+# Documentation-only OpenAPI response entries for the error shapes the state
+# endpoints raise. These never run response validation.
+_ERROR_DOCS = {
+    401: {
+        "model": _schema.ErrorDetail,
+        "description": "Companion token missing or invalid (when api_token_env is set)",
+    },
+    404: {"model": _schema.ErrorDetail, "description": "Resource not found"},
+    409: {"model": _schema.ErrorDetail, "description": "Conflicting state change"},
+    422: {"model": _schema.ErrorDetail, "description": "Malformed request or unsupported value"},
+}
 
 
 class GatewayInput(BaseModel):
@@ -156,7 +169,23 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                     await task
             service.close()
 
-    app = FastAPI(title="Companion State Gateway", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(
+        title="Companion State Gateway",
+        version="0.1.0",
+        description=(
+            "Harness-neutral state gateway with durable raw memory, affect, and "
+            "proactive events. The provider-neutral context endpoint returns the "
+            "injection string plus structured metadata; the optional OpenAI-compatible "
+            "proxy forwards chat completions. State endpoints are protected by the "
+            "companion token only when `api_token_env` is configured."
+        ),
+        lifespan=lifespan,
+        openapi_tags=[
+            {"name": "health", "description": "Service health and readiness."},
+            {"name": "state", "description": "Memory, affect, evergreen, context, proactive state."},
+            {"name": "proxy", "description": "Optional OpenAI-compatible chat proxy."},
+        ],
+    )
     app.state.config = cfg
     app.state.service = service
     app.state.proactive = proactive
@@ -167,7 +196,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             if not expected or x_companion_token != expected:
                 raise HTTPException(status_code=401, detail="invalid companion token")
 
-    @app.get("/health")
+    @app.get("/health", tags=["health"], response_model=_schema.HealthResponse)
     async def health() -> dict[str, Any]:
         return {
             "status": "ok",
@@ -176,11 +205,26 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             "memory_index": service.semantic.status(),
         }
 
-    @app.get("/state/v1/memory/index", dependencies=[Depends(authorized)])
+    @app.get(
+        "/state/v1/memory/index",
+        tags=["state"],
+        dependencies=[Depends(authorized)],
+        responses={
+            401: _ERROR_DOCS[401],
+            200: {"model": _schema.MemoryIndexStatus, "description": "Disposable semantic index status"},
+        },
+    )
     async def memory_index_status() -> dict[str, Any]:
         return await asyncio.to_thread(service.semantic.status)
 
-    @app.post("/state/v1/messages", dependencies=[Depends(authorized)])
+    @app.post(
+        "/state/v1/messages",
+        tags=["state"],
+        response_model=_schema.IngestResponse,
+        summary="Ingest one message",
+        dependencies=[Depends(authorized)],
+        responses={401: _ERROR_DOCS[401], 422: _ERROR_DOCS[422]},
+    )
     async def ingest_message(body: MessageInput) -> dict[str, Any]:
         try:
             return await asyncio.to_thread(
@@ -197,14 +241,30 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
 
-    @app.get("/state/v1/messages/{message_id}", dependencies=[Depends(authorized)])
+    @app.get(
+        "/state/v1/messages/{message_id}",
+        tags=["state"],
+        dependencies=[Depends(authorized)],
+        responses={
+            401: _ERROR_DOCS[401],
+            404: _ERROR_DOCS[404],
+            200: {"model": _schema.MessageResponse, "description": "Stored message"},
+        },
+    )
     async def get_message(message_id: int) -> dict[str, Any]:
         message = await asyncio.to_thread(service.memory.get, message_id)
         if not message:
             raise HTTPException(status_code=404, detail="message not found")
         return message
 
-    @app.post("/state/v1/memory/search", dependencies=[Depends(authorized)])
+    @app.post(
+        "/state/v1/memory/search",
+        tags=["state"],
+        response_model=_schema.SearchResponse,
+        summary="Search archived memory",
+        dependencies=[Depends(authorized)],
+        responses={401: _ERROR_DOCS[401]},
+    )
     async def search_memory(body: SearchInput) -> dict[str, Any]:
         results = await asyncio.to_thread(
             service.memory.search,
@@ -214,7 +274,13 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         )
         return {"results": results}
 
-    @app.get("/state/v1/memory/{message_id}", dependencies=[Depends(authorized)])
+    @app.get(
+        "/state/v1/memory/{message_id}",
+        tags=["state"],
+        response_model=_schema.MemoryContextResponse,
+        dependencies=[Depends(authorized)],
+        responses={401: _ERROR_DOCS[401], 404: _ERROR_DOCS[404]},
+    )
     async def memory_context(
         message_id: int,
         context_messages: int = Query(1, ge=0, le=10),
@@ -228,7 +294,14 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="memory record not found")
         return {"messages": messages}
 
-    @app.post("/state/v1/evergreen/facts", dependencies=[Depends(authorized)])
+    @app.post(
+        "/state/v1/evergreen/facts",
+        tags=["state"],
+        response_model=_schema.FactEnvelope,
+        summary="Remember an evergreen fact",
+        dependencies=[Depends(authorized)],
+        responses={401: _ERROR_DOCS[401], 409: _ERROR_DOCS[409], 422: _ERROR_DOCS[422]},
+    )
     async def remember_fact(body: RememberFactInput) -> dict[str, Any]:
         try:
             fact = await asyncio.to_thread(
@@ -248,7 +321,13 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             raise HTTPException(status_code=422, detail=str(error)) from error
         return {"fact": fact}
 
-    @app.get("/state/v1/evergreen/facts", dependencies=[Depends(authorized)])
+    @app.get(
+        "/state/v1/evergreen/facts",
+        tags=["state"],
+        response_model=_schema.FactsEnvelope,
+        dependencies=[Depends(authorized)],
+        responses={401: _ERROR_DOCS[401]},
+    )
     async def list_facts(
         include_inactive: bool = False,
         due_only: bool = False,
@@ -262,7 +341,13 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         )
         return {"facts": facts}
 
-    @app.get("/state/v1/evergreen/facts/{fact_id}/history", dependencies=[Depends(authorized)])
+    @app.get(
+        "/state/v1/evergreen/facts/{fact_id}/history",
+        tags=["state"],
+        response_model=_schema.RevisionsEnvelope,
+        dependencies=[Depends(authorized)],
+        responses={401: _ERROR_DOCS[401], 404: _ERROR_DOCS[404]},
+    )
     async def fact_history(fact_id: str) -> dict[str, Any]:
         try:
             revisions = await asyncio.to_thread(
@@ -275,7 +360,16 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
 
     @app.post(
         "/state/v1/evergreen/facts/{fact_id}/revisions",
+        tags=["state"],
+        response_model=_schema.FactEnvelope,
+        summary="Revise an evergreen fact",
         dependencies=[Depends(authorized)],
+        responses={
+            401: _ERROR_DOCS[401],
+            404: _ERROR_DOCS[404],
+            409: _ERROR_DOCS[409],
+            422: _ERROR_DOCS[422],
+        },
     )
     async def revise_fact(fact_id: str, body: ReviseFactInput) -> dict[str, Any]:
         kwargs: dict[str, Any] = {
@@ -301,7 +395,18 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             raise HTTPException(status_code=422, detail=str(error)) from error
         return {"fact": fact}
 
-    @app.post("/state/v1/evergreen/facts/{fact_id}/forget", dependencies=[Depends(authorized)])
+    @app.post(
+        "/state/v1/evergreen/facts/{fact_id}/forget",
+        tags=["state"],
+        response_model=_schema.FactEnvelope,
+        dependencies=[Depends(authorized)],
+        responses={
+            401: _ERROR_DOCS[401],
+            404: _ERROR_DOCS[404],
+            409: _ERROR_DOCS[409],
+            422: _ERROR_DOCS[422],
+        },
+    )
     async def forget_fact(fact_id: str, body: ForgetFactInput) -> dict[str, Any]:
         try:
             fact = await asyncio.to_thread(
@@ -320,7 +425,14 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             raise HTTPException(status_code=422, detail=str(error)) from error
         return {"fact": fact}
 
-    @app.post("/state/v1/context", dependencies=[Depends(authorized)])
+    @app.post(
+        "/state/v1/context",
+        tags=["state"],
+        response_model=_schema.ContextResponse,
+        summary="Build provider-neutral context",
+        dependencies=[Depends(authorized)],
+        responses={401: _ERROR_DOCS[401], 422: _ERROR_DOCS[422]},
+    )
     async def context(body: ContextInput) -> dict[str, Any]:
         try:
             return await asyncio.to_thread(
@@ -334,13 +446,29 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         except ContextBudgetError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
 
-    @app.get("/state/v1/affect", dependencies=[Depends(authorized)])
+    @app.get(
+        "/state/v1/affect",
+        tags=["state"],
+        response_model=_schema.AffectStatusResponse,
+        summary="Read affect state (advances decay)",
+        dependencies=[Depends(authorized)],
+        responses={401: _ERROR_DOCS[401]},
+    )
     async def affect_status() -> dict[str, Any]:
         return await asyncio.to_thread(service.affect.status)
 
     @app.post(
         "/state/v1/messages/{message_id}/affect",
+        tags=["state"],
+        response_model=_schema.EventEnvelope,
+        summary="Record an agent affect label for a message",
         dependencies=[Depends(authorized)],
+        responses={
+            401: _ERROR_DOCS[401],
+            404: _ERROR_DOCS[404],
+            409: _ERROR_DOCS[409],
+            422: _ERROR_DOCS[422],
+        },
     )
     async def record_message_affect(message_id: int, body: RecordAffectInput) -> dict[str, Any]:
         try:
@@ -357,7 +485,14 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             raise HTTPException(status_code=422, detail=str(error)) from error
         return {"event": event}
 
-    @app.post("/state/v1/affect/events", dependencies=[Depends(authorized)])
+    @app.post(
+        "/state/v1/affect/events",
+        tags=["state"],
+        response_model=_schema.AffectEventResult,
+        summary="Apply one affect event directly",
+        dependencies=[Depends(authorized)],
+        responses={401: _ERROR_DOCS[401], 422: _ERROR_DOCS[422]},
+    )
     async def affect_event(body: AffectEventInput) -> dict[str, Any]:
         try:
             result = await asyncio.to_thread(
@@ -371,12 +506,25 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             raise HTTPException(status_code=422, detail=str(error)) from error
         return {"label": result.label, "event_id": result.event_id, "state": result.state}
 
-    @app.post("/state/v1/proactive/evaluate", dependencies=[Depends(authorized)])
+    @app.post(
+        "/state/v1/proactive/evaluate",
+        tags=["state"],
+        response_model=_schema.ProactiveEvaluateResponse,
+        dependencies=[Depends(authorized)],
+        responses={401: _ERROR_DOCS[401]},
+    )
     async def evaluate_proactive() -> dict[str, Any]:
         event = await asyncio.to_thread(proactive.evaluate)
         return {"event": event}
 
-    @app.get("/state/v1/proactive/events", dependencies=[Depends(authorized)])
+    @app.get(
+        "/state/v1/proactive/events",
+        tags=["state"],
+        response_model=_schema.ProactivePollResponse,
+        summary="Poll and lease proactive events",
+        dependencies=[Depends(authorized)],
+        responses={401: _ERROR_DOCS[401]},
+    )
     async def poll_proactive(
         consumer: str = Query(..., min_length=1),
         harness: str = "",
@@ -385,7 +533,13 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         events = await asyncio.to_thread(proactive.poll, consumer, limit, None, harness)
         return {"events": events}
 
-    @app.post("/state/v1/proactive/events/{event_id}/ack", dependencies=[Depends(authorized)])
+    @app.post(
+        "/state/v1/proactive/events/{event_id}/ack",
+        tags=["state"],
+        response_model=_schema.AckResponse,
+        dependencies=[Depends(authorized)],
+        responses={401: _ERROR_DOCS[401], 404: _ERROR_DOCS[404], 409: _ERROR_DOCS[409]},
+    )
     async def acknowledge_proactive(event_id: str, body: AckInput) -> dict[str, Any]:
         try:
             return await asyncio.to_thread(
@@ -402,11 +556,11 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         except ValueError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
 
-    @app.get("/v1/models")
+    @app.get("/v1/models", tags=["proxy"])
     async def models(request: Request) -> Response:
         return await _proxy_simple(request, cfg, "/models")
 
-    @app.post("/v1/chat/completions")
+    @app.post("/v1/chat/completions", tags=["proxy"])
     async def chat_completions(request: Request) -> Response:
         if not cfg.upstream.base_url:
             raise HTTPException(status_code=503, detail="upstream.base_url is not configured")
