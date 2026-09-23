@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,18 @@ from companion_gateway.config import (
     ProactiveConfig,
     UpstreamConfig,
 )
+from companion_gateway.service import CompanionService
+
+
+@pytest.fixture
+def write_json():
+    """Serialize ``value`` as JSON into ``path`` and return the path."""
+
+    def write(path, value):
+        Path(path).write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
+        return Path(path)
+
+    return write
 
 
 @pytest.fixture
@@ -38,3 +51,36 @@ def config(tmp_path: Path) -> AppConfig:
             failed_retry_minutes=15,
         ),
     )
+
+
+@pytest.fixture
+def svc(tmp_path: Path, config: AppConfig):
+    """Build a CompanionService; all created instances are closed at teardown.
+
+    No args -> the shared ``config`` fixture. ``cfg=`` -> an explicit AppConfig.
+    Section kwargs (memory/identity_prompt/prompts/affect/proactive) build an
+    isolated AppConfig on a fresh data dir.
+    """
+
+    services: list[CompanionService] = []
+    counter = 0
+
+    def factory(*, cfg: AppConfig | None = None, **sections) -> CompanionService:
+        nonlocal counter
+        counter += 1
+        if cfg is not None:
+            app = cfg
+        else:
+            sections = {k: v for k, v in sections.items() if v is not None}
+            app = (
+                AppConfig(data_dir=tmp_path / f"d{counter}", timezone="Asia/Taipei", **sections)
+                if sections
+                else config
+            )
+        service = CompanionService(app)
+        services.append(service)
+        return service
+
+    yield factory
+    for service in services:
+        service.close()
