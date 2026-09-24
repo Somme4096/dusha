@@ -396,7 +396,8 @@ async def test_api_context_budget_and_validation_errors(config, monkeypatch, tmp
 
 
 DOC_FILES = [
-    Path(__file__).parents[1] / "readme.md",
+    Path(__file__).parents[1] / "README.md",
+    Path(__file__).parents[1] / "docs" / "configuration.md",
     Path(__file__).parents[1] / "docs" / "guide.md",
     Path(__file__).parents[1] / "docs" / "api.md",
 ]
@@ -432,14 +433,14 @@ async def test_openapi_paths_are_documented(config, monkeypatch):
             assert path in paths, f"missing documented path {path}"
 
 
-def test_guide_export_commands_roundtrip(tmp_path):
+def test_configuration_export_commands_roundtrip(tmp_path):
     from companion_gateway import emotions
     from companion_gateway import prompts as prompts_module
     from companion_gateway.config import AppConfig, PromptsConfig
     from companion_gateway.service import CompanionService
 
-    guide = (Path(__file__).parents[1] / "docs" / "guide.md").read_text(encoding="utf-8")
-    commands = [cmd for block in re.findall(r"```sh\n(.*?)```", guide, re.DOTALL)
+    configuration = (Path(__file__).parents[1] / "docs" / "configuration.md").read_text(encoding="utf-8")
+    commands = [cmd for block in re.findall(r"```sh\n(.*?)```", configuration, re.DOTALL)
                 for cmd in re.findall(r'python -c "(.*?)"', block, re.DOTALL)]
     prompts_cmd = next(c for c in commands if "companion_gateway.prompts" in c)
     emotions_cmd = next(c for c in commands if "companion_gateway.emotions" in c)

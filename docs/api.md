@@ -259,5 +259,6 @@ The proxy forwards OpenAI chat shapes. It passes one authorization header plus c
 
 ## Related documentation
 
-- [guide.md](guide.md) covers configuration, the CLI, retrieval, backup, and service setup.
-- [readme.md](../readme.md) gives the project overview and quickstart.
+- [configuration.md](configuration.md) covers the config file, identity and emotion files, retrieval, and proactive scheduling.
+- [guide.md](guide.md) covers service setup, auth and network, backup, and troubleshooting.
+- [README.md](../README.md) gives the project overview and quickstart.
