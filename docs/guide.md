@@ -88,7 +88,7 @@ The proxy uses a server-owned key when `upstream.api_key_env` is nonempty. It se
 
 ## Backup, restore, and troubleshoot
 
-Back up every user-authored file: the config file, the identity Markdown, custom prompts and emotions files, and the database.
+Back up every user-authored file: the config file, the identity Markdown, custom prompts and emotions files, decision plugin files under the mods directory, and the database.
 
 Create a consistent live backup:
 
@@ -104,7 +104,7 @@ Restore:
 2. Place the backup database file in `data_dir`.
 3. Start the service.
 
-The service upgrades a schema version 2 database to version 3 in place and rejects older schemas. Keep a current backup before any upgrade.
+The service upgrades a schema version 2 or 3 database to version 4 in place and rejects older schemas. The upgrade archives the retired label tables as `legacy_affect_events` and `legacy_affect_classifications` and preserves affect state. Keep a current backup before any upgrade.
 
 Common problems:
 

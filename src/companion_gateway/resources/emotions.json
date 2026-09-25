@@ -1,6 +1,6 @@
 {
-  "schema_version": 1,
-  "emotion_version": "0.1.0",
+  "schema_version": 2,
+  "emotion_version": "0.2.0",
   "description": "Emotional definitions and tuning for the companion state gateway. All emotional data is owned here; algorithms live in code.",
   "value_range": {
     "min": 0.0,
@@ -24,107 +24,7 @@
     "dejection": {"neutral": 0.15, "floor": 0.0, "tau": 8},
     "irritability": {"neutral": 0.15, "floor": 0.0, "tau": 3}
   },
-  "label_deltas": {
-    "affectionate": {
-      "intimacy": 0.2,
-      "contentment": 0.15,
-      "anxiety": -0.18,
-      "lust": 0.12,
-      "longing": -0.1,
-      "fear": -0.08
-    },
-    "playful": {
-      "play": 0.2,
-      "elation": 0.18,
-      "contentment": 0.12,
-      "seeking": 0.1,
-      "irritability": -0.1,
-      "lust": 0.1
-    },
-    "vulnerable": {"intimacy": 0.25, "protectiveness": 0.2, "anxiety": 0.12, "dejection": 0.08},
-    "reassuring": {
-      "anxiety": -0.25,
-      "jealousy": -0.2,
-      "contentment": 0.15,
-      "intimacy": 0.15,
-      "fear": -0.15
-    },
-    "cold": {"anxiety": 0.15, "dejection": 0.12, "longing": 0.1, "intimacy": -0.1},
-    "conflict": {
-      "anxiety": 0.2,
-      "irritability": 0.15,
-      "dejection": 0.15,
-      "possessiveness": 0.18,
-      "intimacy": -0.15,
-      "contentment": -0.15
-    },
-    "distant": {"anxiety": 0.12, "dejection": 0.1, "longing": 0.12, "intimacy": -0.08},
-    "struggling": {
-      "protectiveness": 0.3,
-      "anxiety": 0.12,
-      "dejection": 0.12,
-      "contentment": -0.08,
-      "fatigue": 0.12
-    },
-    "intimate_reference": {"lust": 0.18, "intimacy": 0.1},
-    "intimate_event": {"lust": 0.25, "intimacy": 0.18},
-    "neutral": {"anxiety": -0.05, "longing": -0.04, "contentment": 0.03},
-    "hostile": {
-      "dejection": 0.22,
-      "anxiety": 0.18,
-      "irritability": 0.12,
-      "intimacy": -0.22,
-      "contentment": -0.18
-    },
-    "fear_separation": {
-      "fear": 0.2,
-      "longing": 0.15,
-      "possessiveness": 0.12,
-      "anxiety": 0.15,
-      "protectiveness": 0.1,
-      "dejection": 0.1,
-      "irritability": 0.08
-    },
-    "fear_death": {
-      "fear": 0.35,
-      "anxiety": 0.3,
-      "irritability": 0.2,
-      "contentment": -0.12,
-      "play": -0.15,
-      "elation": -0.1
-    },
-    "fear_concern": {
-      "fear": 0.28,
-      "longing": 0.12,
-      "possessiveness": 0.15,
-      "anxiety": 0.2,
-      "protectiveness": 0.25,
-      "contentment": -0.1
-    },
-    "fear_general": {"fear": 0.2, "anxiety": 0.1}
-  },
-  "contact_deltas": {"longing": -0.06, "seeking": -0.04},
-  "soothing_deltas": {
-    "dejection": -0.08,
-    "contentment": 0.03,
-    "anxiety": -0.025,
-    "irritability": -0.02
-  },
-  "negative_labels": [
-    "cold",
-    "conflict",
-    "distant",
-    "hostile",
-    "struggling",
-    "fear_separation",
-    "fear_death",
-    "fear_concern",
-    "fear_general"
-  ],
-  "soothing_labels": ["affectionate", "playful", "reassuring", "neutral"],
   "negative_dimensions": ["dejection", "irritability", "anxiety", "fear"],
-  "recent_labels_limit": 8,
-  "negative_follow_up_minutes": 180,
   "silence": {
     "caps": {"longing": 0.35, "anxiety": 0.18, "seeking": 0.12, "dejection": 0.08},
     "dejection_gate_hours": 6,
@@ -137,7 +37,6 @@
     "max": 2.5,
     "factor": 4.0
   },
-  "follow_up_expiration_hours": 24,
   "prompt": {
     "top_n": 5,
     "deviation_threshold": 0.08,
@@ -145,72 +44,12 @@
     "level_high": 0.7,
     "level_elevated": 0.5
   },
-  "label_patterns": {
-    "fear_death": [
-      "suicide",
-      "kill myself",
-      "might die",
-      "going to die",
-      "life-threatening",
-      "自殺",
-      "死にたい",
-      "死ぬかも",
-      "要死了",
-      "想死"
-    ],
-    "fear_separation": [
-      "leave me",
-      "abandon",
-      "never come back",
-      "goodbye forever",
-      "置いていか",
-      "見捨て",
-      "もう会えない",
-      "不要我",
-      "永远离开"
-    ],
-    "fear_concern": [
-      "are you safe",
-      "be careful",
-      "worried about you",
-      "something happened to you",
-      "無事",
-      "気をつけて",
-      "心配して",
-      "担心你",
-      "小心安全"
-    ],
-    "fear_general": ["afraid", "scared", "terrified", "frightened", "怖い", "恐い", "害怕", "恐惧"],
-    "hostile": ["hate you", "shut up", "worthless", "idiot", "うるさい", "嫌い", "闭嘴", "废物"],
-    "conflict": ["we are fighting", "argument", "you hurt me", "喧嘩", "言い争い", "吵架"],
-    "struggling": [
-      "cannot cope",
-      "can't cope",
-      "exhausted",
-      "overwhelmed",
-      "burned out",
-      "限界",
-      "疲れ果て",
-      "撑不住",
-      "累死了"
-    ],
-    "reassuring": ["it will be okay", "i am here", "you are safe", "大丈夫", "そばにいる", "没事的", "我在"],
-    "affectionate": ["love you", "miss you", "dear", "大好き", "愛して", "想你", "爱你"],
-    "playful": ["just kidding", "teasing", "haha", "lol", "冗談", "哈哈"],
-    "vulnerable": ["i feel fragile", "insecure", "i need you", "不安", "寂しい", "没有安全感"],
-    "cold": ["do not talk to me", "leave me alone", "話したくない", "别烦我"],
-    "distant": ["busy now", "later", "not now", "今忙しい", "待会儿"],
-    "intimate_reference": ["kiss", "hug", "抱きしめ", "キス", "亲吻", "拥抱"]
-  },
   "affect": {
     "mood_follow_hours": 12.0,
     "mood_return_hours": 72.0,
-    "habituation_window_minutes": 15,
-    "habituation_factor": 0.7,
     "silence_longing_per_hour": 0.04,
     "silence_anxiety_per_hour": 0.02,
-    "silence_seeking_per_hour": 0.02,
-    "classification_fallback_seconds": 120
+    "silence_seeking_per_hour": 0.02
   },
   "proactive": {
     "longing_threshold": 0.48,

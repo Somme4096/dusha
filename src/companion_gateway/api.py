@@ -16,7 +16,6 @@ from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from . import schema as _schema
-from .affect import AffectClassificationConflict
 from .config import AppConfig, load_config
 from .context import ContextBudgetError
 from .evergreen import EvergreenConflict
@@ -24,9 +23,9 @@ from .memory import text_from_content
 from .proactive import ProactiveEngine
 from .serialization import canonical
 from .service import CompanionService
-from .timeutil import parse_time
 
 logger = logging.getLogger("companion_gateway")
+
 
 # Documentation-only OpenAPI response entries for the error shapes the state
 # endpoints raise. These never run response validation.
@@ -75,7 +74,6 @@ class MessageInput(GatewayInput):
     route: str = ""
     external_id: str = ""
     occurred_at: str | None = None
-    affect_label: str = ""
 
 
 class ContextInput(GatewayInput):
@@ -118,17 +116,6 @@ class ForgetFactInput(GatewayInput):
     source_message_id: int | None = None
 
 
-class AffectEventInput(GatewayInput):
-    label: str
-    note: str = ""
-    occurred_at: str | None = None
-    follow_up_minutes: int | None = None
-
-
-class RecordAffectInput(GatewayInput):
-    label: str
-
-
 class AckInput(GatewayInput):
     consumer: str
     outcome: str
@@ -140,7 +127,6 @@ class AckInput(GatewayInput):
 async def _scheduler(proactive: ProactiveEngine, interval: int) -> None:
     while True:
         try:
-            await asyncio.to_thread(proactive.service.affect.finalize_due)
             await asyncio.to_thread(proactive.evaluate)
         except asyncio.CancelledError:
             raise
@@ -259,7 +245,6 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                 route=body.route,
                 external_id=body.external_id,
                 occurred_at=body.occurred_at,
-                affect_label=body.affect_label,
             )
         except ValueError as error:
             _raise_http(error)
@@ -469,55 +454,6 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     )
     async def affect_status() -> dict[str, Any]:
         return await asyncio.to_thread(service.affect.status)
-
-    @app.post(
-        "/state/v1/messages/{message_id}/affect",
-        tags=["state"],
-        response_model=_schema.EventEnvelope,
-        summary="Record an agent affect label for a message",
-        dependencies=[Depends(authorized)],
-        responses={
-            401: _ERROR_DOCS[401],
-            404: _ERROR_DOCS[404],
-            409: _ERROR_DOCS[409],
-            422: _ERROR_DOCS[422],
-        },
-    )
-    async def record_message_affect(message_id: int, body: RecordAffectInput) -> dict[str, Any]:
-        try:
-            event = await asyncio.to_thread(
-                service.affect.record_agent_label,
-                message_id,
-                body.label,
-            )
-        except (KeyError, AffectClassificationConflict, ValueError) as error:
-            _raise_http(
-                error,
-                not_found="affect classification not found",
-                conflict=AffectClassificationConflict,
-            )
-        return {"event": event}
-
-    @app.post(
-        "/state/v1/affect/events",
-        tags=["state"],
-        response_model=_schema.AffectEventResult,
-        summary="Apply one affect event directly",
-        dependencies=[Depends(authorized)],
-        responses={401: _ERROR_DOCS[401], 422: _ERROR_DOCS[422]},
-    )
-    async def affect_event(body: AffectEventInput) -> dict[str, Any]:
-        try:
-            result = await asyncio.to_thread(
-                service.affect.apply_label,
-                body.label,
-                now=parse_time(body.occurred_at),
-                note=body.note,
-                follow_up_minutes=body.follow_up_minutes,
-            )
-        except ValueError as error:
-            _raise_http(error)
-        return {"label": result.label, "event_id": result.event_id, "state": result.state}
 
     @app.post(
         "/state/v1/proactive/evaluate",

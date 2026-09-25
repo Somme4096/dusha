@@ -17,7 +17,6 @@ from astrbot.core.config.astrbot_config import AstrBotConfig
 from .routing import accepts_platform, platform_id_from_umo
 
 GATEWAY_TOOL_NAMES = (
-    "record_affect_event",
     "remember_evergreen_fact",
     "revise_evergreen_fact",
     "forget_evergreen_fact",
@@ -43,7 +42,7 @@ class CompanionGatewayPlugin(star.Star):
 
     async def initialize(self) -> None:
         if not self.platform_id:
-            logger.warning("[companion-gateway] platform_id is empty; gateway routing is disabled")
+            logger.warning("[companion-gateway] platform_id is empty. Gateway routing is disabled")
             return
         if self.enable_proactive and self.poll_task is None:
             self.poll_task = asyncio.create_task(self._poll_loop(), name="companion-gateway-poll")
@@ -202,40 +201,6 @@ class CompanionGatewayPlugin(star.Star):
             self._inject_context(req, context["injection"])
         except Exception as error:
             logger.warning(f"[companion-gateway] Context unavailable: {error}")
-
-    @filter.llm_tool(name="record_affect_event")
-    async def record_affect_event(
-        self,
-        event: AstrMessageEvent,
-        label: str,
-    ) -> str:
-        """Record one affect classification for the current user message.
-
-        The gateway accepts one label for the message and applies its configured deterministic
-        state change. A repeated call with the same label returns the existing event.
-
-        Args:
-            label(string): One of affectionate, playful, vulnerable, reassuring,
-                intimate_reference, intimate_event, struggling, cold, distant, conflict,
-                hostile, fear_separation, fear_death, fear_concern, fear_general, or neutral.
-        """
-
-        state: dict[str, Any] = {}
-
-        def prepare() -> str | None:
-            source_message_id = self._source_message_id(event)
-            if source_message_id is None:
-                return self._json({"ok": False, "error": "current source message is unavailable"})
-            state["source_message_id"] = source_message_id
-            return None
-
-        async def operation() -> dict[str, Any]:
-            return await self._post(
-                f"/state/v1/messages/{state['source_message_id']}/affect",
-                {"label": label},
-            )
-
-        return await self._run_tool_call(event, "affect event save failed", operation, prepare)
 
     @filter.llm_tool(name="remember_evergreen_fact")
     async def remember_evergreen_fact(

@@ -115,7 +115,6 @@ def _generic(request):
 
 
 TOOLS = [
-    (lambda p, e: p.record_affect_event(e, "affectionate"), "affect event save failed", _generic, OK),
     (lambda p, e: p.remember_evergreen_fact(e, "k", "t"), "evergreen fact save failed", _generic, OK),
     (lambda p, e: p.revise_evergreen_fact(e, "1", 1, "t"), "evergreen fact revision failed", _generic, OK),
     (lambda p, e: p.forget_evergreen_fact(e, "1", 1, "r"), "evergreen fact forget failed", _generic, OK),
@@ -150,8 +149,6 @@ async def test_error_maps_to_fallback_and_logs(call, fallback, handler, expected
 
 
 VALIDATION = [
-    (lambda p, e: p.record_affect_event(e, "affectionate"),
-     '{"ok":false,"error":"current source message is unavailable"}'),
     (lambda p, e: p.search_conversation_memory(e, query="   "), '{"ok":false,"error":"query is required"}'),
     (lambda p, e: p.search_conversation_memory(e, query=123), AttributeError),
     (lambda p, e: p.remember_evergreen_fact(e, key="k", text="t", review_after=123), AttributeError),
@@ -159,7 +156,7 @@ VALIDATION = [
 
 
 @pytest.mark.parametrize("call, expected", VALIDATION,
-                         ids=["affect source", "blank query", "search query", "review_after"])
+                         ids=["blank query", "search query", "review_after"])
 async def test_validation_ordering(call, expected, plugin_factory):
     plugin = await plugin_factory()
     if isinstance(expected, str):
@@ -225,9 +222,9 @@ async def test_get_record_and_review_clamp_params(plugin_factory):
                       {"due_only": "false", "include_inactive": "true", "limit": "100"}]
 
 
-def test_tool_decorators_register_the_seven_gateway_tools():
+def test_tool_decorators_register_the_six_gateway_tools():
     assert list(filter_registry.tools) == list(_load_main().GATEWAY_TOOL_NAMES) == [
-        "record_affect_event", "remember_evergreen_fact", "revise_evergreen_fact",
+        "remember_evergreen_fact", "revise_evergreen_fact",
         "forget_evergreen_fact", "review_evergreen_facts", "search_conversation_memory",
         "get_conversation_record",
     ]
@@ -249,14 +246,10 @@ def test_routing_helpers():
     assert routing.platform_id_from_umo("discord-sophia:FriendMessage:user-42") == "discord-sophia"
 
 
-def test_affect_tool_signature_and_docstring_labels():
+def test_the_affect_tool_is_removed():
     import ast
 
-    from companion_gateway.affect import LABEL_DELTAS
-
     tree = ast.parse((_INTEGRATION_DIR / "main.py").read_text())
-    fn = next(n for n in ast.walk(tree)
-              if isinstance(n, ast.AsyncFunctionDef) and n.name == "record_affect_event")
-    assert [a.arg for a in fn.args.args] == ["self", "event", "label"]
-    assert fn.args.defaults == []
-    assert all(label in (ast.get_docstring(fn) or "") for label in LABEL_DELTAS)
+    names = {node.name for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef)}
+    assert "record_affect_event" not in names
+    assert "record_affect_event" not in _load_main().GATEWAY_TOOL_NAMES

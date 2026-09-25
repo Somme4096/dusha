@@ -18,6 +18,7 @@ from companion_gateway.affect import AffectEngine
 from companion_gateway.config import (
     AffectConfig,
     AppConfig,
+    DecisionConfig,
     IdentityPromptConfig,
     MemoryConfig,
     ProactiveConfig,
@@ -37,7 +38,6 @@ from companion_gateway.emotions import (
     resolve_emotions,
 )
 from companion_gateway.proactive import ProactiveEngine
-from companion_gateway.timeutil import isoformat
 
 NOW = datetime(2026, 9, 6, 3, 0, tzinfo=UTC)
 IDENTITY_SENTINEL = "# Identity SENTINEL\nRaw user-authored identity text."
@@ -91,6 +91,15 @@ def _ingest(service, *, harness="astrbot", conversation_id="one", role="user", c
     )
 
 
+def _decide(service, message_id, emotion, *, now=NOW):
+    """Apply one inline decision (``None`` emotion means contact bookkeeping only)."""
+
+    decider = None if emotion is None else (lambda **_: emotion)
+    return service.affect.record_user_message(
+        message="x", source_message_id=message_id, decider=decider, instruction="", now=now
+    )
+
+
 def _low_longing(base):
     base.update(proactive={"longing_threshold": 0.2, "fear_threshold": 0.9})
 
@@ -121,6 +130,8 @@ def _run_cli(monkeypatch, tmp_path, write_json, argv):
         ("json", '{"port": "abc"}', "port must be int"),
         ("json", '{"proactive": {"enabled": "yes"}}', "enabled must be bool"),
         ("json", '{"memory": {"recent_messages": true}}', "recent_messages must be int"),
+        ("json", '{"decision": {"increment": 2}}', "decision.increment"),
+        ("json", '{"decision": {"bogus": 1}}', r"unknown field\(s\) under decision"),
         ("yaml", "host: a\nhost: b\n", "duplicate key"),
         ("yaml", "bogus: 1\n", "unknown top-level field"),
     ],
@@ -137,7 +148,7 @@ def test_config_rejects_invalid_input(tmp_path, fmt, body, pattern):
     [
         ("json", [
             ("timezone", "Asia/Taipei"),
-            ("affect.classification_fallback_seconds", 120),
+            ("decision.increment", 0.1),
             ("proactive.longing_threshold", 0.48),
             ("proactive.fear_threshold", 0.55),
         ]),
@@ -193,6 +204,61 @@ def test_config_precedence_env_and_missing(tmp_path, monkeypatch):
         load_config()
     with pytest.raises(FileNotFoundError, match="configuration file not found"):
         load_config(tmp_path / "missing.json")
+
+
+def test_default_config_dir_precedence(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    default_dir = home / ".config" / "companion-gateway"
+    default_dir.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("COMPANION_GATEWAY_CONFIG", raising=False)
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    (default_dir / "config.json").write_text('{"host": "from-default-dir"}', encoding="utf-8")
+    (cwd / "config.json").write_text('{"host": "from-cwd"}', encoding="utf-8")
+    # Default config dir wins over the legacy current-directory fallback.
+    assert load_config().host == "from-default-dir"
+    (default_dir / "config.json").unlink()
+    assert load_config().host == "from-cwd"
+    (cwd / "config.json").unlink()
+    assert load_config().host == "127.0.0.1"
+
+    from companion_gateway.decision import default_config_dir, resolve_mods_dir
+
+    assert default_config_dir() == default_dir
+    monkeypatch.delenv("COMPANION_GATEWAY_MODS_DIR", raising=False)
+    assert resolve_mods_dir(AppConfig()) == default_dir / "mods"
+
+
+def test_decision_mods_dir_and_increment(tmp_path, write_json, monkeypatch):
+    monkeypatch.delenv("COMPANION_GATEWAY_MODS_DIR", raising=False)
+    conf_dir = tmp_path / "conf"
+    conf_dir.mkdir()
+    config = conf_dir / "config.json"
+    write_json(config, {
+        "data_dir": "data",
+        "decision": {"module": "laya", "mods_dir": "mods", "increment": 0.2},
+    })
+    cfg = load_config(config)
+    assert Path(cfg.decision.mods_dir) == (conf_dir / "mods").resolve()
+    assert cfg.decision.increment == 0.2
+    assert cfg.decision.module == "laya"
+
+    write_json(config, {"data_dir": "data", "decision": {"mods_dir": str(tmp_path / "abs-mods")}})
+    cfg = load_config(config)
+    assert Path(cfg.decision.mods_dir) == tmp_path / "abs-mods"
+
+    monkeypatch.setenv("COMPANION_GATEWAY_MODS_DIR", str(tmp_path / "env-mods"))
+    from companion_gateway.decision import resolve_mods_dir
+
+    assert resolve_mods_dir(load_config(config)) == tmp_path / "env-mods"
+
+
+@pytest.mark.parametrize("increment", [0, -0.1, 1.5, True, "fast", float("inf")])
+def test_decision_increment_is_bounded(increment):
+    with pytest.raises(ValueError, match="decision.increment"):
+        DecisionConfig(increment=increment)
 
 
 @pytest.mark.parametrize(
@@ -335,25 +401,10 @@ def test_cli_memory_show_missing_message_exits_1(monkeypatch, tmp_path, write_js
     assert "message not found" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("label,error", [("gladness", None), ("bogus-label", "unsupported affect label")])
-def test_cli_affect_event_custom_label(monkeypatch, tmp_path, write_json, capsys, label, error):
-    from companion_gateway import cli
-
-    base = emotions.default_emotions()
-    base["emotion_version"] = "cli-label"
-    base["label_deltas"]["gladness"] = {"contentment": 0.1}
-    base["label_patterns"]["gladness"] = ["wonderful"]
-    path = write_json(tmp_path / "emotions.json", base)
-    config = write_json(tmp_path / "config.json", {"data_dir": "data", "emotions": {"path": str(path)}})
-    monkeypatch.setattr(sys, "argv", ["companion-gateway", "--config", str(config), "affect", "event", label])
-    if error:
-        with pytest.raises(SystemExit) as exc_info:
-            cli.main()
-        assert exc_info.value.code == 2
-        assert error in capsys.readouterr().err
-    else:
-        cli.main()
-        assert '"label": "gladness"' in capsys.readouterr().out
+def test_cli_affect_show(monkeypatch, tmp_path, write_json, capsys):
+    _run_cli(monkeypatch, tmp_path, write_json, ["affect", "show"])
+    out = capsys.readouterr().out
+    assert '"base"' in out and '"mood"' in out
 
 
 def test_custom_emotions_file_load_and_resolve(tmp_path, svc, write_json):
@@ -383,10 +434,10 @@ def test_custom_emotions_file_load_and_resolve(tmp_path, svc, write_json):
 
 def test_emotions_defaults_and_resolve_proactive(tmp_path):
     snapshot = emotions.default_emotions()
-    assert {k: snapshot[k] for k in ("impact_scale", "mood_follow_gain", "follow_up_expiration_hours")} == {
+    assert {k: snapshot[k] for k in ("impact_scale", "mood_follow_gain")} == {
         "impact_scale": 2.0, "mood_follow_gain": {"min": 0.25, "max": 2.5, "factor": 4.0},
-        "follow_up_expiration_hours": 24,
     }
+    assert "label_deltas" not in snapshot and "label_patterns" not in snapshot
     path = _emotions_file(tmp_path, "resolve", version="resolve")
     resolved = resolve_emotions(AffectConfig(emotions_path=str(path)), ProactiveConfig())
     assert resolved["proactive"] == {"longing_threshold": 0.48, "fear_threshold": 0.55}
@@ -400,14 +451,6 @@ def test_programmatic_override_validation_and_merge(tmp_path, svc):
     assert service.affect.spec["fear"]["neutral"] == 0.05
     assert service.affect.initial_state()["base"]["fear"] == 0.05
     assert service.affect.emotions_fingerprint != emotions.default_fingerprint()
-    service = svc(
-        cfg=AppConfig(
-            data_dir=tmp_path, affect=AffectConfig(label_patterns={"hostile": ["hate you", "custom phrase"]})
-        )
-    )
-    assert service.affect.classify("custom phrase") == "hostile"
-    assert service.affect.classify("i hate you") == "hostile"
-    assert service.affect.classify("i am scared") == "fear_general"
     with pytest.raises(ValueError, match="unknown dimension"):
         AffectEngine(
             Database(tmp_path / "state.sqlite3"), AffectConfig(dimensions={"bogus": {"neutral": 0.1}})
@@ -416,42 +459,33 @@ def test_programmatic_override_validation_and_merge(tmp_path, svc):
 
 def test_custom_emotions_affect_knobs_consumed(tmp_path, svc):
     knobs = {
-        "mood_follow_hours": 2.0, "mood_return_hours": 8.0, "habituation_window_minutes": 3,
-        "habituation_factor": 0.5, "silence_longing_per_hour": 0.01, "silence_anxiety_per_hour": 0.005,
-        "silence_seeking_per_hour": 0.005, "classification_fallback_seconds": 40,
+        "mood_follow_hours": 2.0, "mood_return_hours": 8.0, "silence_longing_per_hour": 0.01,
+        "silence_anxiety_per_hour": 0.005, "silence_seeking_per_hour": 0.005,
     }
     service = _custom_service(svc, tmp_path, "knobs", lambda base: base["affect"].update(knobs))
     assert service.affect.emotions["affect"] == knobs
-    user = _ingest(service, content="I am scared.", external_id="k1")
-    pending = service.affect.classification(user["id"])
-    assert pending is not None
-    assert pending["finalize_after"] == isoformat(NOW + timedelta(seconds=40))
 
 
-def test_custom_silence_rate_and_habituation_change_behavior(tmp_path, svc):
+def test_custom_silence_rate_and_mood_gain_change_behavior(tmp_path, svc):
     path = _emotions_file(
-        tmp_path, "silence",
-        lambda base: base["affect"].update({"silence_longing_per_hour": 0.01, "habituation_factor": 0.5}),
+        tmp_path, "silence", lambda base: base["affect"].update({"silence_longing_per_hour": 0.01})
     )
 
     def silence_longing(affect):
         service = svc(affect=affect)
-        service.affect.apply_label("neutral", now=NOW, is_user_message=True)
+        user = _ingest(service, content="hello", external_id="s1")
+        _decide(service, user["id"], None)
         return service.affect.status(now=NOW + timedelta(hours=4))["base"]["longing"]
 
     assert silence_longing(AffectConfig(emotions_path=str(path))) < silence_longing(AffectConfig())
 
-    def second_gain(affect):
-        service = svc(affect=affect)
-        first = service.affect.apply_label("fear_general", now=NOW)
-        second = service.affect.apply_label("fear_general", now=NOW + timedelta(minutes=1))
-        return second.state["base"]["fear"] - first.state["base"]["fear"]
-
-    assert 0 < second_gain(AffectConfig(emotions_path=str(path))) < second_gain(AffectConfig())
-
-    def fear_mood(affect):
-        service = svc(affect=affect)
-        service.affect.apply_label("fear_death", now=NOW, is_user_message=False)
+    def fear_mood(affect, emotions_path=None):
+        service = svc(
+            affect=affect,
+            decision=DecisionConfig(increment=0.7),
+        )
+        user = _ingest(service, content="hello", external_id="s2")
+        _decide(service, user["id"], "fear")
         return service.affect.status(now=NOW + timedelta(hours=24))["mood"]["fear"]
 
     gain_path = _emotions_file(
@@ -460,21 +494,21 @@ def test_custom_silence_rate_and_habituation_change_behavior(tmp_path, svc):
     assert fear_mood(AffectConfig(emotions_path=str(gain_path))) != fear_mood(AffectConfig())
 
 
-def test_custom_impact_scale_and_follow_up_expiry_consumed(tmp_path, svc):
-    service = _custom_service(
-        svc, tmp_path, "impact", lambda base: base.update(impact_scale=1.0, follow_up_expiration_hours=6)
-    )
-    first = service.affect.apply_label("fear_general", now=NOW)
-    assert first.state["base"]["fear"] == 0.2  # 0.2 * impact 1.0 * (1 - 0)
-    _ingest(service, content="I might die in this accident.", external_id="c1")
-    _ingest(service, role="assistant", content="Please stay safe.", external_id="c2",
-            occurred_at=NOW + timedelta(seconds=5))
-    with service.database.connect() as db:
-        row = db.execute(
-            "SELECT follow_up_at, follow_up_expires_at FROM affect_events ORDER BY id DESC"
-        ).fetchone()
-    assert row["follow_up_at"] == isoformat(NOW + timedelta(seconds=5, minutes=180))
-    assert row["follow_up_expires_at"] == isoformat(NOW + timedelta(seconds=5, hours=6))
+def test_custom_impact_scale_consumed(tmp_path, svc):
+    service = _custom_service(svc, tmp_path, "impact", lambda base: base.update(impact_scale=1.0))
+    assert service.affect.emotions["impact_scale"] == 1.0
+    user = _ingest(service, content="hello", external_id="i1")
+    _decide(service, user["id"], None)
+    service.affect.on_proactive_sent(now=NOW + timedelta(hours=1))
+    lowered = service.affect.status(now=NOW + timedelta(hours=1))["base"]["longing"]
+
+    default_service = svc()
+    default_user = _ingest(default_service, content="hello", external_id="i2")
+    _decide(default_service, default_user["id"], None)
+    default_service.affect.on_proactive_sent(now=NOW + timedelta(hours=1))
+    default_lowered = default_service.affect.status(now=NOW + timedelta(hours=1))["base"]["longing"]
+    # A smaller impact scale produces a smaller proactive-send decrease.
+    assert lowered > default_lowered
 
 
 def test_custom_proactive_thresholds_change_evaluate(tmp_path, svc):
@@ -485,29 +519,33 @@ def test_custom_proactive_thresholds_change_evaluate(tmp_path, svc):
     )
 
     def evaluate_reason(emotions_path=None):
-        service = svc(affect=AffectConfig(emotions_path=emotions_path) if emotions_path else AffectConfig())
+        service = svc(
+            affect=AffectConfig(emotions_path=emotions_path) if emotions_path else AffectConfig(),
+            decision=DecisionConfig(increment=1.0),
+        )
         know = datetime(2026, 9, 6, 0, 0, tzinfo=UTC)
-        _ingest(service, conversation_id="discord:FriendMessage:1", route="discord:FriendMessage:1",
-                content="hello", external_id="k1", occurred_at=know, affect_label="neutral")
-        service.affect.apply_label("fear_death", now=know + timedelta(minutes=1), is_user_message=True)
+        stored = _ingest(service, conversation_id="discord:FriendMessage:1",
+                         route="discord:FriendMessage:1", content="hello", external_id="k1",
+                         occurred_at=know)
+        _decide(service, stored["id"], "fear", now=know + timedelta(minutes=1))
         event = ProactiveEngine(service, service.config).evaluate(know + timedelta(hours=4))
         return event["reason"] if event else None
 
-    # Default thresholds: fear 0.5583 >= 0.55 -> fear reason.
+    # Default thresholds: fear stays above 0.55 -> fear reason.
     assert evaluate_reason() == "fear"
-    # Custom thresholds: fear below 0.9, longing 0.4286 >= 0.2 -> silence reason.
+    # Custom thresholds: fear below 0.9, longing above 0.2 -> silence reason.
     assert evaluate_reason(str(path)) == "silence"
-    # Custom high longing threshold blocks the event (fear below its threshold).
+    # Custom high longing threshold blocks the event.
     assert evaluate_reason(str(high_longing)) is None
 
 
 def test_explicit_override_wins_over_custom_file(tmp_path, svc, write_json):
     def mutate(base):
-        base["affect"].update(mood_follow_hours=24.0, classification_fallback_seconds=90)
+        base["affect"].update(mood_follow_hours=24.0, silence_longing_per_hour=0.09)
     # Programmatic explicit override equal to the packaged default.
     service = _custom_service(svc, tmp_path, "override", mutate, mood_follow_hours=12.0)
     assert service.affect.emotions["affect"]["mood_follow_hours"] == 12.0
-    assert service.affect.emotions["affect"]["classification_fallback_seconds"] == 90
+    assert service.affect.emotions["affect"]["silence_longing_per_hour"] == 0.09
     # Config-file explicit override equal to the packaged default.
     path = _emotions_file(tmp_path, "override", mutate)
     config = write_json(tmp_path / "config.json", {
@@ -560,10 +598,10 @@ def test_fingerprints_differ_when_effective_behavior_differs(tmp_path, svc):
 def test_default_emotions_validate_and_fingerprint_is_stable():
     snapshot = default_emotions()
     assert snapshot["schema_version"] == SCHEMA_VERSION
-    assert snapshot["emotion_version"] == "0.1.0"
+    assert snapshot["emotion_version"] == "0.2.0"
     assert len(snapshot["dimensions"]) == 16
-    assert len(snapshot["label_deltas"]) == 16
-    assert len(snapshot["label_patterns"]) == 14
+    assert "label_deltas" not in snapshot
+    assert "label_patterns" not in snapshot
     assert fingerprint(snapshot) == default_fingerprint()
     assert fingerprint(default_emotions()) == fingerprint(snapshot)
     assert canonical(snapshot) == canonical(default_emotions())
@@ -579,22 +617,15 @@ def test_default_emotions_return_fresh_copies():
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [
-        (lambda s: s.update(schema_version=2), "schema_version"),
+        (lambda s: s.update(schema_version=3), "schema_version"),
         (lambda s: s.update(emotion_version=""), "emotion_version"),
-        (lambda s: s["label_deltas"]["neutral"].update(bogus=0.1), "unknown dimension"),
-        (lambda s: s["contact_deltas"].update(bogus=0.1), "unknown dimension"),
         (lambda s: s["dimensions"]["fear"].update(floor=0.5), "floor must be <="),
         (lambda s: s["dimensions"]["fear"].update(tau=0), "tau must be positive"),
         (lambda s: s["dimensions"]["fear"].update(tau=-3), "tau must be positive"),
         (lambda s: s["dimensions"]["fear"].update(neutral=True), "finite number"),
-        (lambda s: s["dimensions"].pop("fear"), "unknown dimension"),
-        (lambda s: s["label_patterns"].update(bogus=["x"]), "unknown label"),
-        (lambda s: s["label_patterns"].update(neutral=[]), "non-empty array"),
-        (lambda s: s["negative_labels"].append("bogus"), "unknown label"),
         (lambda s: s["negative_dimensions"].append("bogus"), "contains unknown label"),
         (lambda s: s["silence"].update(dejection_rate_per_hour=-1), "must not be negative"),
         (lambda s: s["affect"].update(mood_follow_hours=0), "mood_follow_hours must be positive"),
-        (lambda s: s["affect"].update(habituation_factor=1.5), "habituation_factor"),
         (lambda s: s["prompt"].update(top_n=0), "top_n must be positive"),
         (lambda s: s["prompt"].update(level_high=0.4, level_elevated=0.6), "level_high"),
         (lambda s: s["proactive"].update(longing_threshold=5.0), "within value_range"),
@@ -616,8 +647,9 @@ def test_emotions_file_raw_content_errors(tmp_path):
     with pytest.raises(ValueError, match="duplicate key"):
         load_emotions(write('{"emotion_version": "a", "emotion_version": "b"}'))
     with pytest.raises(ValueError, match="non-finite"):
-        load_emotions(write('{"schema_version": 1, "emotion_version": "x", "dimensions": {}, '
-                            '"label_deltas": {"neutral": {"fear": NaN}}}'))
+        load_emotions(write('{"schema_version": 2, "emotion_version": "x", "dimensions": {}, '
+                            '"negative_dimensions": ["fear"], "silence": ' +
+                            '{"caps": {}, "dejection_gate_hours": 1, "dejection_rate_per_hour": NaN}}'))
     with pytest.raises(ValueError, match="emotions file not found"):
         load_emotions(tmp_path / "absent.json")
 
@@ -665,7 +697,7 @@ def _ingest_many(service, count, *, now=NOW, content=None, conversation="one", h
         service.ingest_message(
             harness=harness, conversation_id=conversation, route=route, role="user",
             content=content or f"Record number {index} with a long enough body to count.",
-            external_id=f"m{index}", occurred_at=now + timedelta(minutes=index), affect_label="neutral",
+            external_id=f"m{index}", occurred_at=now + timedelta(minutes=index),
         )
 
 
@@ -718,11 +750,25 @@ def test_identity_loading(tmp_path, svc, make_identity, configured, expected, er
         (lambda s: s.update(bogus_slot={}), "unknown prompts slot"),
         (lambda s: s["companion_state"].update(bogus_key="x"), "unknown field"),
         (lambda s: s.update(companion_state={"affect_instruction": "only this"}), "incomplete"),
+        (lambda s: s.update(decision_instruction=5), "must be a string"),
+        (lambda s: s.update(proactive_generation_instruction=5), "must be a string"),
     ],
 )
 def test_prompts_overlay_rejects_malformed(tmp_path, mutate, pattern):
     with pytest.raises(ValueError, match=pattern):
         prompts_module.load_prompts(_prompts_config(tmp_path, mutate).path)
+
+
+def test_prompts_overlay_decision_instruction_reaches_service(tmp_path, svc):
+    prompts = _prompts_config(
+        tmp_path, lambda s: s.update(decision_instruction="SENTINEL_DECISION_INSTRUCTION")
+    )
+    service = svc(prompts=prompts)
+    assert service.prompts["decision_instruction"] == "SENTINEL_DECISION_INSTRUCTION"
+    default_instruction = prompts_module.default_prompts()["decision_instruction"]
+    assert "companion's own" in default_instruction
+    assert "not the speaker's emotion" in default_instruction
+    assert service.prompts_fingerprint != prompts_module.default_fingerprint()
 
 
 @pytest.mark.parametrize("affect_instruction", ["SENTINEL_CUSTOM_INSTRUCTION", ""])
@@ -839,7 +885,7 @@ def test_context_structured_fields_and_side_effect_free(tmp_path, svc):
     after = service.memory.recent(limit=50)
     assert [item["text"] for item in before] == [item["text"] for item in after]
     with service.database.connect() as db:
-        assert db.execute("SELECT COUNT(*) FROM affect_events").fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM affect_decisions").fetchone()[0] == 0
         db.execute("UPDATE affect_state SET revision=0")
     service.build_context(query="")
     with service.database.connect() as db:
@@ -897,8 +943,9 @@ def test_delimiter_escaping_in_injection(tmp_path, svc):
 def test_custom_prompts_affect_engine_behavior(tmp_path, svc, mutate, contains, endswith, excludes):
     from companion_gateway.proactive import ProactiveEngine
 
-    service = svc(prompts=_prompts_config(tmp_path, mutate))
-    service.affect.apply_label("fear_death", now=NOW, is_user_message=True)
+    service = svc(prompts=_prompts_config(tmp_path, mutate), decision=DecisionConfig(increment=1.0))
+    user = _ingest(service, content="hello", external_id="cpe")
+    _decide(service, user["id"], "fear")
     text = service.affect.prompt_context(now=NOW + timedelta(seconds=1))
     for needle in contains:
         assert needle in text
@@ -910,12 +957,12 @@ def test_custom_prompts_affect_engine_behavior(tmp_path, svc, mutate, contains, 
     # A custom proactive generation instruction reaches generated events.
     prompts = _prompts_config(
         tmp_path, lambda s: s.update(proactive_generation_instruction="SENTINEL_PROACTIVE_INSTRUCTION"))
-    service = svc(prompts=prompts)
+    service = svc(prompts=prompts, decision=DecisionConfig(increment=1.0))
     engine = ProactiveEngine(service, service.config)
     know = datetime(2026, 9, 6, 0, 0, tzinfo=UTC)
-    _ingest_many(service, 1, now=know, harness="astrbot", conversation="discord:FriendMessage:1",
-                 route="discord:FriendMessage:1", content="hello")
-    service.affect.apply_label("fear_death", now=know + timedelta(minutes=1), is_user_message=True)
+    stored = _ingest(service, occurred_at=know, harness="astrbot", conversation_id="discord:FriendMessage:1",
+                     route="discord:FriendMessage:1", content="hello", external_id="proactive-prompt")
+    _decide(service, stored["id"], "fear", now=know + timedelta(minutes=1))
     event = engine.evaluate(know + timedelta(hours=4))
     assert event is not None
     assert event["generation_instruction"] == "SENTINEL_PROACTIVE_INSTRUCTION"

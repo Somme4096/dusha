@@ -214,8 +214,8 @@ class SemanticIndex:
             dimensions = len(vectors[0])
             if self.embedding.dimensions is not None and dimensions != self.embedding.dimensions:
                 raise ValueError(
-                    f"embedding endpoint returned {dimensions} dimensions; "
-                    f"configuration requires {self.embedding.dimensions}"
+                    f"embedding endpoint returned {dimensions} dimensions. "
+                    f"Configuration requires {self.embedding.dimensions}"
                 )
             timestamp = isoformat(utc_now())
             with self.database.connect() as db:
@@ -267,7 +267,7 @@ class SemanticIndex:
             query_dimensions = len(query_vector)
             if query_dimensions not in dimensions:
                 self._discard_embedding_key()
-                raise ValueError("embedding dimensions changed; the semantic index will rebuild")
+                raise ValueError("embedding dimensions changed. The semantic index will rebuild")
             query_blob = SQLiteVectorAdapter.serialize(query_vector)
             excluded = sorted(exclude_ids or set())
             excluded_clause = ""

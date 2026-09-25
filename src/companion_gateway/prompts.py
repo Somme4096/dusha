@@ -24,7 +24,11 @@ _TEXT_SLOTS = {
     "companion_state",
     "evergreen",
     "proactive_generation_instruction",
+    "decision_instruction",
 }
+
+# Slots whose value is a single string rather than an object of keys.
+_STRING_SLOTS = {"proactive_generation_instruction", "decision_instruction"}
 
 _SLOT_KEYS: dict[str, set[str]] = {
     "affect_presentation": {
@@ -72,7 +76,7 @@ def _validate_text_slots(snapshot: dict[str, Any], require_complete: bool) -> di
         missing = sorted(keys - set(value))
         if missing:
             raise PromptsValidationError(
-                f"{slot} is incomplete; missing field(s): {missing}"
+                f"{slot} is incomplete. Missing field(s): {missing}"
             )
         for key in keys:
             value[key] = _string(value[key], f"{slot}.{key}")
@@ -87,21 +91,22 @@ def _validate(snapshot: dict[str, Any], require_complete: bool) -> dict[str, Any
         if unknown:
             raise PromptsValidationError(f"unknown prompts slot(s): {unknown}")
     _validate_text_slots(snapshot, require_complete=require_complete)
+    for slot in _STRING_SLOTS:
+        if slot in snapshot:
+            snapshot[slot] = _string(snapshot[slot], slot)
+        elif require_complete:
+            raise PromptsValidationError(f"missing prompts slot: {slot}")
     if require_complete:
         schema_version = snapshot.get("schema_version")
         if not isinstance(schema_version, int) or isinstance(schema_version, bool):
             raise PromptsValidationError("schema_version must be an integer")
         if schema_version != SCHEMA_VERSION:
             raise PromptsValidationError(
-                f"schema_version {schema_version} is not supported; expected {SCHEMA_VERSION}"
+                f"schema_version {schema_version} is not supported. Expected {SCHEMA_VERSION}"
             )
         if not snapshot.get("prompts_version"):
             raise PromptsValidationError("prompts_version must be a non-empty string")
         _string(snapshot["prompts_version"], "prompts_version")
-        _string(
-            snapshot["proactive_generation_instruction"],
-            "proactive_generation_instruction",
-        )
     return snapshot
 
 

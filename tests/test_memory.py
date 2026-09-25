@@ -39,32 +39,104 @@ def test_database_schema_and_upgrade_path(svc, tmp_path):
             "id", "state_json", "last_updated_at", "last_user_message_at", "last_interaction_at",
             "last_proactive_sent_at", "unanswered_proactive", "revision",
         ],
-        "affect_classifications": [
-            "source_message_id", "automatic_label", "agent_label", "chosen_label", "decision_source",
-            "status", "occurred_at", "finalize_after", "resolved_at", "affect_event_id",
-        ],
+        "affect_decisions": ["id", "source_message_id", "emotion", "increment", "occurred_at"],
     }
     service = svc()
     with service.database.connect() as db:
         for table, columns in expected.items():
             actual = [row["name"] for row in db.execute(f"PRAGMA table_info({table})")]
             assert actual == columns
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='affect_events'"
+        ).fetchone() is None
+        assert db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='affect_classifications'"
+        ).fetchone() is None
     stored = _ingest(
         service, conversation_id="migration", content="Keep this exact text through the schema upgrade.",
-        external_id="migration-message", affect_label="neutral",
+        external_id="migration-message",
     )
+
+    # Simulate a version 3 database carrying a pending label classification and
+    # the retired recent_labels state key.
     with service.database.connect() as db:
-        db.execute("DROP TABLE affect_classifications")
-        db.execute("PRAGMA user_version=2")
+        db.execute(
+            "CREATE TABLE affect_events (id INTEGER PRIMARY KEY AUTOINCREMENT, label TEXT NOT NULL, "
+            "source_message_id INTEGER, deltas_json TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', "
+            "occurred_at TEXT NOT NULL, follow_up_at TEXT, follow_up_expires_at TEXT, "
+            "follow_up_consumed_at TEXT)"
+        )
+        db.execute(
+            "CREATE INDEX affect_events_follow_up "
+            "ON affect_events(follow_up_at, follow_up_consumed_at)"
+        )
+        db.execute(
+            "CREATE TABLE affect_classifications (source_message_id INTEGER PRIMARY KEY, "
+            "automatic_label TEXT NOT NULL, agent_label TEXT, chosen_label TEXT, "
+            "decision_source TEXT, status TEXT NOT NULL, occurred_at TEXT NOT NULL, "
+            "finalize_after TEXT NOT NULL, resolved_at TEXT, affect_event_id INTEGER)"
+        )
+        db.execute(
+            "CREATE INDEX affect_classifications_pending "
+            "ON affect_classifications(status, finalize_after, source_message_id)"
+        )
+        db.execute(
+            "INSERT INTO affect_classifications VALUES"
+            "(?, 'hostile', NULL, NULL, NULL, 'pending', ?, ?, NULL, NULL)",
+            (stored["id"], "2026-01-01T00:00:00+00:00", "2026-01-01T00:02:00+00:00"),
+        )
+        state_json = db.execute("SELECT state_json FROM affect_state WHERE id=1").fetchone()[0]
+        data = json.loads(state_json)
+        data["recent_labels"] = [{"label": "hostile", "at": "2026-01-01T00:00:00+00:00"}]
+        db.execute("UPDATE affect_state SET state_json=?", (json.dumps(data),))
+        db.execute("PRAGMA user_version=3")
     service.close()
     upgraded = svc()
     assert upgraded.memory.get(stored["id"])["text"] == "Keep this exact text through the schema upgrade."
     with upgraded.database.connect() as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 4
         assert db.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='affect_classifications'"
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='legacy_affect_events'"
         ).fetchone()
+        assert db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='legacy_affect_classifications'"
+        ).fetchone()
+        # The archived pending label is preserved but never applied.
+        assert db.execute("SELECT status FROM legacy_affect_classifications").fetchone()[0] == "pending"
+        assert db.execute("SELECT COUNT(*) FROM affect_decisions").fetchone()[0] == 0
+        # The active snapshot is preserved without recent_labels.
+        state_json = db.execute("SELECT state_json FROM affect_state WHERE id=1").fetchone()[0]
+        assert "recent_labels" not in state_json
+        assert json.loads(state_json)["base"]["fear"] == 0.0
+        assert json.loads(state_json)["base"]["contentment"] == 0.35
+
+
+def test_database_upgrades_version_two_through_the_chain(svc):
+    service = svc()
+    stored = _ingest(service, conversation_id="v2", content="Keep this exact text.",
+                     external_id="v2-message")
+    # Simulate a version 2 database: an affect_events table and no
+    # affect_classifications table.
+    with service.database.connect() as db:
+        db.execute("CREATE TABLE affect_events (id INTEGER PRIMARY KEY, label TEXT)")
+        db.execute(
+            "INSERT INTO affect_events (id, label) VALUES(1, 'affectionate')"
+        )
+        db.execute("PRAGMA user_version=2")
+    service.close()
+    upgraded = svc()
+    assert upgraded.memory.get(stored["id"])["text"] == "Keep this exact text."
+    with upgraded.database.connect() as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='legacy_affect_events'"
+        ).fetchone()
+        assert db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='legacy_affect_classifications'"
+        ).fetchone()
+        assert db.execute("SELECT label FROM legacy_affect_events").fetchone()[0] == "affectionate"
+        assert db.execute("SELECT COUNT(*) FROM affect_decisions").fetchone()[0] == 0
 
 
 def test_content_is_preserved_exactly(svc):
@@ -73,7 +145,6 @@ def test_content_is_preserved_exactly(svc):
     stored = _ingest(
         service, harness="astrbot", conversation_id="discord:FriendMessage:42",
         route="discord:FriendMessage:42", content=original, external_id="discord-message-1",
-        affect_label="neutral",
     )
     duplicate = _ingest(
         service, harness="astrbot", conversation_id="discord:FriendMessage:42",
@@ -94,7 +165,7 @@ def test_content_is_preserved_exactly(svc):
         {"type": "image_url", "image_url": {"url": "https://example.invalid/a.png"}},
     ]
     structured = _ingest(
-        service, harness="openai", content=content, external_id="m1", affect_label="neutral"
+        service, harness="openai", content=content, external_id="m1"
     )
     message = service.memory.get(structured["id"])
     assert message["content"] == content
@@ -105,11 +176,11 @@ def test_context_uses_original_records_without_persona(svc):
     service = svc()
     first = _ingest(
         service, route="opaque-route", content="The brass key is under the third flowerpot.",
-        external_id="m1", affect_label="neutral",
+        external_id="m1",
     )
     current = _ingest(
         service, route="opaque-route", content="Where did I leave the brass key?",
-        external_id="m2", affect_label="neutral",
+        external_id="m2",
     )
     result = service.build_context(
         harness="api", conversation_id="one", query="brass key", exclude_message_ids={current["id"]}
@@ -124,15 +195,14 @@ def test_context_uses_original_records_without_persona(svc):
 
 def test_harness_context_excludes_native_recent_history(svc):
     service = svc()
-    for ext, role, text, label in [
-        ("m1", "user", "The orchid token is stored in the blue cabinet.", "neutral"),
-        ("m2", "assistant", "This is the previous answer and must not be injected again.", ""),
-        ("m3", "user", "A newer unrelated turn.", "neutral"),
+    for ext, role, text in [
+        ("m1", "user", "The orchid token is stored in the blue cabinet."),
+        ("m2", "assistant", "This is the previous answer and must not be injected again."),
+        ("m3", "user", "A newer unrelated turn."),
     ]:
-        _ingest(service, harness="astrbot", role=role, content=text, external_id=ext, affect_label=label)
+        _ingest(service, harness="astrbot", role=role, content=text, external_id=ext)
     current = _ingest(
         service, harness="astrbot", content="Where is the orchid token?", external_id="m4",
-        affect_label="neutral",
     )
     result = service.build_context(
         harness="astrbot", conversation_id="one", query="orchid token",
@@ -155,7 +225,7 @@ def test_evergreen_revisions_survive_restart_and_keep_source(svc):
     now = datetime(2026, 1, 1, 12, tzinfo=UTC)
     service = svc()
     source = _ingest(
-        service, harness="astrbot", content="Please remember that my name is Somme.", affect_label="neutral"
+        service, harness="astrbot", content="Please remember that my name is Somme."
     )
     first = service.evergreen.remember(
         key="User.Name", text="The user's name is Somme.", source_message_id=source["id"],
@@ -271,7 +341,7 @@ def _hybrid_svc(svc, config, model="test-embedding"):
 def test_child_offsets_are_deterministic_and_reconstruct_canonical_text(svc, config):
     service = _hybrid_svc(svc, config)
     text = "0123456789" * 15
-    stored = _ingest(service, harness="test", content=text, affect_label="neutral")
+    stored = _ingest(service, harness="test", content=text)
     assert SemanticIndex.chunk_offsets(text, 64, 16) == [(0, 64), (48, 112), (96, 150)]
     with service.database.connect() as db:
         chunks = db.execute(
@@ -288,9 +358,8 @@ def test_child_offsets_are_deterministic_and_reconstruct_canonical_text(svc, con
 def test_semantic_child_search_returns_canonical_parent_after_restart(svc, config):
     service = _hybrid_svc(svc, config)
     target = "The brass key rests beneath the third flowerpot. Exact original wording."
-    stored = _ingest(service, harness="test", content=target, affect_label="neutral")
-    _ingest(service, harness="test", conversation_id="two", content="The ocean is calm today.",
-            affect_label="neutral")
+    stored = _ingest(service, harness="test", content=target)
+    _ingest(service, harness="test", conversation_id="two", content="The ocean is calm today.")
     service.semantic.client = FakeEmbeddingClient()
     assert service.semantic.backfill_once(force=True)["embedded"] == 3
     restarted = svc()
@@ -304,8 +373,7 @@ def test_semantic_child_search_returns_canonical_parent_after_restart(svc, confi
 
 def test_embedding_failure_falls_back_to_lexical_search(svc, config):
     service = _hybrid_svc(svc, config)
-    stored = _ingest(service, harness="test", content="Remember the violet telescope.",
-                     affect_label="neutral")
+    stored = _ingest(service, harness="test", content="Remember the violet telescope.")
     service.semantic.client = FakeEmbeddingClient()
     assert service.semantic.backfill_once(force=True)["embedded"] == 1
     service.semantic.client = FailingEmbeddingClient()
@@ -318,7 +386,7 @@ def test_embedding_failure_falls_back_to_lexical_search(svc, config):
 
 def test_model_change_uses_a_new_disposable_embedding_key(svc, config):
     first = _hybrid_svc(svc, config, model="model-a")
-    _ingest(first, harness="test", content="The brass key is safe.", affect_label="neutral")
+    _ingest(first, harness="test", content="The brass key is safe.")
     first.semantic.client = FakeEmbeddingClient()
     assert first.semantic.backfill_once(force=True)["embedded"] == 1
     old_key = first.semantic.embedding_key

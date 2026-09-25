@@ -9,6 +9,7 @@ from .affect import AffectEngine
 from .config import AppConfig
 from .context import ContextComposer
 from .database import Database
+from .decision import DecisionProvider
 from .evergreen import EvergreenStore
 from .memory import MemoryStore
 from .semantic import SemanticIndex
@@ -28,8 +29,13 @@ class CompanionService:
             config.identity_prompt
         )
         self.identity_configured = bool(config.identity_prompt.path)
-        self.affect = AffectEngine(self.database, config.affect, prompts=self.prompts)
-        self.affect.finalize_due()
+        self.decision = DecisionProvider(config)
+        self.affect = AffectEngine(
+            self.database,
+            config.affect,
+            prompts=self.prompts,
+            decision_increment=config.decision.increment,
+        )
         self.composer = ContextComposer(
             prompts=self.prompts,
             budget=config.memory.injection_max_chars,
@@ -50,7 +56,6 @@ class CompanionService:
         route: str = "",
         external_id: str = "",
         occurred_at: str | datetime | None = None,
-        affect_label: str = "",
         source_payload: Any | None = None,
     ) -> dict[str, Any]:
         message = self.memory.ingest(
@@ -66,19 +71,16 @@ class CompanionService:
         if self.semantic.enabled and not message.duplicate:
             self.semantic.ensure_message_chunks(message.id)
         affect = None
-        stored_message = self.memory.get(message.id)
-        message_time = parse_time(stored_message["occurred_at"])
-        if role == "user":
-            classification = self.affect.stage_message(message.id)
-            if affect_label:
-                classification = self.affect.record_provided_label(
-                    message.id,
-                    affect_label,
-                    now=message_time,
-                )
-            affect = {"classification": classification}
-        elif role == "assistant" and not self._has_tool_calls(stored_message["content"]):
-            self.affect.finalize_conversation(message.conversation_id, now=message_time)
+        if role == "user" and not message.duplicate:
+            stored_message = self.memory.get(message.id)
+            message_time = parse_time(stored_message["occurred_at"])
+            affect = self.affect.record_user_message(
+                message=stored_message["text"],
+                source_message_id=message.id,
+                decider=self.decision.evaluate if self.decision.enabled else None,
+                instruction=str(self.prompts["decision_instruction"]),
+                now=message_time,
+            )
         return {
             "id": message.id,
             "duplicate": message.duplicate,
@@ -168,10 +170,6 @@ class CompanionService:
             "role": message["role"],
             "text": message["text"],
         }
-
-    @staticmethod
-    def _has_tool_calls(content: Any) -> bool:
-        return isinstance(content, dict) and bool(content.get("tool_calls"))
 
     def latest_route(self) -> dict[str, Any] | None:
         with self.database.connect() as db:

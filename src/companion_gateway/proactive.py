@@ -79,21 +79,9 @@ class ProactiveEngine:
             ).fetchone()
             if active:
                 return None
-            follow_up = db.execute(
-                """SELECT * FROM affect_events
-                   WHERE follow_up_at IS NOT NULL
-                     AND follow_up_at<=? AND follow_up_expires_at>?
-                     AND follow_up_consumed_at IS NULL
-                   ORDER BY follow_up_at LIMIT 1""",
-                (isoformat(current), isoformat(current)),
-            ).fetchone()
 
         reason = "silence"
-        source_event_id = None
-        if follow_up:
-            reason = f"follow_up:{follow_up['label']}"
-            source_event_id = int(follow_up["id"])
-        elif state["base"]["fear"] >= self._emotional["fear_threshold"]:
+        if state["base"]["fear"] >= self._emotional["fear_threshold"]:
             reason = "fear"
         elif state["base"]["longing"] < self._emotional["longing_threshold"]:
             return None
@@ -104,18 +92,15 @@ class ProactiveEngine:
             conversation_id=route["external_id"],
         )
         sent_today = self._sent_today(current)
-        if source_event_id:
-            dedup_key = f"affect:{source_event_id}"
-        else:
-            local_date = current.astimezone(self.timezone).date()
-            dedup_key = ":".join(
-                (
-                    "silence",
-                    str(state["last_user_message_at"]),
-                    str(local_date),
-                    str(sent_today),
-                )
+        local_date = current.astimezone(self.timezone).date()
+        dedup_key = ":".join(
+            (
+                "silence",
+                str(state["last_user_message_at"]),
+                str(local_date),
+                str(sent_today),
             )
+        )
         event_id = str(uuid.uuid4())
         payload = {
             "id": event_id,
@@ -148,11 +133,6 @@ class ProactiveEngine:
                         isoformat(current),
                     ),
                 )
-                if source_event_id:
-                    db.execute(
-                        "UPDATE affect_events SET follow_up_consumed_at=? WHERE id=?",
-                        (isoformat(current), source_event_id),
-                    )
         except Exception as error:
             if "UNIQUE constraint failed" in str(error):
                 return None

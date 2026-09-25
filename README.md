@@ -8,13 +8,13 @@ Run the [quickstart](#quickstart) to start a local gateway.
 
 Requires Python 3.11 or newer and uv. Budget about 5 minutes when both are installed, or allow 10 to 15 minutes for the first install on a slow connection.
 
-1. Copy the example config: `cp config.example.json config.json`
+1. Copy the example config into the default config directory: `mkdir -p ~/.config/companion-gateway && cp config.example.json ~/.config/companion-gateway/config.json`
 2. Install the CLI: `uv tool install --editable .`
 3. Start the service: `companion-gateway serve`
 
 The install links the CLI to this checkout on uv's tool bin path. If `companion-gateway` is not on your `PATH`, run `uv tool update-shell`.
 
-The service reads `config.json` from the working directory. To run it in the background, use [deploy/companion-gateway.service](deploy/companion-gateway.service) with the [service setup steps](docs/guide.md#run-a-durable-single-instance-service).
+The service reads `config.json` from `~/.config/companion-gateway/` first, then a `config.json` in the working directory as a legacy fallback. Pass `--config PATH` to override. To run it in the background, use [deploy/companion-gateway.service](deploy/companion-gateway.service) with the [service setup steps](docs/guide.md#run-a-durable-single-instance-service).
 
 Check it is running:
 
@@ -26,7 +26,7 @@ Success reports `"status": "ok"` and a passing `database` integrity check. If st
 
 ## How it works
 
-A user message reaches the gateway, which builds context from memory, personality, and affect state and returns it to your harness or model; the harness archives the reply through the gateway.
+A user message reaches the gateway, which builds context from memory, personality, and affect state and returns it to your harness or model; the harness archives the reply through the gateway. A trusted Python decision plugin can select one emotion dimension to adjust per new user message; see [docs/configuration.md](docs/configuration.md#decision-plugins).
 
 Build your harness integration with the [API and integration guide](docs/api.md).
 

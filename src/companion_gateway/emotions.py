@@ -7,10 +7,10 @@ engine uses.
 
 Resolution precedence is: packaged defaults, then an optional user emotions.json,
 then explicit configuration overrides. Explicit overrides come from AffectConfig
-affect knobs, ProactiveConfig emotional thresholds, dimension overrides, and
-label-pattern overrides. Config fields carry an `UNSET` sentinel until
-`__post_init__` fills them, so an explicitly-provided value (including one equal
-to a packaged default) is never confused with an unfilled default.
+affect knobs, ProactiveConfig emotional thresholds, and dimension overrides.
+Config fields carry an `UNSET` sentinel until `__post_init__` fills them, so an
+explicitly-provided value (including one equal to a packaged default) is never
+confused with an unfilled default.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from .resources import load_packaged, loads_strict
 from .serialization import canonical as _serialization_canonical
 from .serialization import fingerprint as _serialization_fingerprint
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # Sentinel for config fields that the caller did not provide.
 UNSET: Any = object()
@@ -81,23 +81,14 @@ def _validate(snapshot: dict[str, Any]) -> dict[str, Any]:
         "description",
         "value_range",
         "dimensions",
-        "label_deltas",
-        "contact_deltas",
-        "soothing_deltas",
-        "negative_labels",
-        "soothing_labels",
         "negative_dimensions",
-        "recent_labels_limit",
-        "negative_follow_up_minutes",
         "silence",
         "proactive_sent_deltas",
         "prompt",
-        "label_patterns",
         "affect",
         "proactive",
         "impact_scale",
         "mood_follow_gain",
-        "follow_up_expiration_hours",
     }
     unknown = sorted(set(snapshot) - known)
     if unknown:
@@ -106,7 +97,7 @@ def _validate(snapshot: dict[str, Any]) -> dict[str, Any]:
     schema_version = _integer(snapshot["schema_version"], "schema_version")
     if schema_version != SCHEMA_VERSION:
         raise EmotionsValidationError(
-            f"schema_version {schema_version} is not supported; expected {SCHEMA_VERSION}"
+            f"schema_version {schema_version} is not supported. Expected {SCHEMA_VERSION}"
         )
     if not snapshot.get("emotion_version"):
         raise EmotionsValidationError("emotion_version must be a non-empty string")
@@ -119,8 +110,8 @@ def _validate(snapshot: dict[str, Any]) -> dict[str, Any]:
     range_max = _number(value_range.get("max"), "value_range.max")
     if (range_min, range_max) != (0.0, 1.0):
         raise EmotionsValidationError(
-            "value_range must be [0, 1] in this preserve-behavior phase; "
-            "arbitrary ranges are not supported"
+            "value_range must be [0, 1] in this preserve-behavior phase. "
+            "Arbitrary ranges are not supported"
         )
     snapshot["value_range"] = {"min": range_min, "max": range_max}
 
@@ -144,34 +135,9 @@ def _validate(snapshot: dict[str, Any]) -> dict[str, Any]:
         params["floor"] = floor
         params["tau"] = tau
 
-    label_deltas = snapshot["label_deltas"]
-    if not isinstance(label_deltas, dict) or not label_deltas:
-        raise EmotionsValidationError("label_deltas must be a non-empty object")
-    for label, deltas in label_deltas.items():
-        _deltas_map(deltas, f"label_deltas.{label}", dimensions)
-
-    known_labels = set(label_deltas)
-    _deltas_map(snapshot.get("contact_deltas") or {}, "contact_deltas", dimensions)
-    _deltas_map(snapshot.get("soothing_deltas") or {}, "soothing_deltas", dimensions)
-    snapshot["negative_labels"] = _labels_of(
-        snapshot.get("negative_labels") or [], "negative_labels", known_labels
-    )
-    snapshot["soothing_labels"] = _labels_of(
-        snapshot.get("soothing_labels") or [], "soothing_labels", known_labels
-    )
     snapshot["negative_dimensions"] = _labels_of(
         snapshot.get("negative_dimensions") or [], "negative_dimensions", set(dimensions)
     )
-
-    limit = _integer(snapshot.get("recent_labels_limit"), "recent_labels_limit")
-    if limit < 1:
-        raise EmotionsValidationError("recent_labels_limit must be positive")
-    snapshot["recent_labels_limit"] = limit
-
-    follow_up = _integer(snapshot.get("negative_follow_up_minutes"), "negative_follow_up_minutes")
-    if follow_up < 1:
-        raise EmotionsValidationError("negative_follow_up_minutes must be positive")
-    snapshot["negative_follow_up_minutes"] = follow_up
 
     silence = snapshot["silence"]
     if not isinstance(silence, dict):
@@ -216,13 +182,6 @@ def _validate(snapshot: dict[str, Any]) -> dict[str, Any]:
         raise EmotionsValidationError("mood_follow_gain.factor must be positive")
     snapshot["mood_follow_gain"] = {"min": gain_min, "max": gain_max, "factor": gain_factor}
 
-    expiry_hours = _integer(
-        snapshot.get("follow_up_expiration_hours"), "follow_up_expiration_hours"
-    )
-    if expiry_hours < 1:
-        raise EmotionsValidationError("follow_up_expiration_hours must be positive")
-    snapshot["follow_up_expiration_hours"] = expiry_hours
-
     prompt = snapshot["prompt"]
     if not isinstance(prompt, dict):
         raise EmotionsValidationError("prompt must be an object")
@@ -243,31 +202,11 @@ def _validate(snapshot: dict[str, Any]) -> dict[str, Any]:
     prompt["level_high"] = level_high
     prompt["level_elevated"] = level_elevated
 
-    label_patterns = snapshot["label_patterns"]
-    if not isinstance(label_patterns, dict):
-        raise EmotionsValidationError("label_patterns must be an object")
-    for label, phrases in label_patterns.items():
-        if label not in known_labels:
-            raise EmotionsValidationError(f"label_patterns.{label} references unknown label")
-        if not isinstance(phrases, list) or not phrases:
-            raise EmotionsValidationError(f"label_patterns.{label} must be a non-empty array")
-        normalized: list[str] = []
-        for phrase in phrases:
-            text = _string(phrase, f"label_patterns.{label}")
-            if not text:
-                raise EmotionsValidationError(f"label_patterns.{label} must not contain empty phrases")
-            normalized.append(text)
-        label_patterns[label] = normalized
-
     affect = snapshot["affect"]
     if not isinstance(affect, dict):
         raise EmotionsValidationError("affect must be an object")
     mood_follow = _number(affect.get("mood_follow_hours"), "affect.mood_follow_hours")
     mood_return = _number(affect.get("mood_return_hours"), "affect.mood_return_hours")
-    habituation_window = _integer(
-        affect.get("habituation_window_minutes"), "affect.habituation_window_minutes"
-    )
-    habituation_factor = _number(affect.get("habituation_factor"), "affect.habituation_factor")
     silence_longing = _number(
         affect.get("silence_longing_per_hour"), "affect.silence_longing_per_hour"
     )
@@ -277,17 +216,10 @@ def _validate(snapshot: dict[str, Any]) -> dict[str, Any]:
     silence_seeking = _number(
         affect.get("silence_seeking_per_hour"), "affect.silence_seeking_per_hour"
     )
-    fallback = _integer(
-        affect.get("classification_fallback_seconds"), "affect.classification_fallback_seconds"
-    )
     if mood_follow <= 0:
         raise EmotionsValidationError("affect.mood_follow_hours must be positive")
     if mood_return <= 0:
         raise EmotionsValidationError("affect.mood_return_hours must be positive")
-    if habituation_window <= 0:
-        raise EmotionsValidationError("affect.habituation_window_minutes must be positive")
-    if not 0 < habituation_factor <= 1:
-        raise EmotionsValidationError("affect.habituation_factor must be in (0, 1]")
     for name, value in (
         ("longing", silence_longing),
         ("anxiety", silence_anxiety),
@@ -295,16 +227,11 @@ def _validate(snapshot: dict[str, Any]) -> dict[str, Any]:
     ):
         if value < 0:
             raise EmotionsValidationError(f"affect.silence_{name}_per_hour must not be negative")
-    if fallback < 1:
-        raise EmotionsValidationError("affect.classification_fallback_seconds must be positive")
     affect["mood_follow_hours"] = mood_follow
     affect["mood_return_hours"] = mood_return
-    affect["habituation_window_minutes"] = habituation_window
-    affect["habituation_factor"] = habituation_factor
     affect["silence_longing_per_hour"] = silence_longing
     affect["silence_anxiety_per_hour"] = silence_anxiety
     affect["silence_seeking_per_hour"] = silence_seeking
-    affect["classification_fallback_seconds"] = fallback
 
     proactive = snapshot["proactive"]
     if not isinstance(proactive, dict):
@@ -425,20 +352,5 @@ def resolve_emotions(
                     snapshot["dimensions"][name][key] = _number(
                         values[key], f"dimensions override {name!r}.{key}"
                     )
-
-    patterns = getattr(affect_config, "label_patterns", None) or {}
-    if patterns:
-        if not isinstance(patterns, dict):
-            raise EmotionsValidationError("label_patterns override must be an object")
-        for label, phrases in patterns.items():
-            if label not in snapshot["label_deltas"]:
-                raise EmotionsValidationError(
-                    f"label_patterns override references unknown label: {label!r}"
-                )
-            if not isinstance(phrases, list):
-                raise EmotionsValidationError(f"label_patterns override {label!r} must be an array")
-            snapshot["label_patterns"][label] = [
-                _string(p, f"label_patterns override {label!r}") for p in phrases
-            ]
 
     return _validate(snapshot)

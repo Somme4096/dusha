@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 import math
 import threading
-from dataclasses import dataclass
-from datetime import datetime, timedelta
+from collections.abc import Callable
+from datetime import datetime
 from typing import Any
 
 from . import emotions as _emotions
@@ -14,26 +14,20 @@ from .database import Database
 from .serialization import compact_json
 from .timeutil import isoformat, parse_time, utc_now
 
-# Backward-compatible view of the packaged default label deltas. The engine
-# itself reads the resolved emotions snapshot; this module-level constant keeps
-# CLI choices and existing tests working against the default set.
-LABEL_DELTAS: dict[str, dict[str, float]] = _emotions.default_emotions()["label_deltas"]
-
-
-@dataclass(slots=True)
-class AffectResult:
-    label: str
-    state: dict[str, Any]
-    event_id: int | None
-
-
-class AffectClassificationConflict(RuntimeError):
-    pass
+# A decider is invoked for one incoming message and returns at most one emotion
+# dimension name. It receives the message text, the resolved dimension
+# definitions, a state snapshot, and the configured instruction as keyword
+# arguments.
+Decider = Callable[..., "str | None"]
 
 
 class AffectEngine:
     def __init__(
-        self, database: Database, config: AffectConfig, prompts: dict[str, Any] | None = None
+        self,
+        database: Database,
+        config: AffectConfig,
+        prompts: dict[str, Any] | None = None,
+        decision_increment: float = 0.1,
     ):
         self.database = database
         self.config = config
@@ -41,18 +35,18 @@ class AffectEngine:
         self.emotions = _emotions.resolve_emotions(config)
         self.emotions_version = str(self.emotions["emotion_version"])
         self.emotions_fingerprint = _emotions.fingerprint(self.emotions)
-        self.label_patterns = dict(self.emotions["label_patterns"])
         self.spec = {name: values.copy() for name, values in self.emotions["dimensions"].items()}
         value_range = self.emotions["value_range"]
         self.value_min = float(value_range["min"])
         self.value_max = float(value_range["max"])
+        self.decision_increment = float(decision_increment)
         self.affect_presentation = dict(
             (prompts or _prompts.default_prompts())["affect_presentation"]
         )
 
     def initial_state(self) -> dict[str, Any]:
         base = {name: values["neutral"] for name, values in self.spec.items()}
-        return {"base": base.copy(), "mood": base.copy(), "recent_labels": []}
+        return {"base": base.copy(), "mood": base.copy()}
 
     def _ensure(self, db: Any, now: datetime) -> None:
         state = self.initial_state()
@@ -88,6 +82,14 @@ class AffectEngine:
             if delta < 0 and name in negative:
                 next_value = max(next_value, min(current, float(mood[name])))
             base[name] = self._clamp(next_value, self.spec[name]["floor"])
+
+    def _increase(self, state: dict[str, Any], emotion: str) -> None:
+        """Increase one selected dimension by the configured bounded amount."""
+        spec = self.spec[emotion]
+        current = float(state["base"][emotion])
+        state["base"][emotion] = self._clamp(
+            current + self.decision_increment, spec["floor"]
+        )
 
     def _advance_values(self, state: dict[str, Any], hours: float) -> None:
         if hours <= 0:
@@ -148,294 +150,96 @@ class AffectEngine:
             values.append(value)
         db.execute(f"UPDATE affect_state SET {', '.join(assignments)} WHERE id=1", values)
 
-    def classify(self, text: str) -> str:
-        folded = text.casefold()
-        for label, patterns in self.label_patterns.items():
-            if label in self.emotions["label_deltas"] and any(
-                pattern.casefold() in folded for pattern in patterns
-            ):
-                return label
-        return "neutral"
-
-    def apply_label(
+    def record_user_message(
         self,
-        label: str,
         *,
-        now: datetime | None = None,
-        source_message_id: int | None = None,
-        note: str = "",
-        is_user_message: bool = False,
-        follow_up_minutes: int | None = None,
-    ) -> AffectResult:
-        if label not in self.emotions["label_deltas"]:
-            raise ValueError(f"unsupported affect label: {label}")
-        current = now or utc_now()
-        with self._lock, self.database.connect() as db:
-            return self._apply_label_in_db(
-                db,
-                label,
-                current=current,
-                event_time=current,
-                source_message_id=source_message_id,
-                note=note,
-                is_user_message=is_user_message,
-                follow_up_minutes=follow_up_minutes,
-            )
-
-    def _apply_label_in_db(
-        self,
-        db: Any,
-        label: str,
-        *,
-        current: datetime,
-        event_time: datetime,
+        message: str,
         source_message_id: int | None,
-        note: str,
-        is_user_message: bool,
-        follow_up_minutes: int | None,
-        user_contact_recorded: bool = False,
-    ) -> AffectResult:
-        row, state = self._load_row(db, current)
-        self._advance(row, state, current)
-        affect = self.emotions["affect"]
-        window_start = current - timedelta(minutes=affect["habituation_window_minutes"])
-        recent = [
-            item for item in state.get("recent_labels", []) if parse_time(item.get("at")) >= window_start
-        ]
-        repeats = sum(item.get("label") == label for item in recent)
-        scale = affect["habituation_factor"] ** repeats
-        if is_user_message:
-            self._apply_deltas(state, self.emotions["contact_deltas"])
-            if label in set(self.emotions["soothing_labels"]):
-                self._apply_deltas(state, self.emotions["soothing_deltas"])
-        self._apply_deltas(state, self.emotions["label_deltas"][label], scale)
-        recent.append({"label": label, "at": isoformat(current)})
-        state["recent_labels"] = recent[-self.emotions["recent_labels_limit"] :]
+        decider: Decider | None,
+        instruction: str,
+        now: datetime | None = None,
+    ) -> dict[str, Any] | None:
+        """Advance state, mark user contact, and apply one plugin decision.
 
-        follow_up_at = (
-            isoformat(current + timedelta(minutes=follow_up_minutes)) if follow_up_minutes else None
-        )
-        follow_up_expires = (
-            isoformat(
-                current + timedelta(hours=self.emotions["follow_up_expiration_hours"])
-            )
-            if follow_up_minutes
-            else None
-        )
-        cursor = db.execute(
-            """INSERT INTO affect_events
-               (label, source_message_id, deltas_json, note, occurred_at,
-                follow_up_at, follow_up_expires_at)
-               VALUES(?,?,?,?,?,?,?)""",
-            (
-                label,
-                source_message_id,
-                compact_json(self.emotions["label_deltas"][label], ensure_ascii=True),
-                note,
-                isoformat(event_time),
-                follow_up_at,
-                follow_up_expires,
-            ),
-        )
-        event_id = int(cursor.lastrowid)
-        fields: dict[str, Any] = {}
-        if is_user_message and not user_contact_recorded:
-            fields.update(last_user_message_at=isoformat(current), unanswered_proactive=0)
-            fields["last_interaction_at"] = isoformat(current)
+        Contact bookkeeping (``last_user_message_at``, ``last_interaction_at``,
+        ``unanswered_proactive``, unsent proactive cancellation) is independent of
+        labels and always runs for a new user message. The decision-driven
+        increase runs only when a decider is configured and returns an allowed
+        dimension; otherwise the state carries no decision adjustment.
+        """
+        requested = now if now is not None else utc_now()
+        # Keep the write transaction short: plugins are trusted Python, but may
+        # perform slow I/O (or block indefinitely).  In particular, neither
+        # SQLite's write lock nor the engine lock may be held during that call.
+        with self._lock, self.database.connect() as db:
+            row, state = self._load_row(db, requested)
+            current = max(requested, parse_time(row["last_updated_at"]))
+            self._advance(row, state, current)
             db.execute(
                 "UPDATE proactive_events SET status='cancelled', updated_at=? "
                 "WHERE status IN ('pending','leased')",
                 (isoformat(current),),
             )
-        self._save(db, state, current, **fields)
-        updated = db.execute("SELECT * FROM affect_state WHERE id=1").fetchone()
-        return AffectResult(label, self._public_state(state, updated, current), event_id)
-
-    def stage_message(self, message_id: int) -> dict[str, Any]:
-        with self._lock, self.database.connect() as db:
-            message = db.execute(
-                "SELECT id, role, text, occurred_at FROM messages WHERE id=?",
-                (message_id,),
-            ).fetchone()
-            if not message:
-                raise KeyError("source message not found")
-            if message["role"] != "user":
-                raise ValueError("affect classification requires a user message")
-            occurred = parse_time(message["occurred_at"])
-            automatic_label = self.classify(str(message["text"]))
-            inserted = db.execute(
-                """INSERT OR IGNORE INTO affect_classifications
-                   (source_message_id, automatic_label, status, occurred_at, finalize_after)
-                   VALUES(?,?, 'pending', ?,?)""",
-                (
-                    message_id,
-                    automatic_label,
-                    isoformat(occurred),
-                    isoformat(
-                        occurred
-                        + timedelta(
-                            seconds=self.emotions["affect"]["classification_fallback_seconds"]
-                        )
-                    ),
-                ),
-            )
-            if inserted.rowcount:
-                self._ensure(db, occurred)
-                occurred_text = isoformat(occurred)
-                db.execute(
-                    """UPDATE affect_state SET
-                       last_user_message_at=CASE
-                         WHEN last_user_message_at IS NULL OR last_user_message_at < ? THEN ?
-                         ELSE last_user_message_at END,
-                       last_interaction_at=CASE
-                         WHEN last_interaction_at IS NULL OR last_interaction_at < ? THEN ?
-                         ELSE last_interaction_at END,
-                       unanswered_proactive=0
-                       WHERE id=1""",
-                    (occurred_text, occurred_text, occurred_text, occurred_text),
-                )
-                db.execute(
-                    "UPDATE proactive_events SET status='cancelled', updated_at=? "
-                    "WHERE status IN ('pending','leased')",
-                    (occurred_text,),
-                )
-            row = db.execute(
-                "SELECT * FROM affect_classifications WHERE source_message_id=?",
-                (message_id,),
-            ).fetchone()
-        return self._public_classification(row)
-
-    def record_agent_label(
-        self, message_id: int, label: str, now: datetime | None = None
-    ) -> dict[str, Any]:
-        return self._resolve_classification(message_id, "agent", label, now or utc_now())
-
-    def record_provided_label(
-        self, message_id: int, label: str, now: datetime | None = None
-    ) -> dict[str, Any]:
-        return self._resolve_classification(message_id, "provided", label, now or utc_now())
-
-    def finalize_automatic(
-        self, message_id: int, now: datetime | None = None
-    ) -> dict[str, Any]:
-        return self._resolve_classification(message_id, "automatic", None, now or utc_now())
-
-    def finalize_conversation(
-        self, conversation_id: int, now: datetime | None = None
-    ) -> list[dict[str, Any]]:
-        with self.database.connect() as db:
-            message_ids = [
-                int(row["source_message_id"])
-                for row in db.execute(
-                    """SELECT c.source_message_id FROM affect_classifications c
-                       JOIN messages m ON m.id=c.source_message_id
-                       WHERE c.status='pending' AND m.conversation_id=?
-                       ORDER BY c.occurred_at, c.source_message_id""",
-                    (conversation_id,),
-                ).fetchall()
-            ]
-        current = now or utc_now()
-        return [self.finalize_automatic(message_id, current) for message_id in message_ids]
-
-    def finalize_due(
-        self, now: datetime | None = None, limit: int = 100
-    ) -> list[dict[str, Any]]:
-        current = now or utc_now()
-        with self.database.connect() as db:
-            message_ids = [
-                int(row["source_message_id"])
-                for row in db.execute(
-                    """SELECT source_message_id FROM affect_classifications
-                       WHERE status='pending' AND finalize_after <= ?
-                       ORDER BY finalize_after, source_message_id LIMIT ?""",
-                    (isoformat(current), max(1, limit)),
-                ).fetchall()
-            ]
-        return [self.finalize_automatic(message_id, current) for message_id in message_ids]
-
-    def classification(self, message_id: int) -> dict[str, Any] | None:
-        with self.database.connect() as db:
-            row = db.execute(
-                "SELECT * FROM affect_classifications WHERE source_message_id=?",
-                (message_id,),
-            ).fetchone()
-        return self._public_classification(row) if row else None
-
-    def _resolve_classification(
-        self,
-        message_id: int,
-        decision_source: str,
-        label: str | None,
-        current: datetime,
-    ) -> dict[str, Any]:
-        if label is not None and label not in self.emotions["label_deltas"]:
-            raise ValueError(f"unsupported affect label: {label}")
-        with self._lock, self.database.connect() as db:
-            db.execute("BEGIN IMMEDIATE")
-            row = db.execute(
-                "SELECT * FROM affect_classifications WHERE source_message_id=?",
-                (message_id,),
-            ).fetchone()
-            if not row:
-                raise KeyError("affect classification not found")
-            if row["status"] == "applied":
-                if decision_source == "agent" and (
-                    row["decision_source"] != "agent" or row["agent_label"] != label
-                ):
-                    raise AffectClassificationConflict("affect classification is already finalized")
-                return self._public_classification(row)
-
-            chosen_label = label if label is not None else str(row["automatic_label"])
-            negative_labels = set(self.emotions["negative_labels"])
-            follow_up = (
-                self.emotions["negative_follow_up_minutes"] if chosen_label in negative_labels else None
-            )
-            result = self._apply_label_in_db(
-                db,
-                chosen_label,
-                current=current,
-                event_time=parse_time(row["occurred_at"]),
-                source_message_id=message_id,
-                note="",
-                is_user_message=True,
-                follow_up_minutes=follow_up,
-                user_contact_recorded=True,
-            )
+            self._save(db, state, current, last_interaction_at=isoformat(current))
             db.execute(
-                """UPDATE affect_classifications SET
-                   agent_label=?, chosen_label=?, decision_source=?, status='applied',
-                   resolved_at=?, affect_event_id=?
-                   WHERE source_message_id=? AND status='pending'""",
-                (
-                    label if decision_source == "agent" else None,
-                    chosen_label,
-                    decision_source,
-                    isoformat(current),
-                    result.event_id,
-                    message_id,
-                ),
+                """UPDATE affect_state SET
+                   last_user_message_at=CASE
+                     WHEN last_user_message_at IS NULL OR last_user_message_at < ? THEN ?
+                     ELSE last_user_message_at END,
+                   unanswered_proactive=0
+                   WHERE id=1""",
+                (isoformat(current), isoformat(current)),
             )
-            updated = db.execute(
-                "SELECT * FROM affect_classifications WHERE source_message_id=?",
-                (message_id,),
-            ).fetchone()
-        return self._public_classification(updated)
 
-    @staticmethod
-    def _public_classification(row: Any) -> dict[str, Any]:
+            updated = db.execute("SELECT * FROM affect_state WHERE id=1").fetchone()
+            snapshot = self._public_state(state, updated, current)
+
+        emotion = None
+        if decider is not None:
+            try:
+                emotion = decider(
+                    message=message,
+                    emotions=self.spec,
+                    state=snapshot,
+                    instruction=instruction,
+                )
+            except Exception:
+                # A plugin failure must not undo contact bookkeeping.
+                emotion = None
+            if not isinstance(emotion, str) or emotion not in self.spec:
+                emotion = None
+
+        decision_id = None
+        public = snapshot
+        if emotion is not None:
+            # Reload after the plugin call.  Other writers may have changed the
+            # state while it was running; applying the increase to this fresh
+            # snapshot preserves those changes instead of restoring our stale
+            # copy over them.
+            with self._lock, self.database.connect() as db:
+                row, state = self._load_row(db, requested)
+                phase_now = now if now is not None else utc_now()
+                current = max(phase_now, parse_time(row["last_updated_at"]))
+                self._advance(row, state, current)
+                self._increase(state, emotion)
+                self._save(db, state, current)
+                cursor = db.execute(
+                    """INSERT INTO affect_decisions
+                       (source_message_id, emotion, increment, occurred_at)
+                       VALUES(?,?,?,?)""",
+                    (source_message_id, emotion, self.decision_increment, isoformat(current)),
+                )
+                if cursor.lastrowid is not None:
+                    decision_id = int(cursor.lastrowid)
+                updated = db.execute("SELECT * FROM affect_state WHERE id=1").fetchone()
+                public = self._public_state(state, updated, current)
+        if emotion is None:
+            return None
         return {
-            "source_message_id": int(row["source_message_id"]),
-            "automatic_label": str(row["automatic_label"]),
-            "agent_label": str(row["agent_label"]) if row["agent_label"] is not None else None,
-            "label": str(row["chosen_label"]) if row["chosen_label"] is not None else None,
-            "decision_source": (
-                str(row["decision_source"]) if row["decision_source"] is not None else None
-            ),
-            "status": str(row["status"]),
-            "occurred_at": str(row["occurred_at"]),
-            "finalize_after": str(row["finalize_after"]),
-            "resolved_at": str(row["resolved_at"]) if row["resolved_at"] is not None else None,
-            "event_id": int(row["affect_event_id"]) if row["affect_event_id"] is not None else None,
+            "emotion": emotion,
+            "increment": self.decision_increment,
+            "decision_id": decision_id,
+            "state": public,
         }
 
     def status(self, now: datetime | None = None) -> dict[str, Any]:

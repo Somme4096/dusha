@@ -43,6 +43,12 @@
     "max_items": 32,
     "max_chars": 4000
   },
+  "decision": {
+    "module": "",
+    "options": {},
+    "increment": 0.1,
+    "mods_dir": ""
+  },
   "proactive": {
     "enabled": true,
     "poll_interval_seconds": 60,

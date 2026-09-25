@@ -99,16 +99,6 @@ class RevisionsEnvelope(ExtraAllow):
     revisions: list
 
 
-class EventEnvelope(ExtraAllow):
-    event: dict
-
-
-class AffectEventResult(ExtraAllow):
-    label: str
-    event_id: int | None
-    state: dict
-
-
 class ProactiveEvaluateResponse(ExtraAllow):
     event: dict | None
 

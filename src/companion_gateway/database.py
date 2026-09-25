@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -113,34 +114,15 @@ CREATE TABLE IF NOT EXISTS affect_state (
     revision INTEGER NOT NULL DEFAULT 0
 );
 
-CREATE TABLE IF NOT EXISTS affect_events (
+CREATE TABLE IF NOT EXISTS affect_decisions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    label TEXT NOT NULL,
     source_message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
-    deltas_json TEXT NOT NULL,
-    note TEXT NOT NULL DEFAULT '',
-    occurred_at TEXT NOT NULL,
-    follow_up_at TEXT,
-    follow_up_expires_at TEXT,
-    follow_up_consumed_at TEXT
+    emotion TEXT NOT NULL,
+    increment REAL NOT NULL,
+    occurred_at TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS affect_events_follow_up
-ON affect_events(follow_up_at, follow_up_consumed_at);
-
-CREATE TABLE IF NOT EXISTS affect_classifications (
-    source_message_id INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
-    automatic_label TEXT NOT NULL,
-    agent_label TEXT,
-    chosen_label TEXT,
-    decision_source TEXT CHECK(decision_source IN ('agent', 'automatic', 'provided')),
-    status TEXT NOT NULL CHECK(status IN ('pending', 'applied')),
-    occurred_at TEXT NOT NULL,
-    finalize_after TEXT NOT NULL,
-    resolved_at TEXT,
-    affect_event_id INTEGER REFERENCES affect_events(id) ON DELETE SET NULL
-);
-CREATE INDEX IF NOT EXISTS affect_classifications_pending
-ON affect_classifications(status, finalize_after, source_message_id);
+CREATE INDEX IF NOT EXISTS affect_decisions_message
+ON affect_decisions(source_message_id, id);
 
 CREATE TABLE IF NOT EXISTS proactive_events (
     id TEXT PRIMARY KEY,
@@ -162,7 +144,7 @@ CREATE TABLE IF NOT EXISTS proactive_events (
 CREATE INDEX IF NOT EXISTS proactive_events_poll
 ON proactive_events(status, available_at, created_at);
 
-PRAGMA user_version = 3;
+PRAGMA user_version = 4;
 """
 
 MIGRATE_2_TO_3 = """
@@ -188,6 +170,27 @@ PRAGMA user_version = 3;
 COMMIT;
 """
 
+# Version 4 retires the label system. Historical label rows are archived under
+# clearly legacy table names and are never read at runtime. Pending labels stay
+# archived and are never applied. A typed decision record replaces them.
+MIGRATE_3_TO_4 = """
+PRAGMA foreign_keys = ON;
+BEGIN IMMEDIATE;
+
+CREATE TABLE IF NOT EXISTS affect_decisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+    emotion TEXT NOT NULL,
+    increment REAL NOT NULL,
+    occurred_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS affect_decisions_message
+ON affect_decisions(source_message_id, id);
+
+PRAGMA user_version = 4;
+COMMIT;
+"""
+
 
 class Database:
     def __init__(self, path: str | Path):
@@ -207,14 +210,51 @@ class Database:
             ).fetchone()
         if not initialized or version == SCHEMA_VERSION:
             return
-        if version == 2:
+        if version in (2, 3):
             with self.connect() as db:
-                db.executescript(MIGRATE_2_TO_3)
+                if version == 2:
+                    db.executescript(MIGRATE_2_TO_3)
+                self._archive_legacy_label_tables(db)
+                db.executescript(MIGRATE_3_TO_4)
+                self._strip_recent_labels(db)
             return
         if initialized:
             raise RuntimeError(
-                f"database schema version {version} is incompatible; "
-                "use an empty data directory or restore a schema version 2 or 3 backup"
+                f"database schema version {version} is incompatible. "
+                "Use an empty data directory or restore a schema version 2, 3, or 4 backup"
+            )
+
+    @staticmethod
+    def _archive_legacy_label_tables(db: sqlite3.Connection) -> None:
+        """Rename retired label tables to clearly legacy names.
+
+        No runtime reader touches these tables. Historical rows are preserved
+        rather than dropped, and archived pending classifications are never
+        applied.
+        """
+        tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        for old, new in (
+            ("affect_events", "legacy_affect_events"),
+            ("affect_classifications", "legacy_affect_classifications"),
+        ):
+            if old in tables and new not in tables:
+                db.execute(f"ALTER TABLE {old} RENAME TO {new}")
+
+    @staticmethod
+    def _strip_recent_labels(db: sqlite3.Connection) -> None:
+        """Remove the retired ``recent_labels`` key from the active snapshot."""
+        row = db.execute("SELECT state_json FROM affect_state WHERE id=1").fetchone()
+        if row is None:
+            return
+        try:
+            state = json.loads(row[0])
+        except (TypeError, ValueError):
+            return
+        if isinstance(state, dict) and "recent_labels" in state:
+            state.pop("recent_labels")
+            db.execute(
+                "UPDATE affect_state SET state_json=? WHERE id=1",
+                (json.dumps(state, ensure_ascii=True, separators=(",", ":")),),
             )
 
     def connect(self) -> sqlite3.Connection:

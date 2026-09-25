@@ -16,17 +16,19 @@ Config lookup order:
 
 1. `--config PATH`. A missing explicit file is an error.
 2. `COMPANION_GATEWAY_CONFIG`. A missing file is an error.
-3. `config.json` in the current directory.
-4. `config.yaml` in the current directory (legacy, warning).
-5. Packaged defaults. A missing implicit file is valid.
+3. `config.json` in the default config directory `~/.config/companion-gateway/`.
+4. `config.yaml` in the default config directory (legacy, warning).
+5. `config.json` in the current directory (legacy fallback).
+6. `config.yaml` in the current directory (legacy fallback, warning).
+7. Packaged defaults. A missing implicit file is valid.
 
-`config.json` wins when both files exist. The loader never merges them.
+`config.json` wins when both files exist in the same directory. The loader never merges them.
 
 Parsing is strict. Duplicate keys, unknown fields, `NaN`, `Infinity`, JSONC comments, and wrong types raise an actionable error.
 
 Path rules differ by format:
 
-- JSON: `data_dir`, `emotions.path`, `identity_prompt.path`, and `prompts.path` resolve against the config file directory.
+- JSON: `data_dir`, `emotions.path`, `identity_prompt.path`, `prompts.path`, and `decision.mods_dir` resolve against the config file directory.
 - Legacy YAML: `data_dir` resolves against the current working directory. The path sections resolve against the config file.
 - Absolute paths pass through unchanged.
 
@@ -71,7 +73,7 @@ Identity is raw Markdown you write. Point `identity_prompt.path` at it:
 
 The service loads the file once at startup and prepends it verbatim to every context. A configured but missing file, or invalid UTF-8, fails startup. A blank file is allowed. The identity does not change at runtime.
 
-Emotions use the current 16-dimension engine. Every dimension name, `neutral`, `floor`, `tau`, label delta, silence rate, and threshold lives in the packaged `emotions.json`. The engine stays deterministic and calls no model. Affect knobs (`mood_follow_hours`, `mood_return_hours`, `habituation_window_minutes`, `habituation_factor`, the silence rates, and `classification_fallback_seconds`) and the proactive emotional thresholds (`longing_threshold`, `fear_threshold`) also live there and accept config overrides.
+Emotions use the current 16-dimension engine. Every dimension name, `neutral`, `floor`, `tau`, silence rate, `proactive_sent_deltas`, `impact_scale`, and threshold lives in the packaged `emotions.json`. The engine stays deterministic and calls no model. Affect knobs (`mood_follow_hours`, `mood_return_hours`, and the silence rates) and the proactive emotional thresholds (`longing_threshold`, `fear_threshold`) also live there and accept config overrides.
 
 Export the packaged files, edit the copies, and reference them:
 
@@ -86,14 +88,14 @@ Reference the copies:
 
 ```json
 {
-  "emotions": {"path": "emotions.json", "expected_version": "0.1.0"},
+  "emotions": {"path": "emotions.json", "expected_version": "0.2.0"},
   "prompts": {"path": "prompts.json"}
 }
 ```
 
 `emotions.expected_version` pins the file's `emotion_version`. A mismatch fails startup. Omit it to accept any valid file.
 
-Prompts replace whole text slots. A provided slot must carry every key in that slot. A missing key fails validation. Omitted slots inherit the packaged text. Blank strings are valid replacements. The four slots are `affect_presentation`, `companion_state`, `evergreen`, and `proactive_generation_instruction`.
+Prompts replace whole text slots. A provided slot must carry every key in that slot. A missing key fails validation. Omitted slots inherit the packaged text. Blank strings are valid replacements. The five slots are `affect_presentation`, `companion_state`, `evergreen`, `proactive_generation_instruction`, and `decision_instruction`.
 
 Value precedence resolves in this order:
 
@@ -102,6 +104,45 @@ Value precedence resolves in this order:
 3. Explicit config overrides.
 
 An explicit override wins even when it equals the packaged default. Config fields carry an `UNSET` sentinel, so resolution never guesses the source. The engine snapshots these values at construction. Mutating the config object later changes nothing.
+
+## Decision plugins
+
+On each new user message the gateway can invoke one Python decision plugin. The plugin selects at most one emotion dimension from the resolved `emotions.json`; the engine then increases that dimension by `decision.increment`, clamped to the dimension range. No plugin, or a failed or invalid decision, means no decision-driven adjustment. Contact bookkeeping and proactive scheduling still run.
+
+The plugin contract is fixed. A plugin file exports:
+
+```python
+from companion_gateway.decision import DecisionRequest, DecisionResult
+
+def decide(request: DecisionRequest, options: dict) -> DecisionResult | None:
+    ...
+```
+
+`DecisionRequest` carries `message` (the stored user message text), `emotions` (the resolved dimension definitions), `state` (the current emotion snapshot), and `instruction` (the `decision_instruction` prompt slot). Return `DecisionResult(emotion="<dimension>")` for one allowed dimension, or `None` to abstain. The gateway hands the plugin deep copies of the definitions and state, so a plugin cannot mutate engine-owned objects. The gateway validates the returned dimension before it changes any state.
+
+Configuration:
+
+```json
+{
+  "decision": {
+    "module": "my_plugin",
+    "options": {"endpoint": "http://127.0.0.1:8000"},
+    "increment": 0.1,
+    "mods_dir": ""
+  }
+}
+```
+
+- `module`: a plain module name, resolved only under the mods directory as `<module>.py`. Empty disables decision-driven adjustment. A name containing a path separator or any non-identifier character is rejected, so a configured value cannot traverse to another directory.
+- `options`: passed through to the plugin verbatim.
+- `increment`: the bounded amount added to the selected dimension. Must be finite and in `(0, 1]`. Default `0.1`.
+- `mods_dir`: an optional mods directory. Empty uses `<default config dir>/mods`, that is `~/.config/companion-gateway/mods`. A relative value resolves against the config file location.
+
+`COMPANION_GATEWAY_MODS_DIR` overrides `decision.mods_dir` when set. This is the recommended way to test an isolated mods tree without touching the live configuration.
+
+Decision plugins are trusted Python. The gateway loads the file with `importlib` and calls it in-process. It does not sandbox plugins: a plugin can read and write anything the service process can. Only install plugins you wrote or reviewed. A plugin that fails to load, raises, or returns a malformed result is logged and ignored; message ingest keeps working.
+
+The default `decision_instruction` asks the plugin to choose the companion's own emotional response to the message, not to classify the speaker's emotion. Replace it with the `prompts` overlay when you want different selection criteria.
 
 ## Retrieval and embeddings
 

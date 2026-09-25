@@ -108,9 +108,6 @@ async def test_consolidated_error_mappings_keep_status_and_detail(config, monkey
         ("POST", "/state/v1/evergreen/facts/missing/forget", {"expected_revision": 1, "reason": "nope"},
          404, "evergreen fact not found"),
         ("POST", "/state/v1/evergreen/facts", {"key": "INVALID KEY", "text": "x"}, 422, None),
-        ("POST", "/state/v1/affect/events", {"label": "not-a-real-label"}, 422, None),
-        ("POST", "/state/v1/messages/999999/affect", {"label": "neutral"},
-         404, "affect classification not found"),
         ("POST", "/state/v1/proactive/events/nope/ack", {"consumer": "c", "outcome": "bogus"}, 409, None),
         ("POST", "/state/v1/proactive/events/nope/ack", {"consumer": "c", "outcome": "sent"},
          404, "event not found"),
@@ -153,8 +150,6 @@ async def test_state_api_and_openai_proxy_preserve_one_canonical_transcript(conf
     assert [m["text"] for m in stored] == ["Hello.", "First reply.", "Remember the amber window.",
                                            "Second reply."]
     assert stored[0]["content"] == {"role": "user", "content": "Hello."}
-    assert app.state.service.affect.classification(stored[0]["id"])["status"] == "applied"
-    assert app.state.service.affect.classification(stored[2]["id"])["status"] == "applied"
     assert len(captured) == 2
     injected = captured[1]["messages"][0]
     assert injected["role"] == "system"
@@ -208,7 +203,6 @@ async def test_proxy_tool_call_body_preserved_and_archived(config, monkeypatch):
     stored = app.state.service.memory.recent(limit=10)
     assert stored[-1]["content"] == tool_message
     assert '"name":"lookup"' in stored[-1]["text"]
-    assert app.state.service.affect.classification(stored[0]["id"])["status"] == "pending"
 
     app2 = _proxy_app(config, monkeypatch, fake_ok_reply)
     async with _client(app2) as client:
@@ -296,23 +290,26 @@ async def test_proxy_stream_passthrough_and_drain(config, monkeypatch, fake, sta
         assert b"data: [DONE]\n\n" in response.content
 
 
-async def test_agent_affect_update_has_resource_wrapper_and_conflict_rules(config, monkeypatch):
+async def test_old_label_endpoints_and_affect_label_are_gone(config, monkeypatch):
     async with _client(api.create_app(config)) as client:
-        message = await client.post("/state/v1/messages",
-                                    json={"harness": "astrbot", "conversation_id": "one", "role": "user",
-                                          "content": "I hate you.", "external_id": "affect-source"})
+        rejected = await client.post(
+            "/state/v1/messages",
+            json={"harness": "astrbot", "conversation_id": "one", "role": "user",
+                  "content": "I hate you.", "affect_label": "hostile"},
+        )
+        message = await client.post(
+            "/state/v1/messages",
+            json={"harness": "astrbot", "conversation_id": "one", "role": "user",
+                  "content": "I hate you."},
+        )
         message_id = message.json()["id"]
-        recorded = await client.post(f"/state/v1/messages/{message_id}/affect", json={"label": "neutral"})
-        retry = await client.post(f"/state/v1/messages/{message_id}/affect", json={"label": "neutral"})
-        conflict = await client.post(f"/state/v1/messages/{message_id}/affect", json={"label": "hostile"})
-        invalid = await client.post(f"/state/v1/messages/{message_id}/affect", json={"label": "angsty"})
-    assert recorded.status_code == 200
-    assert set(recorded.json()) == {"event"}
-    assert recorded.json()["event"]["label"] == "neutral"
-    assert recorded.json()["event"]["decision_source"] == "agent"
-    assert retry.json() == recorded.json()
-    assert conflict.status_code == 409
-    assert invalid.status_code == 422
+        record = await client.post(f"/state/v1/messages/{message_id}/affect", json={"label": "hostile"})
+        event = await client.post("/state/v1/affect/events", json={"label": "neutral"})
+    # A supplied affect_label is rejected, never silently accepted.
+    assert rejected.status_code == 422
+    # The label endpoints are absent.
+    assert record.status_code in (404, 405)
+    assert event.status_code in (404, 405)
 
 
 async def test_evergreen_api_lifecycle_and_memory_context(config, monkeypatch):
@@ -426,8 +423,8 @@ async def test_openapi_paths_are_documented(config, monkeypatch):
             "/state/v1/memory/index", "/state/v1/memory/search", "/state/v1/memory/{message_id}",
             "/state/v1/evergreen/facts", "/state/v1/evergreen/facts/{fact_id}/history",
             "/state/v1/evergreen/facts/{fact_id}/revisions", "/state/v1/evergreen/facts/{fact_id}/forget",
-            "/state/v1/context", "/state/v1/affect", "/state/v1/messages/{message_id}/affect",
-            "/state/v1/affect/events", "/state/v1/proactive/evaluate", "/state/v1/proactive/events",
+            "/state/v1/context", "/state/v1/affect",
+            "/state/v1/proactive/evaluate", "/state/v1/proactive/events",
             "/state/v1/proactive/events/{event_id}/ack", "/v1/models", "/v1/chat/completions",
         ]:
             assert path in paths, f"missing documented path {path}"
@@ -496,3 +493,5 @@ async def test_endpoint_response_keys_and_conflict_flow(config, monkeypatch):
         assert affect.status_code == 200
         assert {"base", "mood", "last_updated_at", "last_user_message_at", "last_proactive_sent_at",
                 "unanswered_proactive"} <= set(affect.json())
+
+

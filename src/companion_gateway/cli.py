@@ -93,13 +93,9 @@ def parser() -> argparse.ArgumentParser:
     evergreen_forget.add_argument("--source-message-id", type=int)
     evergreen_forget.add_argument("--reason", required=True)
 
-    affect = commands.add_parser("affect", help="Inspect or update affect")
+    affect = commands.add_parser("affect", help="Inspect affect")
     affect_commands = affect.add_subparsers(dest="affect_command", required=True)
     affect_commands.add_parser("show")
-    affect_event = affect_commands.add_parser("event")
-    affect_event.add_argument("label")
-    affect_event.add_argument("--note", default="")
-    affect_event.add_argument("--follow-up-minutes", type=int, default=None)
 
     proactive = commands.add_parser("proactive", help="Manage proactive events")
     proactive_commands = proactive.add_subparsers(dest="proactive_command", required=True)
@@ -282,22 +278,8 @@ def _affect_show(service: CompanionService, proactive: ProactiveEngine, args: ar
     _print(service.affect.status())
 
 
-def _affect_event(service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace) -> None:
-    try:
-        result = service.affect.apply_label(
-            args.label,
-            note=args.note,
-            follow_up_minutes=args.follow_up_minutes,
-        )
-    except ValueError as error:
-        print(f"error: {error}", file=sys.stderr)
-        raise SystemExit(2) from error
-    _print({"label": result.label, "event_id": result.event_id, "state": result.state})
-
-
 _AFFECT_HANDLERS: dict[str, Handler] = {
     "show": _affect_show,
-    "event": _affect_event,
 }
 
 

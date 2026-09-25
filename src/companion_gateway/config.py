@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import os
 import re
 import types as _types
@@ -23,11 +24,22 @@ _UPSTREAM = _DEFAULTS["upstream"]
 _MEMORY = _DEFAULTS["memory"]
 _EMBEDDING = _MEMORY["embedding"]
 _EVERGREEN = _DEFAULTS["evergreen"]
+_DECISION = _DEFAULTS["decision"]
 _AFFECT_KNOBS = _EMOTIONS["affect"]
 _PROACTIVE_EMOTIONAL = _EMOTIONS["proactive"]
 _PROACTIVE = _DEFAULTS["proactive"]
 _IDENTITY_PROMPT = _DEFAULTS["identity_prompt"]
 _PROMPTS = _DEFAULTS["prompts"]
+
+
+def default_config_dir() -> Path:
+    """Return the default configuration directory.
+
+    This is the location the service falls back to when no explicit config path
+    and no ``COMPANION_GATEWAY_CONFIG`` are given. It also anchors the default
+    mods directory (``<default config dir>/mods``).
+    """
+    return Path.home() / ".config" / "companion-gateway"
 
 # Config fields for emotional knobs default to this sentinel. __post_init__
 # fills unset fields from the packaged emotional defaults and records which
@@ -96,18 +108,39 @@ class AffectConfig:
     expected_emotion_version: str = ""
     mood_follow_hours: float = _UNSET
     mood_return_hours: float = _UNSET
-    habituation_window_minutes: int = _UNSET
-    habituation_factor: float = _UNSET
     silence_longing_per_hour: float = _UNSET
     silence_anxiety_per_hour: float = _UNSET
     silence_seeking_per_hour: float = _UNSET
-    classification_fallback_seconds: int = _UNSET
     dimensions: dict[str, dict[str, float]] = field(default_factory=dict)
-    label_patterns: dict[str, list[str]] = field(default_factory=dict)
     explicit_knobs: frozenset[str] = field(default=frozenset(), init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         _fill_unset(self, _AFFECT_KNOBS, "explicit_knobs")
+
+
+@dataclass(slots=True)
+class DecisionConfig:
+    """Configuration for the Python decision plugin.
+
+    ``module`` is a plain module name resolved only under the effective mods
+    directory. ``increment`` is the bounded amount the engine adds to the single
+    selected emotion dimension. ``options`` is passed through to the plugin.
+    ``mods_dir`` optionally overrides the default mods directory.
+    """
+
+    module: str = _DECISION["module"]
+    options: dict[str, Any] = field(default_factory=lambda: dict(_DECISION["options"]))
+    increment: float = _DECISION["increment"]
+    mods_dir: str = _DECISION["mods_dir"]
+
+    def __post_init__(self) -> None:
+        value = self.increment
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("decision.increment must be a finite number in (0, 1]")
+        number = float(value)
+        if not math.isfinite(number) or not 0 < number <= 1:
+            raise ValueError("decision.increment must be a finite number in (0, 1]")
+        self.increment = number
 
 
 @dataclass(slots=True)
@@ -158,6 +191,7 @@ class AppConfig:
     evergreen: EvergreenConfig = field(default_factory=EvergreenConfig)
     affect: AffectConfig = field(default_factory=lambda: AffectConfig())
     proactive: ProactiveConfig = field(default_factory=lambda: ProactiveConfig())
+    decision: DecisionConfig = field(default_factory=lambda: DecisionConfig())
 
     @property
     def database_path(self) -> Path:
@@ -281,6 +315,9 @@ def _app_config_from_raw(raw: dict[str, Any], source_dir: Path, is_json: bool) -
         IdentityPromptConfig, raw.get("identity_prompt"), "identity_prompt", source_dir
     )
     prompts = _path_section(PromptsConfig, raw.get("prompts"), "prompts", source_dir)
+    decision = _strict_section(DecisionConfig, raw.get("decision"), "decision")
+    if decision.mods_dir and not Path(decision.mods_dir).is_absolute():
+        decision.mods_dir = str((source_dir / Path(decision.mods_dir).expanduser()).resolve())
     emotions_raw = raw.get("emotions")
     if emotions_raw is not None:
         if not isinstance(emotions_raw, dict):
@@ -327,6 +364,7 @@ def _app_config_from_raw(raw: dict[str, Any], source_dir: Path, is_json: bool) -
         evergreen=_strict_section(EvergreenConfig, raw.get("evergreen"), "evergreen"),
         affect=affect,
         proactive=_strict_section(ProactiveConfig, raw.get("proactive"), "proactive"),
+        decision=decision,
     )
 
 
@@ -344,6 +382,10 @@ def _resolve_config_path(explicit: str | Path | None) -> Path | None:
                 f"configuration file not found (from COMPANION_GATEWAY_CONFIG): {path}"
             )
         return path
+    for name in ("config.json", "config.yaml"):
+        path = default_config_dir() / name
+        if path.exists():
+            return path
     for candidate in ("config.json", "config.yaml"):
         path = Path(candidate)
         if path.exists():
@@ -360,8 +402,8 @@ def load_config(path: str | Path | None = None) -> AppConfig:
     cfg = _app_config_from_raw(raw, config_path.parent, is_json=is_json)
     if not is_json:
         warnings.warn(
-            f"{config_path} is a legacy YAML config and is deprecated; "
-            "use config.json or run 'companion-gateway migrate-config "
+            f"{config_path} is a legacy YAML config and is deprecated. "
+            "Use config.json or run 'companion-gateway migrate-config "
             f"{config_path} config.json' to convert.",
             DeprecationWarning,
             stacklevel=2,
@@ -379,6 +421,7 @@ def _validate_packaged_defaults() -> None:
     _memory_section(_DEFAULTS["memory"])
     _strict_section(EvergreenConfig, _DEFAULTS["evergreen"], "packaged defaults evergreen")
     _strict_section(ProactiveConfig, _DEFAULTS["proactive"], "packaged defaults proactive")
+    _strict_section(DecisionConfig, _DEFAULTS["decision"], "packaged defaults decision")
     _strict_section(
         IdentityPromptConfig, _DEFAULTS["identity_prompt"], "packaged defaults identity_prompt"
     )
@@ -417,6 +460,7 @@ _MIGRATION_ORDER = [
     "evergreen",
     "affect",
     "proactive",
+    "decision",
 ]
 
 _PATH_SECTIONS = {"emotions", "identity_prompt", "prompts"}
@@ -458,6 +502,15 @@ def _transform_for_migration(raw: dict[str, Any], src: Path, is_json: bool) -> d
                 if not value.is_absolute():
                     value = (src.parent / value).resolve()
                 section["path"] = str(value)
+            out[key] = section
+        elif key == "decision":
+            section = copy.deepcopy(raw[key])
+            mods_dir = section.get("mods_dir")
+            if mods_dir:
+                value = Path(str(mods_dir)).expanduser()
+                if not value.is_absolute():
+                    value = (src.parent / value).resolve()
+                section["mods_dir"] = str(value)
             out[key] = section
         else:
             out[key] = copy.deepcopy(raw[key])

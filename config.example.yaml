@@ -45,19 +45,14 @@ evergreen:
 affect:
   mood_follow_hours: 12
   mood_return_hours: 72
-  habituation_window_minutes: 15
-  habituation_factor: 0.7
   silence_longing_per_hour: 0.04
   silence_anxiety_per_hour: 0.02
   silence_seeking_per_hour: 0.02
-  classification_fallback_seconds: 120
   dimensions:
     fear:
       neutral: 0.0
       floor: 0.0
       tau: 7
-  # Add phrases here if the built-in deterministic matcher misses your language.
-  label_patterns: {}
 
 proactive:
   enabled: true
@@ -72,3 +67,14 @@ proactive:
   quiet_end_hour: 8
   lease_seconds: 120
   failed_retry_minutes: 15
+
+decision:
+  # Plain module name resolved only under the mods directory. Empty disables
+  # decision-driven adjustment.
+  module: ""
+  # Passed through to the plugin verbatim.
+  options: {}
+  # Bounded amount applied to the single selected emotion dimension.
+  increment: 0.1
+  # Defaults to ~/.config/companion-gateway/mods when empty.
+  mods_dir: ""
