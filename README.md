@@ -1,12 +1,13 @@
 # Companion State Gateway
 
-Run the [quickstart](#quickstart) to start a local gateway.
 
-`companion-gateway` is a Python API reference implementation of a combined memory, personality, and affect structure for LLM companions. You supply the personality; the gateway stores memory, affect, and proactive state in one SQLite file, so you can change the harness without migrating data.
+`companion-gateway` is a Python API reference implementation of a combined memory, personality, and affect for LLM companions. Essentially, it's a small FastAPI application with a completely configurable emotional system and a generic FTS5-Embedding hybrid memory structure combined. Every prompt, emotional vectors and their thresholds is completely customizable through JSON. It also has an optional OpenAI-style endpoint that can be used as lightweight proxy for any OpenAI-compliant clients.
+
+It's a completely independent app and works without any harnesses so you can use any harnesses (or use multiple at once) without migration. It also has a nice little CLI for *you* to feel in control, if you prefer that way.
 
 ## Quickstart
 
-Requires Python 3.11 or newer and uv. Budget about 5 minutes when both are installed, or allow 10 to 15 minutes for the first install on a slow connection.
+Requires Python 3.11 or newer and uv. 
 
 1. Copy the example config into the default config directory: `mkdir -p ~/.config/companion-gateway && cp config.example.json ~/.config/companion-gateway/config.json`
 2. Install the CLI: `uv tool install --editable .`
@@ -26,9 +27,9 @@ Success reports `"status": "ok"` and a passing `database` integrity check. If st
 
 ## How it works
 
-A user message reaches the gateway, which builds context from memory, personality, and affect state and returns it to your harness or model; the harness archives the reply through the gateway. A trusted Python decision plugin can select one emotion dimension to adjust per new user message; see [docs/configuration.md](docs/configuration.md#decision-plugins).
+A user message reaches the gateway, which builds context from memory, personality, and affect state and returns it to your harness or model. The harness gets the reply through the gateway. A trusted Python decision plugin can select one emotion dimension to adjust per new user message; see [docs/configuration.md](docs/configuration.md#decision-plugins).
 
-Build your harness integration with the [API and integration guide](docs/api.md).
+Build your harness plugin with the [API and integration guide](docs/api.md).
 
 ## Documentation
 

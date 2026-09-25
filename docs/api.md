@@ -2,7 +2,7 @@
 
 The gateway stores raw conversation memory, persistent affect, evergreen facts, and proactive delivery decisions in one SQLite file. It does not own the persona or the model. You send it messages, ask for a context injection, then call your provider yourself or let the optional proxy call it for you.
 
-Base URL: `http://127.0.0.1:8765`. FastAPI serves the live schema at `/docs` and `/openapi.json`.
+Base URL: `http://127.0.0.1:8765`. FastAPI serves the live schema at `/docs` and `/openapi.json` when auth is disabled; with `api_token_env` set, both are disabled.
 
 The state API lives under `/state/v1/*`. The optional OpenAI-compatible proxy lives under `/v1/*`. `/health` reports process and index status.
 
@@ -33,9 +33,9 @@ The state API lives under `/state/v1/*`. The optional OpenAI-compatible proxy li
 
 ## Auth and boundaries
 
-Set `api_token_env` to an environment variable name to protect `/state/v1/*`. With that variable holding a value, every state request needs the same value in `X-Companion-Token`. A missing or wrong token returns `401 {"detail":"invalid companion token"}`. An empty `api_token_env` leaves the state API open, which suits a trusted network.
+Set `api_token_env` to an environment variable name to protect the data and model routes: every `/state/v1/*` request plus `/v1/models` and `/v1/chat/completions` needs the variable's value in `X-Companion-Token`. A missing or wrong token returns `401 {"detail":"invalid companion token"}`. An empty `api_token_env` leaves the API open, which suits a trusted network. The variable is read once at startup; changing it requires a restart.
 
-State auth covers `/state/v1/*`. The proxy and the docs endpoints take no companion token, so a caller reaches them whether or not state auth is on. `/docs` and `/openapi.json` expose endpoint structure; keep them off public addresses.
+Auth covers `/state/v1/*`, `/v1/models`, and `/v1/chat/completions`. `/health` stays public. When auth is enabled, `/docs`, `/redoc`, and `/openapi.json` are disabled to keep the public surface minimal; when it is disabled they are served as usual.
 
 The proxy picks its upstream credential per request. A nonempty value in the environment variable named by `upstream.api_key_env` makes the proxy send `Bearer <value>` and ignore the caller `Authorization` header. Otherwise the proxy forwards the caller `Authorization` header. The configured key wins.
 
@@ -227,7 +227,7 @@ With `api_token_env` set on the gateway, put the same value in the plugin's `api
 - It forwards non-streaming responses byte for byte, including upstream errors and status codes.
 - It forwards streaming responses as the raw SSE byte stream.
 
-`/v1/models` returns `503` when `upstream.base_url` is empty. `/v1/chat/completions` returns `503` in the same case and `422` when `messages` is not a list or the injection budget cannot fit. The proxy injects context and archives turns, so it needs a working gateway database even though it takes no companion token.
+`/v1/models` returns `503` when `upstream.base_url` is empty. `/v1/chat/completions` returns `503` in the same case and `422` when `messages` is not a list or the injection budget cannot fit. The proxy injects context and archives turns, so it needs a working gateway database. It requires the companion token when `api_token_env` is set.
 
 The proxy forwards OpenAI chat shapes. It passes one authorization header plus content-type and rewrites nothing else. OAuth flows and OpenAI Responses-style endpoints stay out of scope. Point AstrBot at the state API through this plugin. AstrBot cannot place its changing session ID in static provider headers, so a proxy route would collapse conversations into `default`. Other harnesses can use the proxy when they can set `X-Conversation-Id`, `X-Harness`, and `X-Companion-Route`.
 

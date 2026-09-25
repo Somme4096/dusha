@@ -37,7 +37,7 @@ Path rules differ by format:
 - `host`, `port`: bind address and port. Defaults `127.0.0.1` and `8765`.
 - `data_dir`: directory holding `state.sqlite3`.
 - `timezone`: local zone for quiet hours and daily limits.
-- `api_token_env`: name of the environment variable holding the state API token. Empty disables state auth.
+- `api_token_env`: name of the environment variable holding the shared API token. Empty keeps local unauthenticated mode.
 - `upstream`: `base_url`, `api_key_env` (default `UPSTREAM_API_KEY`), `timeout_seconds`. An empty `base_url` disables the chat proxy.
 
 Focused example:

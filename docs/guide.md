@@ -80,11 +80,35 @@ journalctl --user -u companion-gateway --no-pager -n20
 
 The default bind stays on localhost. To reach the service from another device, terminate TLS at a reverse proxy or keep the service on a private network. Do not expose the plaintext HTTP port.
 
-Set `api_token_env` to the name of an environment variable holding a long random token. An empty `api_token_env` disables state auth. When it names a variable, the service reads that variable on each request: a missing or empty value makes every `/state/v1/*` request return 401, and a set value requires each request to send that value in `X-Companion-Token`. Export the named variable before you start the service. Keep the state API on a trusted network while auth is disabled.
+Set `api_token_env` to the name of an environment variable holding a long random token. An empty `api_token_env` keeps local unauthenticated mode. When it names a variable, the service resolves that variable once at startup and requires every data and model request to send the same value in `X-Companion-Token`. Export the variable before you start the service; changing its value requires a restart.
 
-`/health`, `/v1/models`, and `/v1/chat/completions` skip the companion token. Put the whole service behind edge access controls when it leaves localhost.
+```json
+{
+  "api_token_env": "COMPANION_TOKEN"
+}
+```
 
-The proxy uses a server-owned key when `upstream.api_key_env` is nonempty. It sends that value as a bearer token and drops the caller's `Authorization` header. Otherwise it forwards the caller's header.
+```sh
+export COMPANION_TOKEN="$(openssl rand -hex 32)"
+companion-gateway serve
+```
+
+In another terminal, set `COMPANION_TOKEN` to the same value (do not generate a new one), then test:
+
+```sh
+curl -X POST http://127.0.0.1:8765/state/v1/context \
+  -H 'Content-Type: application/json' \
+  -H "X-Companion-Token: $COMPANION_TOKEN" \
+  -d '{"query":"Hello"}'
+```
+
+Success check: the response is `200` with a `context` object, not `401`.
+
+Auth covers every `/state/v1/*` route plus `/v1/models` and `/v1/chat/completions`. A missing or wrong token returns `401 {"detail":"invalid companion token"}`. `/health` stays public and returns only process, database, and index status; it never carries the token or conversation data. The interactive docs (`/docs`, `/redoc`) and `/openapi.json` are disabled while auth is on, to keep the public surface minimal.
+
+A configured `api_token_env` whose environment variable is missing or empty fails startup with a clear error. It never falls back to unauthenticated mode. Keep the API on a trusted network while auth is disabled.
+
+The proxy uses a server-owned key when `upstream.api_key_env` is nonempty. It sends that value as a bearer token and drops the caller's `Authorization` header. Otherwise it forwards the caller's `Authorization` header. The companion token only authorizes the caller; it never replaces the upstream credential.
 
 ## Backup, restore, and troubleshoot
 
@@ -111,7 +135,7 @@ Common problems:
 - Startup fails with a missing config file: `--config` and `COMPANION_GATEWAY_CONFIG` treat a missing file as an error. Fix the path or drop the explicit setting.
 - Startup fails with a missing identity file: the configured `identity_prompt.path` does not exist or is not valid UTF-8. Correct the file or clear the path.
 - Hybrid search returns lexical results: the embedding endpoint is unreachable or misconfigured. Check `memory.embedding.base_url`, the model, and the key variable. `memory index status` reports `cooling_down` and `last_error`.
-- State endpoints return 401: the request lacks a matching `X-Companion-Token` header, or the variable named by `api_token_env` is missing or empty. Set and export the named variable before launch.
+- Auth fails at startup or on request: `api_token_env` names an unset or empty variable (startup error), or a data or model request lacks a matching `X-Companion-Token` header (401). Export the variable, or clear `api_token_env` only when you intend to disable auth.
 - A second process causes races or duplicate events: two processes share one `state.sqlite3`. Run one process per database.
 
 ## Deployment limits
