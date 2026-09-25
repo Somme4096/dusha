@@ -1,9 +1,11 @@
 # Companion State Gateway
 
 
-`companion-gateway` is a Python API reference implementation of a combined memory, personality, and affect for LLM companions. Essentially, it's a small FastAPI application with a completely configurable emotional system and a generic FTS5-Embedding hybrid memory structure combined. Every prompt, emotional vectors and their thresholds is completely customizable through JSON. It also has an optional OpenAI-style endpoint that can be used as lightweight proxy for any OpenAI-compliant clients.
+`companion-gateway` is a Python API reference implementation of a combined memory, personality, and affect for LLM companions.
 
-It's a completely independent app and works without any harnesses so you can use any harnesses (or use multiple at once) without migration. It also has a nice little CLI for *you* to feel in control, if you prefer that way.
+Essentially, it's a small FastAPI application with a completely configurable emotional system and a generic FTS5-Embedding hybrid memory structure combined. 
+
+Every prompt, emotional vectors and their thresholds is completely customizable through JSON. 
 
 ## Quickstart
 
