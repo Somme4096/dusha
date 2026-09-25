@@ -13,7 +13,6 @@ from .config import load_config, migrate_config
 from .proactive import ProactiveEngine
 from .service import CompanionService
 
-# Command handlers receive the fully constructed service and proactive engine.
 Handler = Callable[[CompanionService, ProactiveEngine, argparse.Namespace], None]
 
 
@@ -112,9 +111,6 @@ def parser() -> argparse.ArgumentParser:
     return root
 
 
-# ---------------------------------------------------------------------------
-# Handlers and dispatch tables
-# ---------------------------------------------------------------------------
 
 
 def _cmd_health(service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace) -> None:

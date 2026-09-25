@@ -22,10 +22,6 @@ class ProactiveEngine:
         self.timezone = ZoneInfo(config.timezone)
         effective = _emotions.resolve_emotions(service.affect.config, config.proactive)
         self._emotional = dict(effective["proactive"])
-        # Proactive thresholds are part of the emotional definition snapshot.
-        # Fold the resolved thresholds into the affect engine snapshot and
-        # recompute its fingerprint so the fingerprint reflects the exact
-        # effective behavior-driving configuration at assembly time.
         service.affect.emotions["proactive"] = dict(self._emotional)
         service.affect.emotions_fingerprint = _emotions.fingerprint(effective)
 

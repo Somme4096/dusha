@@ -1,13 +1,3 @@
-"""OpenAPI response schemas for stable endpoint shapes.
-
-These models document the documented fields of each response. Every model allows
-extra keys (`extra="allow"`), so undeclared extra keys pass through untouched.
-Declared fields undergo Pydantic validation and may be coerced; the regression
-tests cover the current response types. Runtime endpoint semantics are
-unchanged. The `responses` decorator entries for additional endpoints are
-documentation-only and never run response validation.
-"""
-
 from __future__ import annotations
 
 from typing import Any
@@ -20,8 +10,6 @@ class ExtraAllow(BaseModel):
 
 
 class ErrorDetail(ExtraAllow):
-    # State endpoints raise HTTPException with a string detail; FastAPI request
-    # validation returns a list of error objects. Both are documented here.
     detail: str | list[dict[str, Any]]
 
 

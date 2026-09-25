@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import os
+import secrets
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any, NoReturn
@@ -27,16 +28,30 @@ from .service import CompanionService
 logger = logging.getLogger("companion_gateway")
 
 
-# Documentation-only OpenAPI response entries for the error shapes the state
-# endpoints raise. These never run response validation.
+class AuthConfigError(ValueError):
+    pass
+
+
+def _resolve_token(cfg: AppConfig) -> str:
+    if not cfg.api_token_env:
+        return ""
+    value = os.getenv(cfg.api_token_env, "")
+    if not value:
+        raise AuthConfigError(
+            f"api_token_env is set to {cfg.api_token_env!r} but that environment variable "
+            "is missing or empty. Export it or clear api_token_env to disable auth"
+        )
+    return value
+
+
 _ERROR_DOCS = {
     401: {
         "model": _schema.ErrorDetail,
-        "description": "Companion token missing or invalid (when api_token_env is set)",
+        "description": "https://github.com/Somme4096/sophia",
     },
-    404: {"model": _schema.ErrorDetail, "description": "Resource not found"},
-    409: {"model": _schema.ErrorDetail, "description": "Conflicting state change"},
-    422: {"model": _schema.ErrorDetail, "description": "Malformed request or unsupported value"},
+    404: {"model": _schema.ErrorDetail, "description": "https://github.com/Somme4096/sophia"},
+    409: {"model": _schema.ErrorDetail, "description": "https://github.com/Somme4096/sophia"},
+    422: {"model": _schema.ErrorDetail, "description": "https://github.com/Somme4096/sophia"},
 }
 
 
@@ -47,12 +62,6 @@ def _raise_http(
     conflict: type[Exception] | tuple[type[Exception], ...] = (),
     invalid: int = 422,
 ) -> NoReturn:
-    """Translate a service exception into the equivalent HTTP error.
-
-    KeyError becomes 404 (with ``not_found`` when provided), the ``conflict``
-    exception types become 409, and ValueError becomes ``invalid`` (422 by
-    default). Anything else is re-raised unchanged.
-    """
     if isinstance(error, KeyError):
         raise HTTPException(status_code=404, detail=not_found or "resource not found") from error
     if isinstance(error, conflict):
@@ -60,6 +69,24 @@ def _raise_http(
     if isinstance(error, ValueError):
         raise HTTPException(status_code=invalid, detail=str(error)) from error
     raise error
+
+
+async def _service_call(
+    function,
+    /,
+    *args,
+    errors: tuple[type[Exception], ...],
+    not_found: str | None = None,
+    conflict: type[Exception] | tuple[type[Exception], ...] = (),
+    invalid: int = 422,
+    **kwargs,
+):
+    try:
+        return await asyncio.to_thread(function, *args, **kwargs)
+    except Exception as error:
+        if not isinstance(error, errors):
+            raise
+        _raise_http(error, not_found=not_found, conflict=conflict, invalid=invalid)
 
 
 class GatewayInput(BaseModel):
@@ -150,6 +177,8 @@ async def _semantic_scheduler(service: CompanionService, interval: int) -> None:
 
 def create_app(config: AppConfig | None = None) -> FastAPI:
     cfg = config or load_config()
+    expected_token = _resolve_token(cfg)
+    auth_enabled = bool(expected_token)
     service = CompanionService(cfg)
     proactive = ProactiveEngine(service, cfg)
 
@@ -181,18 +210,15 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     app = FastAPI(
         title="Companion State Gateway",
         version="0.1.0",
-        description=(
-            "Harness-neutral state gateway with durable raw memory, affect, and "
-            "proactive events. The provider-neutral context endpoint returns the "
-            "injection string plus structured metadata; the optional OpenAI-compatible "
-            "proxy forwards chat completions. State endpoints are protected by the "
-            "companion token only when `api_token_env` is configured."
-        ),
+        description="https://github.com/Somme4096/sophia",
         lifespan=lifespan,
+        docs_url=None if auth_enabled else "/docs",
+        redoc_url=None if auth_enabled else "/redoc",
+        openapi_url=None if auth_enabled else "/openapi.json",
         openapi_tags=[
-            {"name": "health", "description": "Service health and readiness."},
-            {"name": "state", "description": "Memory, affect, evergreen, context, proactive state."},
-            {"name": "proxy", "description": "Optional OpenAI-compatible chat proxy."},
+            {"name": "health", "description": "https://github.com/Somme4096/sophia"},
+            {"name": "state", "description": "https://github.com/Somme4096/sophia"},
+            {"name": "proxy", "description": "https://github.com/Somme4096/sophia"},
         ],
     )
     app.state.config = cfg
@@ -200,10 +226,12 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     app.state.proactive = proactive
 
     async def authorized(x_companion_token: str = Header(default="")) -> None:
-        if cfg.api_token_env:
-            expected = os.getenv(cfg.api_token_env, "")
-            if not expected or x_companion_token != expected:
-                raise HTTPException(status_code=401, detail="invalid companion token")
+        if not auth_enabled:
+            return
+        if not x_companion_token or not secrets.compare_digest(
+            x_companion_token.encode("utf-8"), expected_token.encode("utf-8")
+        ):
+            raise HTTPException(status_code=401, detail="invalid companion token")
 
     @app.get("/health", tags=["health"], response_model=_schema.HealthResponse)
     async def health() -> dict[str, Any]:
@@ -220,7 +248,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         dependencies=[Depends(authorized)],
         responses={
             401: _ERROR_DOCS[401],
-            200: {"model": _schema.MemoryIndexStatus, "description": "Disposable semantic index status"},
+            200: {"model": _schema.MemoryIndexStatus, "description": "https://github.com/Somme4096/sophia"},
         },
     )
     async def memory_index_status() -> dict[str, Any]:
@@ -235,19 +263,17 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         responses={401: _ERROR_DOCS[401], 422: _ERROR_DOCS[422]},
     )
     async def ingest_message(body: MessageInput) -> dict[str, Any]:
-        try:
-            return await asyncio.to_thread(
-                service.ingest_message,
-                harness=body.harness,
-                conversation_id=body.conversation_id,
-                role=body.role,
-                content=body.content,
-                route=body.route,
-                external_id=body.external_id,
-                occurred_at=body.occurred_at,
-            )
-        except ValueError as error:
-            _raise_http(error)
+        return await _service_call(
+            service.ingest_message,
+            harness=body.harness,
+            conversation_id=body.conversation_id,
+            role=body.role,
+            content=body.content,
+            route=body.route,
+            external_id=body.external_id,
+            occurred_at=body.occurred_at,
+            errors=(ValueError,),
+        )
 
     @app.get(
         "/state/v1/messages/{message_id}",
@@ -256,7 +282,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         responses={
             401: _ERROR_DOCS[401],
             404: _ERROR_DOCS[404],
-            200: {"model": _schema.MessageResponse, "description": "Stored message"},
+            200: {"model": _schema.MessageResponse, "description": "https://github.com/Somme4096/sophia"},
         },
     )
     async def get_message(message_id: int) -> dict[str, Any]:
@@ -311,20 +337,19 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         responses={401: _ERROR_DOCS[401], 409: _ERROR_DOCS[409], 422: _ERROR_DOCS[422]},
     )
     async def remember_fact(body: RememberFactInput) -> dict[str, Any]:
-        try:
-            fact = await asyncio.to_thread(
-                service.evergreen.remember,
-                key=body.key,
-                text=body.text,
-                priority=body.priority,
-                source_message_id=body.source_message_id,
-                reason=body.reason,
-                review_after=body.review_after,
-                expires_at=body.expires_at,
-                created_by="agent",
-            )
-        except (EvergreenConflict, ValueError) as error:
-            _raise_http(error, conflict=EvergreenConflict)
+        fact = await _service_call(
+            service.evergreen.remember,
+            key=body.key,
+            text=body.text,
+            priority=body.priority,
+            source_message_id=body.source_message_id,
+            reason=body.reason,
+            review_after=body.review_after,
+            expires_at=body.expires_at,
+            created_by="agent",
+            errors=(EvergreenConflict, ValueError),
+            conflict=EvergreenConflict,
+        )
         return {"fact": fact}
 
     @app.get(
@@ -355,13 +380,12 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         responses={401: _ERROR_DOCS[401], 404: _ERROR_DOCS[404]},
     )
     async def fact_history(fact_id: str) -> dict[str, Any]:
-        try:
-            revisions = await asyncio.to_thread(
-                service.evergreen.history,
-                fact_id,
-            )
-        except KeyError as error:
-            _raise_http(error, not_found="evergreen fact not found")
+        revisions = await _service_call(
+            service.evergreen.history,
+            fact_id,
+            errors=(KeyError,),
+            not_found="evergreen fact not found",
+        )
         return {"revisions": revisions}
 
     @app.post(
@@ -391,10 +415,13 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             kwargs["review_after"] = body.review_after
         if "expires_at" in body.model_fields_set:
             kwargs["expires_at"] = body.expires_at
-        try:
-            fact = await asyncio.to_thread(service.evergreen.revise, **kwargs)
-        except (KeyError, EvergreenConflict, ValueError) as error:
-            _raise_http(error, not_found="evergreen fact not found", conflict=EvergreenConflict)
+        fact = await _service_call(
+            service.evergreen.revise,
+            errors=(KeyError, EvergreenConflict, ValueError),
+            not_found="evergreen fact not found",
+            conflict=EvergreenConflict,
+            **kwargs,
+        )
         return {"fact": fact}
 
     @app.post(
@@ -410,17 +437,17 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         },
     )
     async def forget_fact(fact_id: str, body: ForgetFactInput) -> dict[str, Any]:
-        try:
-            fact = await asyncio.to_thread(
-                service.evergreen.forget,
-                fact_id=fact_id,
-                expected_revision=body.expected_revision,
-                reason=body.reason,
-                source_message_id=body.source_message_id,
-                created_by="agent",
-            )
-        except (KeyError, EvergreenConflict, ValueError) as error:
-            _raise_http(error, not_found="evergreen fact not found", conflict=EvergreenConflict)
+        fact = await _service_call(
+            service.evergreen.forget,
+            fact_id=fact_id,
+            expected_revision=body.expected_revision,
+            reason=body.reason,
+            source_message_id=body.source_message_id,
+            created_by="agent",
+            errors=(KeyError, EvergreenConflict, ValueError),
+            not_found="evergreen fact not found",
+            conflict=EvergreenConflict,
+        )
         return {"fact": fact}
 
     @app.post(
@@ -432,17 +459,15 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         responses={401: _ERROR_DOCS[401], 422: _ERROR_DOCS[422]},
     )
     async def context(body: ContextInput) -> dict[str, Any]:
-        try:
-            return await asyncio.to_thread(
-                service.build_context,
-                query=body.query,
-                harness=body.harness,
-                conversation_id=body.conversation_id,
-                exclude_message_ids=set(body.exclude_message_ids),
-                include_recent=body.include_recent,
-            )
-        except ContextBudgetError as error:
-            _raise_http(error)
+        return await _service_call(
+            service.build_context,
+            query=body.query,
+            harness=body.harness,
+            conversation_id=body.conversation_id,
+            exclude_message_ids=set(body.exclude_message_ids),
+            include_recent=body.include_recent,
+            errors=(ContextBudgetError,),
+        )
 
     @app.get(
         "/state/v1/affect",
@@ -490,24 +515,34 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         responses={401: _ERROR_DOCS[401], 404: _ERROR_DOCS[404], 409: _ERROR_DOCS[409]},
     )
     async def acknowledge_proactive(event_id: str, body: AckInput) -> dict[str, Any]:
-        try:
-            return await asyncio.to_thread(
-                proactive.acknowledge,
-                event_id,
-                body.consumer,
-                body.outcome,
-                text=body.text,
-                external_id=body.external_id,
-                error=body.error,
-            )
-        except (KeyError, ValueError) as error:
-            _raise_http(error, not_found="event not found", invalid=409)
+        return await _service_call(
+            proactive.acknowledge,
+            event_id,
+            body.consumer,
+            body.outcome,
+            text=body.text,
+            external_id=body.external_id,
+            error=body.error,
+            errors=(KeyError, ValueError),
+            not_found="event not found",
+            invalid=409,
+        )
 
-    @app.get("/v1/models", tags=["proxy"])
+    @app.get(
+        "/v1/models",
+        tags=["proxy"],
+        dependencies=[Depends(authorized)],
+        responses={401: _ERROR_DOCS[401]},
+    )
     async def models(request: Request) -> Response:
         return await _proxy_passthrough(request, cfg, "/models")
 
-    @app.post("/v1/chat/completions", tags=["proxy"])
+    @app.post(
+        "/v1/chat/completions",
+        tags=["proxy"],
+        dependencies=[Depends(authorized)],
+        responses={401: _ERROR_DOCS[401]},
+    )
     async def chat_completions(request: Request) -> Response:
         if not cfg.upstream.base_url:
             raise HTTPException(status_code=503, detail="upstream.base_url is not configured")
@@ -571,9 +606,10 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
 
 def _inject_context(messages: list[dict[str, Any]], injection: str) -> list[dict[str, Any]]:
     output = [dict(message) for message in messages]
-    position = 0
-    while position < len(output) and output[position].get("role") == "system":
-        position += 1
+    position = next(
+        (index for index, message in enumerate(output) if message.get("role") != "system"),
+        len(output),
+    )
     output.insert(position, {"role": "system", "content": injection})
     return output
 
@@ -602,7 +638,6 @@ async def _upstream_request(request: Request, cfg: AppConfig, path: str, body: A
 def _passthrough_response(
     response: httpx.Response, *, media_type: str | None = "application/json"
 ) -> Response:
-    """Forward an upstream response body and status unchanged."""
     return Response(
         content=response.content,
         status_code=response.status_code,
@@ -687,11 +722,6 @@ async def _ingest_transcript(
     conversation_id: str,
     route: str,
 ) -> tuple[str, int | None, str]:
-    """Persist the proxy transcript's user/assistant/tool turns in order.
-
-    Returns the rolling transcript key, the id of the latest user message, and
-    that message's stored text (used to seed the state context query).
-    """
     transcript_key = ""
     current_message_id: int | None = None
     current_query = ""
@@ -732,7 +762,6 @@ async def _ingest_assistant_response(
     message: dict[str, Any],
     source_payload: Any | None = None,
 ) -> None:
-    """Persist an upstream assistant reply as the next transcript turn."""
     content = message.get("content")
     if not text_from_content(content).strip():
         content = message

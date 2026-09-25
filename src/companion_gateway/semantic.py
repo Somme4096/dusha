@@ -92,7 +92,6 @@ class OpenAIEmbeddingClient:
 
 
 class SQLiteVectorAdapter:
-    """Isolates the pre-v1 sqlite-vec API from the retrieval code."""
 
     @staticmethod
     def prepare(db: Any) -> Any:
@@ -112,7 +111,6 @@ class SQLiteVectorAdapter:
 
 
 class SemanticIndex:
-    """Disposable child chunks and vectors backed by canonical message rows."""
 
     def __init__(self, database: Database, config: MemoryConfig):
         self.database = database
@@ -455,6 +453,4 @@ class SemanticIndex:
 
     @staticmethod
     def _fingerprint(value: dict[str, Any]) -> str:
-        # Legacy json.dumps default (ensure_ascii=True) must be preserved so
-        # existing index keys are stable for every input, including non-ASCII.
         return short_fingerprint(value, ensure_ascii=True)

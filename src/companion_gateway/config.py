@@ -33,23 +33,12 @@ _PROMPTS = _DEFAULTS["prompts"]
 
 
 def default_config_dir() -> Path:
-    """Return the default configuration directory.
-
-    This is the location the service falls back to when no explicit config path
-    and no ``COMPANION_GATEWAY_CONFIG`` are given. It also anchors the default
-    mods directory (``<default config dir>/mods``).
-    """
     return Path.home() / ".config" / "companion-gateway"
 
-# Config fields for emotional knobs default to this sentinel. __post_init__
-# fills unset fields from the packaged emotional defaults and records which
-# fields the caller explicitly provided, so resolution never guesses whether a
-# value came from the caller or from a default.
 _UNSET: Any = _emotions.UNSET
 
 
 def _fill_unset(config_obj: Any, knobs: dict[str, Any], explicit_attr: str) -> None:
-    """Fill UNSET fields from packaged defaults and record explicitly provided ones."""
     explicit: set[str] = set()
     for name, default in knobs.items():
         value = getattr(config_obj, name)
@@ -120,13 +109,6 @@ class AffectConfig:
 
 @dataclass(slots=True)
 class DecisionConfig:
-    """Configuration for the Python decision plugin.
-
-    ``module`` is a plain module name resolved only under the effective mods
-    directory. ``increment`` is the bounded amount the engine adds to the single
-    selected emotion dimension. ``options`` is passed through to the plugin.
-    ``mods_dir`` optionally overrides the default mods directory.
-    """
 
     module: str = _DECISION["module"]
     options: dict[str, Any] = field(default_factory=lambda: dict(_DECISION["options"]))
@@ -198,9 +180,6 @@ class AppConfig:
         return self.data_dir / "state.sqlite3"
 
 
-# ---------------------------------------------------------------------------
-# Strict parsing and validation
-# ---------------------------------------------------------------------------
 
 
 def _type_ok(value: Any, annotation: Any) -> bool:
@@ -297,7 +276,6 @@ def _read_config_file(path: Path, is_json: bool) -> dict:
 
 
 def _path_section(cls: type[Any], raw: Any, name: str, source_dir: Path) -> Any:
-    """Parse a section with a single config-relative `path` field."""
     section = _strict_section(cls, raw, name)
     if section.path and not Path(section.path).is_absolute():
         section.path = str((source_dir / Path(section.path).expanduser()).resolve())
@@ -413,7 +391,6 @@ def load_config(path: str | Path | None = None) -> AppConfig:
 
 
 def _validate_packaged_defaults() -> None:
-    """Validate packaged defaults.json against the same schema as user config."""
     hints = typing.get_type_hints(AppConfig)
     for key in ("data_dir", "host", "port", "timezone", "api_token_env"):
         _validate_value(f"packaged defaults {key}", _DEFAULTS[key], hints[key])
@@ -431,9 +408,6 @@ def _validate_packaged_defaults() -> None:
 _validate_packaged_defaults()
 
 
-# ---------------------------------------------------------------------------
-# Config migration (YAML/JSON to JSON)
-# ---------------------------------------------------------------------------
 
 _ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _CREDENTIAL_PATTERNS = [
@@ -526,7 +500,6 @@ def migrate_config(source: str | Path, destination: str | Path, force: bool = Fa
         raise FileExistsError(f"destination already exists (use --force to overwrite): {dest}")
     is_json = src.suffix.lower() == ".json"
     raw = _read_config_file(src, is_json)
-    # Validate before emitting; raises on unknown fields or bad types.
     _app_config_from_raw(raw, src.parent, is_json=is_json)
     emitted = _transform_for_migration(raw, src, is_json)
     _scrub_secrets(emitted)

@@ -1,18 +1,3 @@
-"""Emotional definitions: loading, validation, resolution, and fingerprinting.
-
-The packaged emotions.json is the authoritative source for every emotional
-definition, table, and tuning value. This module validates it strictly, computes
-a stable canonical fingerprint, and resolves the effective snapshot a running
-engine uses.
-
-Resolution precedence is: packaged defaults, then an optional user emotions.json,
-then explicit configuration overrides. Explicit overrides come from AffectConfig
-affect knobs, ProactiveConfig emotional thresholds, and dimension overrides.
-Config fields carry an `UNSET` sentinel until `__post_init__` fills them, so an
-explicitly-provided value (including one equal to a packaged default) is never
-confused with an unfilled default.
-"""
-
 from __future__ import annotations
 
 import copy
@@ -26,12 +11,11 @@ from .serialization import fingerprint as _serialization_fingerprint
 
 SCHEMA_VERSION = 2
 
-# Sentinel for config fields that the caller did not provide.
 UNSET: Any = object()
 
 
 class EmotionsValidationError(ValueError):
-    """Raised when an emotions definition is malformed or out of range."""
+    pass
 
 
 def _number(value: Any, path: str) -> float:
@@ -251,17 +235,14 @@ _DEFAULT = _validate(load_packaged("emotions.json"))
 
 
 def default_emotions() -> dict:
-    """Return a fresh deep copy of the validated packaged emotions.json."""
     return copy.deepcopy(_DEFAULT)
 
 
 def canonical(snapshot: dict[str, Any]) -> str:
-    """Canonical sort-keyed JSON of an effective emotions snapshot."""
     return _serialization_canonical(snapshot)
 
 
 def fingerprint(snapshot: dict[str, Any]) -> str:
-    """Stable canonical fingerprint of an effective emotions snapshot."""
     return _serialization_fingerprint(snapshot)
 
 
@@ -270,7 +251,6 @@ def default_fingerprint() -> str:
 
 
 def load_emotions(path: str | Path) -> dict:
-    """Load and validate a user emotions.json file."""
     source_path = Path(path)
     if not source_path.exists():
         raise EmotionsValidationError(f"emotions file not found: {source_path}")
@@ -284,13 +264,6 @@ def load_emotions(path: str | Path) -> dict:
 def _apply_explicit_overrides(
     section: dict[str, Any], config_obj: Any, explicit_attr: str, custom: bool
 ) -> dict[str, Any]:
-    """Merge config field values over a snapshot section.
-
-    Without a custom emotions file the current config field values are
-    authoritative (defaults, explicit values, and values set before engine
-    construction). With a custom file, only values the caller explicitly
-    provided override the file's values.
-    """
     result = dict(section)
     explicit = frozenset(getattr(config_obj, explicit_attr, ()))
     for name in list(section):
@@ -305,13 +278,6 @@ def _apply_explicit_overrides(
 def resolve_emotions(
     affect_config: Any, proactive_config: Any | None = None
 ) -> dict[str, Any]:
-    """Resolve the effective emotions snapshot.
-
-    Precedence: packaged defaults, optional user emotions.json (with pinned
-    version check), then explicit configuration overrides. The returned snapshot
-    is validated; the fingerprint callers derive from it reflects every applied
-    override, not just the raw defaults.
-    """
     snapshot = default_emotions()
     custom = bool(getattr(affect_config, "emotions_path", ""))
     if custom:

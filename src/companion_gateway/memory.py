@@ -44,7 +44,6 @@ class StoredMessage:
 
 
 class MemoryStore:
-    """Canonical raw message storage with disposable retrieval indexes."""
 
     def __init__(self, database: Database, semantic: SemanticIndex | None = None):
         self.database = database
@@ -136,7 +135,6 @@ class MemoryStore:
             return self._row(row) if row else None
 
     def conversation_id(self, harness: str, external_id: str) -> int | None:
-        """Resolve the internal conversation id, or None when unknown."""
         with self.database.connect() as db:
             row = db.execute(
                 "SELECT id FROM conversations WHERE harness=? AND external_id=?",

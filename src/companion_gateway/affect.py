@@ -14,10 +14,6 @@ from .database import Database
 from .serialization import compact_json
 from .timeutil import isoformat, parse_time, utc_now
 
-# A decider is invoked for one incoming message and returns at most one emotion
-# dimension name. It receives the message text, the resolved dimension
-# definitions, a state snapshot, and the configured instruction as keyword
-# arguments.
 Decider = Callable[..., "str | None"]
 
 
@@ -84,7 +80,6 @@ class AffectEngine:
             base[name] = self._clamp(next_value, self.spec[name]["floor"])
 
     def _increase(self, state: dict[str, Any], emotion: str) -> None:
-        """Increase one selected dimension by the configured bounded amount."""
         spec = self.spec[emotion]
         current = float(state["base"][emotion])
         state["base"][emotion] = self._clamp(
@@ -159,18 +154,7 @@ class AffectEngine:
         instruction: str,
         now: datetime | None = None,
     ) -> dict[str, Any] | None:
-        """Advance state, mark user contact, and apply one plugin decision.
-
-        Contact bookkeeping (``last_user_message_at``, ``last_interaction_at``,
-        ``unanswered_proactive``, unsent proactive cancellation) is independent of
-        labels and always runs for a new user message. The decision-driven
-        increase runs only when a decider is configured and returns an allowed
-        dimension; otherwise the state carries no decision adjustment.
-        """
         requested = now if now is not None else utc_now()
-        # Keep the write transaction short: plugins are trusted Python, but may
-        # perform slow I/O (or block indefinitely).  In particular, neither
-        # SQLite's write lock nor the engine lock may be held during that call.
         with self._lock, self.database.connect() as db:
             row, state = self._load_row(db, requested)
             current = max(requested, parse_time(row["last_updated_at"]))
@@ -204,7 +188,6 @@ class AffectEngine:
                     instruction=instruction,
                 )
             except Exception:
-                # A plugin failure must not undo contact bookkeeping.
                 emotion = None
             if not isinstance(emotion, str) or emotion not in self.spec:
                 emotion = None
@@ -212,10 +195,6 @@ class AffectEngine:
         decision_id = None
         public = snapshot
         if emotion is not None:
-            # Reload after the plugin call.  Other writers may have changed the
-            # state while it was running; applying the increase to this fresh
-            # snapshot preserves those changes instead of restoring our stale
-            # copy over them.
             with self._lock, self.database.connect() as db:
                 row, state = self._load_row(db, requested)
                 phase_now = now if now is not None else utc_now()
@@ -266,7 +245,6 @@ class AffectEngine:
             )
 
     def describe(self, snapshot: dict[str, Any]) -> str:
-        """Render the affect presentation text for a status snapshot."""
         values = snapshot["base"]
         prompt = self.emotions["prompt"]
         presentation = self.affect_presentation

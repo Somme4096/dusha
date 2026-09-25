@@ -1,12 +1,3 @@
-"""User-authored identity prompt loading.
-
-The identity file is raw user-authored Markdown. It is loaded once per service,
-never parsed, never archived, never inferred from memory, and never modified.
-A missing configured file or invalid UTF-8 is an actionable error. An empty
-configured file is allowed. An empty path means the identity is explicitly
-unconfigured.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -15,11 +6,10 @@ from typing import Any
 
 
 class IdentityError(ValueError):
-    """Raised when a configured identity prompt file cannot be loaded."""
+    pass
 
 
 def load_identity(identity_config: Any) -> tuple[str, str]:
-    """Return (raw_text, revision_hash). Unconfigured returns ("", "")."""
     path = str(getattr(identity_config, "path", "") or "")
     if not path:
         return "", ""

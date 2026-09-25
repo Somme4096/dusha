@@ -1,16 +1,3 @@
-"""Structured context composition: injection string and context metadata.
-
-The injection is assembled as: raw identity text (optional), the evergreen
-facts block (optional, facts selected greedily to fit), then a single JSON
-companion state block with memory instruction, emotion values, and the selected
-session records. The mandatory identity and companion state are never truncated;
-if they cannot fit the configured budget, a ContextBudgetError is raised.
-Evergreen facts and session records are selected greedily using their real
-serialized sizes so the injection stays valid JSON and within budget. A final
-guard raises ContextBudgetError if the composed injection ever exceeds the
-budget.
-"""
-
 from __future__ import annotations
 
 from typing import Any
@@ -21,7 +8,7 @@ CONTEXT_VERSION = 1
 
 
 class ContextBudgetError(ValueError):
-    """Raised when mandatory context exceeds the configured injection budget."""
+    pass
 
 
 class ContextComposer:
@@ -47,7 +34,6 @@ class ContextComposer:
     def _instructions_and_emotion(
         self, affect_snapshot: dict[str, Any], affect_text: str
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        """Shared instructions and emotion metadata for injection and context."""
         companion = self.prompts["companion_state"]
         instructions = {"memory": companion["memory_instruction"]}
         emotion = {
@@ -64,17 +50,12 @@ class ContextComposer:
         }
         return instructions, emotion
 
-    def _companion_payload(
-        self, affect_snapshot: dict[str, Any], affect_text: str, session: list[dict[str, Any]]
-    ) -> dict[str, Any]:
-        instructions, emotion = self._instructions_and_emotion(affect_snapshot, affect_text)
-        return {"instructions": instructions, "emotion": emotion, "session": session}
-
     def _companion_block(
         self, affect_snapshot: dict[str, Any], affect_text: str, session: list[dict[str, Any]]
     ) -> str:
         companion = self.prompts["companion_state"]
-        payload = self._companion_payload(affect_snapshot, affect_text, session)
+        instructions, emotion = self._instructions_and_emotion(affect_snapshot, affect_text)
+        payload = {"instructions": instructions, "emotion": emotion, "session": session}
         return companion["open_delimiter"] + safe_json(payload) + companion["close_delimiter"]
 
     def _evergreen_block(self, facts: list[dict[str, Any]]) -> str:
@@ -99,8 +80,6 @@ class ContextComposer:
                 f"identity and companion state (requires {mandatory_len} characters)"
             )
 
-        # Evergreen facts are selected greedily against the residual after the
-        # mandatory identity and empty companion block are reserved.
         used_evergreen: list[dict[str, Any]] = []
         evergreen_len = 0
         for fact in evergreen_facts:

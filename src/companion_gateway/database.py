@@ -170,9 +170,6 @@ PRAGMA user_version = 3;
 COMMIT;
 """
 
-# Version 4 retires the label system. Historical label rows are archived under
-# clearly legacy table names and are never read at runtime. Pending labels stay
-# archived and are never applied. A typed decision record replaces them.
 MIGRATE_3_TO_4 = """
 PRAGMA foreign_keys = ON;
 BEGIN IMMEDIATE;
@@ -226,12 +223,6 @@ class Database:
 
     @staticmethod
     def _archive_legacy_label_tables(db: sqlite3.Connection) -> None:
-        """Rename retired label tables to clearly legacy names.
-
-        No runtime reader touches these tables. Historical rows are preserved
-        rather than dropped, and archived pending classifications are never
-        applied.
-        """
         tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         for old, new in (
             ("affect_events", "legacy_affect_events"),
@@ -242,7 +233,6 @@ class Database:
 
     @staticmethod
     def _strip_recent_labels(db: sqlite3.Connection) -> None:
-        """Remove the retired ``recent_labels`` key from the active snapshot."""
         row = db.execute("SELECT state_json FROM affect_state WHERE id=1").fetchone()
         if row is None:
             return

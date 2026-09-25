@@ -1,12 +1,3 @@
-"""Packaged JSON resource loading and shared strict JSON parsing.
-
-Uses importlib.resources so the files load from a source checkout and from an
-installed wheel alike. Every caller receives fresh parsed objects; callers that
-mutate a snapshot must copy it first. Strict parsing (duplicate keys, non-finite
-constants, malformed JSON) is shared here so config.json and emotions.json use
-the same rules.
-"""
-
 from __future__ import annotations
 
 import json
@@ -15,11 +6,10 @@ from typing import Any
 
 
 class StrictJSONError(ValueError):
-    """Raised for duplicate keys, non-finite constants, or malformed JSON."""
+    pass
 
 
 def loads_strict(text: str, *, source: str = "<string>") -> dict:
-    """Parse JSON strictly. Duplicate keys and non-finite constants are errors."""
 
     def pairs(items: list[tuple[str, Any]]) -> dict:
         result: dict[str, Any] = {}

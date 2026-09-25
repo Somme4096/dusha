@@ -495,3 +495,129 @@ async def test_endpoint_response_keys_and_conflict_flow(config, monkeypatch):
                 "unanswered_proactive"} <= set(affect.json())
 
 
+PROTECTED_ROUTES = [
+    ("GET", "/state/v1/memory/index", None, None),
+    ("POST", "/state/v1/messages",
+     {"harness": "api", "conversation_id": "auth", "role": "user", "content": "hi"}, None),
+    ("GET", "/state/v1/messages/1", None, None),
+    ("POST", "/state/v1/memory/search", {"query": "hi"}, None),
+    ("GET", "/state/v1/memory/1", None, None),
+    ("POST", "/state/v1/evergreen/facts", {"key": "auth.key", "text": "value"}, None),
+    ("GET", "/state/v1/evergreen/facts", None, None),
+    ("GET", "/state/v1/evergreen/facts/auth/history", None, None),
+    ("POST", "/state/v1/evergreen/facts/auth/revisions",
+     {"expected_revision": 1, "text": "value"}, None),
+    ("POST", "/state/v1/evergreen/facts/auth/forget",
+     {"expected_revision": 1, "reason": "done"}, None),
+    ("POST", "/state/v1/context", {"query": ""}, None),
+    ("GET", "/state/v1/affect", None, None),
+    ("POST", "/state/v1/proactive/evaluate", None, None),
+    ("GET", "/state/v1/proactive/events", None, {"consumer": "c"}),
+    ("POST", "/state/v1/proactive/events/evt/ack", {"consumer": "c", "outcome": "sent"}, None),
+    ("GET", "/v1/models", None, None),
+    ("POST", "/v1/chat/completions",
+     {"model": "m", "messages": [{"role": "user", "content": "hi"}]}, None),
+]
+
+
+async def test_auth_disabled_local_mode_is_open(config):
+    config.upstream.base_url = ""
+    app = api.create_app(config)
+    async with _client(app) as client:
+        models = await client.get("/v1/models")
+        context = await client.post("/state/v1/context", json={"query": ""})
+        openapi = await client.get("/openapi.json")
+    assert models.status_code == 503
+    assert context.status_code == 200
+    assert openapi.status_code == 200
+
+
+@pytest.mark.parametrize(("method", "path", "payload", "params"), PROTECTED_ROUTES)
+async def test_protected_routes_require_companion_token(
+    config, monkeypatch, method, path, payload, params
+):
+    config.api_token_env = "TEST_TOKEN_ENV"
+    config.upstream.base_url = ""
+    monkeypatch.setenv("TEST_TOKEN_ENV", "secret-token")
+    app = api.create_app(config)
+    async with _client(app) as client:
+        missing = await client.request(method, path, json=payload, params=params)
+        wrong = await client.request(
+            method, path, json=payload, params=params, headers={"X-Companion-Token": "wrong"}
+        )
+        right = await client.request(
+            method, path, json=payload, params=params,
+            headers={"X-Companion-Token": "secret-token"},
+        )
+    assert missing.status_code == 401
+    assert missing.json()["detail"] == "invalid companion token"
+    assert wrong.status_code == 401
+    assert right.status_code != 401
+
+
+async def test_configured_token_env_without_value_fails_app_creation(config, monkeypatch):
+    config.api_token_env = "MISSING_COMPANION_TOKEN"
+    monkeypatch.delenv("MISSING_COMPANION_TOKEN", raising=False)
+    with pytest.raises(api.AuthConfigError, match="missing or empty"):
+        api.create_app(config)
+    monkeypatch.setenv("MISSING_COMPANION_TOKEN", "")
+    with pytest.raises(api.AuthConfigError, match="missing or empty"):
+        api.create_app(config)
+
+
+async def test_health_stays_public_and_carries_no_token(config, monkeypatch):
+    config.api_token_env = "TEST_TOKEN_ENV"
+    monkeypatch.setenv("TEST_TOKEN_ENV", "super-secret-token")
+    app = api.create_app(config)
+    async with _client(app) as client:
+        health = await client.get("/health")
+    assert health.status_code == 200
+    assert health.json()["status"] == "ok"
+    assert "super-secret-token" not in health.text
+
+
+async def test_api_docs_disabled_when_auth_enabled(config, monkeypatch):
+    config.api_token_env = "TEST_TOKEN_ENV"
+    monkeypatch.setenv("TEST_TOKEN_ENV", "secret-token")
+    app = api.create_app(config)
+    async with _client(app) as client:
+        for path in ("/docs", "/redoc", "/openapi.json"):
+            response = await client.get(path)
+            assert response.status_code == 404, path
+
+
+async def test_auth_enabled_streaming_and_upstream_authorization(config, monkeypatch):
+    config.api_token_env = "TEST_TOKEN_ENV"
+    monkeypatch.setenv("TEST_TOKEN_ENV", "secret-token")
+    config.upstream.base_url = "https://upstream.invalid/v1"
+    app = api.create_app(config)
+
+    fake = _FakeStreamClient(STREAM_CHUNKS)
+    async with _client(app) as client:
+        with monkeypatch.context() as patch:
+            patch.setattr(api.httpx, "AsyncClient", lambda *args, **kwargs: fake)
+            streamed = await client.post(
+                "/v1/chat/completions",
+                json={"model": "upstream", "stream": True,
+                      "messages": [{"role": "user", "content": "Hi"}]},
+                headers={"X-Companion-Token": "secret-token"},
+            )
+    assert streamed.status_code == 200
+    assert STREAM_CHUNKS[0] in streamed.content
+    assert b"data: [DONE]\n\n" in streamed.content
+
+    captured_headers: dict = {}
+
+    async def fake_upstream(request, cfg, path, body):
+        captured_headers.update(api._upstream_headers(request, cfg))
+        return _reply("ok")
+
+    monkeypatch.setattr(api, "_upstream_request", fake_upstream)
+    async with _client(app) as client:
+        forwarded = await _chat(
+            client,
+            [{"role": "user", "content": "Hi"}],
+            {"X-Companion-Token": "secret-token", "Authorization": "Bearer caller-token"},
+        )
+    assert forwarded.status_code == 200
+    assert captured_headers.get("authorization") == "Bearer caller-token"

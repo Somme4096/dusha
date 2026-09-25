@@ -1,11 +1,3 @@
-"""Prompt text slots: packaged defaults, strict user overlay, fingerprint.
-
-All core-owned prompt and instruction text lives in packaged prompts.json.
-A user prompts file can replace any recognized text slot completely; omitted
-slots inherit the packaged defaults. Replacement is literal: a provided slot
-replaces the packaged slot entirely, with no appended hidden defaults.
-"""
-
 from __future__ import annotations
 
 import copy
@@ -18,7 +10,6 @@ from .serialization import fingerprint as _serialization_fingerprint
 
 SCHEMA_VERSION = 1
 
-# Recognized top-level text slots a user file may replace.
 _TEXT_SLOTS = {
     "affect_presentation",
     "companion_state",
@@ -27,7 +18,6 @@ _TEXT_SLOTS = {
     "decision_instruction",
 }
 
-# Slots whose value is a single string rather than an object of keys.
 _STRING_SLOTS = {"proactive_generation_instruction", "decision_instruction"}
 
 _SLOT_KEYS: dict[str, set[str]] = {
@@ -52,7 +42,7 @@ _SLOT_KEYS: dict[str, set[str]] = {
 
 
 class PromptsValidationError(ValueError):
-    """Raised when a prompts definition is malformed."""
+    pass
 
 
 def _string(value: Any, path: str) -> str:
@@ -116,12 +106,10 @@ _DEFAULT = _validate(
 
 
 def default_prompts() -> dict:
-    """Return a fresh deep copy of the validated packaged prompts.json."""
     return copy.deepcopy(_DEFAULT)
 
 
 def load_prompts(path: str | Path) -> dict:
-    """Load and validate a user prompts overlay file (a subset of text slots)."""
     source_path = Path(path)
     if not source_path.exists():
         raise PromptsValidationError(f"prompts file not found: {source_path}")
@@ -133,11 +121,6 @@ def load_prompts(path: str | Path) -> dict:
 
 
 def resolve_prompts(prompts_config: Any) -> dict:
-    """Resolve the effective prompts snapshot: packaged defaults plus user overlay.
-
-    Each provided text slot replaces the packaged slot entirely. The resolved
-    snapshot is validated as complete.
-    """
     snapshot = default_prompts()
     path = str(getattr(prompts_config, "path", "") or "")
     if path:
@@ -148,12 +131,10 @@ def resolve_prompts(prompts_config: Any) -> dict:
 
 
 def canonical(snapshot: dict[str, Any]) -> str:
-    """Canonical sort-keyed JSON of the effective prompts snapshot."""
     return _serialization_canonical(snapshot)
 
 
 def fingerprint(snapshot: dict[str, Any]) -> str:
-    """Stable canonical fingerprint of the effective prompts snapshot."""
     return _serialization_fingerprint(snapshot)
 
 

@@ -20,7 +20,6 @@ class EvergreenConflict(ValueError):
 
 
 class EvergreenStore:
-    """Append-only revisions for facts selected and maintained by the agent."""
 
     def __init__(self, database: Database):
         self.database = database
@@ -375,7 +374,6 @@ class EvergreenStore:
         created_at: str,
         created_by: str,
     ) -> int:
-        """Insert one evergreen revision row and return its rowid."""
         cursor = db.execute(
             """INSERT INTO evergreen_fact_revisions
                (fact_id, revision, fact_key, text, state, priority,
