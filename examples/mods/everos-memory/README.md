@@ -30,7 +30,8 @@ The gateway creates an isolated `uv` environment from `pyproject.toml` and
         "instance_namespace": "sophia-local",
         "user_sender_id": "user",
         "assistant_sender_id": "assistant",
-        "timeout_seconds": 5
+        "timeout_seconds": 5,
+        "flush_after_ingest": true
       }
     }
   }
@@ -51,9 +52,15 @@ prioritizes rows with fewer attempts, so later rows can deliver while a
 permanently rejected row remains pending. Both stores contain plaintext and
 need separate backups.
 
-Use the [EverOS setup documentation](https://github.com/EverMind-AI/EverOS) to
-configure the server. Running EverOS requires LLM settings, but deferred writes
-do not invoke the LLM. This plugin does not make the server credential-free.
+Use the [EverOS setup and public API documentation](https://github.com/EverMind-AI/EverOS)
+to configure the server. `flush_after_ingest` defaults to `false`. Set it to
+`true` to send one deferred add during Sophia ingest, then let the scheduler
+flush it through EverOS. EverOS must run with a configured LLM for extraction.
+`buffered` acknowledges the deferred add. `processed` acknowledges the flush,
+not indexing completion. Sophia search remains local because EverOS exposes no
+per-message provenance. Use EverOS keyword search through its [public API](https://github.com/EverMind-AI/EverOS)
+to inspect episodes. See the [Sophia README](https://github.com/Somme4096/sophia)
+for Sophia API descriptions.
 
 ## Phrase patterns
 
