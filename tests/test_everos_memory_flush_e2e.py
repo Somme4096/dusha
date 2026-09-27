@@ -72,6 +72,8 @@ class _FlushDropProxy(BaseHTTPRequestHandler):
                 content=body,
                 headers={"Content-Type": self.headers.get("Content-Type", "application/json")},
             )
+        if self.path.endswith("/memory/flush"):
+            server.flush_responses.append((response.status_code, response.json()))
         if self.path.endswith("/memory/flush") and not server.dropped:
             server.dropped = True
             self.close_connection = True
@@ -163,6 +165,7 @@ def flush_proxy(everos_server):
     server.upstream = upstream
     server.add_calls = 0
     server.flush_calls = 0
+    server.flush_responses = []
     server.dropped = False
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -333,6 +336,10 @@ async def test_dropped_flush_response_retries_without_readding_messages(tmp_path
         assert recovered.get("processed", 0) >= 1
     assert proxy.add_calls == 1
     assert proxy.flush_calls >= 2
+    assert [(code, body.get("data", {}).get("status")) for code, body in proxy.flush_responses[:2]] == [
+        (200, "extracted"),
+        (200, "no_extraction"),
+    ]
     result = await _wait_search(real_url, "flush-e2e-sophia-" + str(message["conversation_id"]))
     assert any("cobalt-orchid" in repr(episode) for episode in result.get("data", {}).get("episodes", [])), result
 
