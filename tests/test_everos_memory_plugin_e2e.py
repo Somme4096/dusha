@@ -83,6 +83,35 @@ class _SidecarHandler(BaseHTTPRequestHandler):
         return
 
 
+class _SelectiveSidecarHandler(BaseHTTPRequestHandler):
+    def do_POST(self) -> None:
+        length = int(self.headers.get("content-length", "0"))
+        body = self.rfile.read(length) if length else b"{}"
+        request = json.loads(body)
+        messages = request.get("messages", [])
+        rejected = any("permanently rejected" in str(message.get("content", "")) for message in messages)
+        if rejected:
+            status = 400
+            payload = {"error": "permanent rejection"}
+        else:
+            with httpx.Client(timeout=10, trust_env=False) as client:
+                upstream = client.post(self.server.upstream + self.path, content=body, headers={"Content-Type": "application/json"})
+            status = upstream.status_code
+            payload = upstream.json()
+        encoded = json.dumps(payload).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        try:
+            self.wfile.write(encoded)
+        except BrokenPipeError:
+            return
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
 @pytest.fixture
 def dummy_llm_server():
     server = ThreadingHTTPServer(("127.0.0.1", 0), _DummyLLMHandler)
@@ -100,6 +129,20 @@ def external_sidecar():
     server = ThreadingHTTPServer(("127.0.0.1", 0), _SidecarHandler)
     server.mode = "malformed"
     server.requests = []
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server, f"http://127.0.0.1:{server.server_port}"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+@pytest.fixture
+def selective_sidecar(everos_server):
+    upstream, _, _, _ = everos_server
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _SelectiveSidecarHandler)
+    server.upstream = upstream
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -186,6 +229,7 @@ def _config(
     user_sender_id: str = "user-sophia-e2e",
     assistant_sender_id: str = "assistant-sophia-e2e",
     timeout_seconds: float = 1,
+    gateway_timeout_seconds: float = 5,
 ) -> AppConfig:
     return AppConfig(
         data_dir=data_dir,
@@ -194,6 +238,7 @@ def _config(
         memory_plugin=MemoryPluginConfig(
             module="everos_memory",
             mods_dir=str(mods_dir),
+            timeout_seconds=gateway_timeout_seconds,
             options={
                 "everos": {
                     "url": sidecar_url,
@@ -458,7 +503,7 @@ async def test_external_malformed_and_slow_sidecars_keep_worker_alive(tmp_path: 
     plugin_mods = _plugin_mods(tmp_path, Path(request.config.rootpath) / "examples" / "mods")
     data_dir = tmp_path / "sophia-data"
 
-    async with _client(_config(data_dir, plugin_mods, sidecar_url, timeout_seconds=0.2)) as client:
+    async with _client(_config(data_dir, plugin_mods, sidecar_url, timeout_seconds=0.2, gateway_timeout_seconds=2)) as client:
         malformed = await _ingest(client, "malformed", "Malformed sidecar response remains pending.")
         status = (await client.get("/state/v1/memory/index")).json()
         assert status["everos"]["pending"] == 1
@@ -474,10 +519,63 @@ async def test_external_malformed_and_slow_sidecars_keep_worker_alive(tmp_path: 
     sidecar.mode = "valid"
     recovered = None
     for _ in range(3):
-        async with _client(_config(data_dir, plugin_mods, sidecar_url, timeout_seconds=0.2)) as client:
+        async with _client(_config(data_dir, plugin_mods, sidecar_url, timeout_seconds=0.2, gateway_timeout_seconds=2)) as client:
             recovered = await _pending_status(client)
         if recovered["everos"]["pending"] == 0:
             break
     assert recovered is not None
     assert recovered["everos"]["pending"] == 0
     assert recovered["everos"]["enabled"] is True
+
+
+@pytest.mark.asyncio
+async def test_real_everos_rejection_does_not_block_later_delivery(tmp_path: Path, selective_sidecar, request):
+    sidecar, sidecar_url = selective_sidecar
+    real_url = sidecar.upstream
+    plugin_mods = _plugin_mods(tmp_path, Path(request.config.rootpath) / "examples" / "mods")
+    data_dir = tmp_path / "sophia-data"
+    config = _config(data_dir, plugin_mods, sidecar_url, instance_namespace="rejection-e2e")
+
+    async with _client(config) as client:
+        rejected = await _ingest(client, "rejected", "This message is permanently rejected.")
+        later = await _ingest(client, "later", "This later message is delivered.")
+        status = (await client.get("/state/v1/memory/index")).json()
+        assert status["everos"]["pending"] == 1
+        assert status["everos"]["enabled"] is True
+
+    async with _client(config) as client:
+        status = await _pending_status(client, expected=1)
+        assert status["everos"]["pending"] == 1
+        assert (await client.get(f"/state/v1/messages/{later['id']}")).status_code == 200
+
+    later_session = f"rejection-e2e-sophia-{later['conversation_id']}"
+    delivered = await _everos_search(real_url, later_session, "later message")
+    rejected_search = await _everos_search(real_url, f"rejection-e2e-sophia-{rejected['conversation_id']}", "permanently rejected")
+    assert "This later message is delivered." in repr(delivered)
+    assert "This message is permanently rejected." not in repr(rejected_search)
+
+
+@pytest.mark.asyncio
+async def test_pre_epoch_message_is_local_but_not_projected(tmp_path: Path, everos_server, request):
+    sidecar_url, _, _, _ = everos_server
+    plugin_mods = _plugin_mods(tmp_path, Path(request.config.rootpath) / "examples" / "mods")
+    data_dir = tmp_path / "sophia-data"
+    async with _client(_config(data_dir, plugin_mods, sidecar_url)) as client:
+        message = await _ingest_with(
+            client,
+            "pre-epoch",
+            "This pre-1970 record stays in Sophia.",
+            external_id="pre-epoch",
+            occurred_at="1960-01-01T00:00:00Z",
+        )
+        persisted = await client.get(f"/state/v1/messages/{message['id']}")
+        assert persisted.status_code == 200
+        assert persisted.json()["text"] == "This pre-1970 record stays in Sophia."
+        status = (await client.get("/state/v1/memory/index")).json()
+        assert status["everos"]["pending"] == 0
+    search = await _everos_search(
+        sidecar_url,
+        f"sophia-e2e-sophia-{message['conversation_id']}",
+        "pre-1970 record",
+    )
+    assert "This pre-1970 record stays in Sophia." not in repr(search)
