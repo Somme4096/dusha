@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import os
+import asyncio
 import json
+import os
 import socket
 import shutil
 import subprocess
@@ -24,6 +25,12 @@ def _unused_port() -> int:
         return int(sock.getsockname()[1])
 
 
+def _plugin_mods(root: Path, source: Path) -> Path:
+    target = root / "mods"
+    shutil.copytree(source / "everos-memory", target / "everos_memory", ignore=shutil.ignore_patterns(".venv"))
+    return target
+
+
 class _DummyLLMHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         length = int(self.headers.get("content-length", "0"))
@@ -40,7 +47,37 @@ class _DummyLLMHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(encoded)))
         self.end_headers()
-        self.wfile.write(encoded)
+        try:
+            self.wfile.write(encoded)
+        except BrokenPipeError:
+            return
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
+class _SidecarHandler(BaseHTTPRequestHandler):
+    def do_POST(self) -> None:
+        server = self.server
+        server.requests.append(self.path)
+        length = int(self.headers.get("content-length", "0"))
+        if length:
+            self.rfile.read(length)
+        if server.mode == "slow":
+            time.sleep(2)
+        if server.mode == "malformed":
+            payload = {}
+        else:
+            payload = {"request_id": "external-stub", "data": {"message_count": 1, "status": "accumulated"}}
+        encoded = json.dumps(payload).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        try:
+            self.wfile.write(encoded)
+        except BrokenPipeError:
+            return
 
     def log_message(self, format: str, *args: object) -> None:
         return
@@ -59,8 +96,25 @@ def dummy_llm_server():
 
 
 @pytest.fixture
+def external_sidecar():
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _SidecarHandler)
+    server.mode = "malformed"
+    server.requests = []
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server, f"http://127.0.0.1:{server.server_port}"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+@pytest.fixture
 def everos_server(tmp_path: Path, dummy_llm_server: str):
-    binary = Path("/tmp/opencode/everos-source/.venv/bin/everos")
+    executable = os.environ.get("EVEROS_EXECUTABLE", "")
+    if not executable:
+        pytest.skip("dedicated EverOS E2E requires EVEROS_EXECUTABLE")
+    binary = Path(executable)
     if not binary.is_file():
         pytest.fail(f"EverOS executable is missing: {binary}")
     root = tmp_path / "everos-root"
@@ -123,7 +177,16 @@ def everos_server(tmp_path: Path, dummy_llm_server: str):
         stop()
 
 
-def _config(data_dir: Path, mods_dir: Path, sidecar_url: str) -> AppConfig:
+def _config(
+    data_dir: Path,
+    mods_dir: Path,
+    sidecar_url: str,
+    *,
+    instance_namespace: str = "sophia-e2e",
+    user_sender_id: str = "user-sophia-e2e",
+    assistant_sender_id: str = "assistant-sophia-e2e",
+    timeout_seconds: float = 1,
+) -> AppConfig:
     return AppConfig(
         data_dir=data_dir,
         memory=MemoryConfig(recent_messages=8, search_hits=8, context_messages=1, injection_max_chars=20_000),
@@ -136,8 +199,10 @@ def _config(data_dir: Path, mods_dir: Path, sidecar_url: str) -> AppConfig:
                     "url": sidecar_url,
                     "app_id": "sophia-e2e",
                     "project_id": "phase1",
-                    "sender_id": "sophia-e2e",
-                    "timeout_seconds": 1,
+                    "instance_namespace": instance_namespace,
+                    "user_sender_id": user_sender_id,
+                    "assistant_sender_id": assistant_sender_id,
+                    "timeout_seconds": timeout_seconds,
                 }
             },
         ),
@@ -154,20 +219,39 @@ async def _client(config: AppConfig):
 
 
 async def _ingest(client: httpx.AsyncClient, conversation: str, content: str, role: str = "user") -> dict:
+    return await _ingest_with(client, conversation, content, role=role)
+
+
+async def _ingest_with(
+    client: httpx.AsyncClient,
+    conversation: str,
+    content: str,
+    *,
+    role: str = "user",
+    external_id: str = "",
+    occurred_at: str | None = None,
+) -> dict:
     response = await client.post(
         "/state/v1/messages",
-        json={"harness": "everos-e2e", "conversation_id": conversation, "role": role, "content": content},
+        json={
+            "harness": "everos-e2e",
+            "conversation_id": conversation,
+            "role": role,
+            "content": content,
+            "external_id": external_id,
+            "occurred_at": occurred_at,
+        },
     )
     assert response.status_code == 200, response.text
     return response.json()
 
 
-async def _everos_search(url: str, session_id: str, query: str) -> dict:
+async def _everos_search(url: str, session_id: str, query: str, user_id: str = "user-sophia-e2e") -> dict:
     async with httpx.AsyncClient(base_url=url, timeout=10, trust_env=False) as client:
         response = await client.post(
             "/api/v2/memory/search",
             json={
-                "user_id": "sophia-e2e",
+                "user_id": user_id,
                 "app_id": "sophia-e2e",
                 "project_id": "phase1",
                 "query": query,
@@ -180,27 +264,85 @@ async def _everos_search(url: str, session_id: str, query: str) -> dict:
         return response.json()
 
 
+async def _pending_status(client: httpx.AsyncClient, expected: int = 0) -> dict:
+    status = {}
+    for _ in range(30):
+        status = (await client.get("/state/v1/memory/index")).json()
+        if status["everos"]["pending"] == expected:
+            return status
+        await asyncio.sleep(0.1)
+    return status
+
+
 @pytest.mark.asyncio
 async def test_real_everos_projection_failure_retry_isolation_and_restart(tmp_path: Path, everos_server, request):
     sidecar_url, _, stop_everos, restart_everos = everos_server
     mods_dir = Path(request.config.rootpath) / "examples" / "mods"
-    plugin_mods = tmp_path / "mods"
-    shutil.copytree(mods_dir / "everos-memory", plugin_mods / "everos_memory", ignore=shutil.ignore_patterns(".venv"))
+    plugin_mods = _plugin_mods(tmp_path, mods_dir)
     data_dir = tmp_path / "sophia-data"
 
     async with _client(_config(data_dir, plugin_mods, sidecar_url)) as client:
         first = await _ingest(client, "one", "Conversation one keeps the amber lantern.")
         second = await _ingest(client, "two", "Conversation two keeps the violet telescope.")
+        assistant = await _ingest(client, "one", "Assistant records the copper answer.", role="assistant")
+        tool = await _ingest(client, "one", "Tool output must stay local.", role="tool")
+        duplicate_first = await _ingest_with(
+            client, "one", "Duplicate source is retained.", external_id="duplicate-source"
+        )
+        duplicate_second = await _ingest_with(
+            client, "one", "Duplicate source must not be mirrored twice.", external_id="duplicate-source"
+        )
+        newer = await _ingest_with(
+            client, "history", "Historical newer event.", external_id="history-new", occurred_at="2024-01-01T00:00:00Z"
+        )
+        older = await _ingest_with(
+            client, "history", "Historical older event.", external_id="history-old", occurred_at="2020-01-01T00:00:00Z"
+        )
+        collision_a = await _ingest_with(
+            client, "collision", "First same-event record.", external_id="collision-a", occurred_at="2022-02-02T02:02:02Z"
+        )
+        collision_b = await _ingest_with(
+            client, "collision", "Second same-event record.", external_id="collision-b", occurred_at="2022-02-02T02:02:02Z"
+        )
         assert first["id"] != second["id"]
+        assert duplicate_second["duplicate"] is True
+        assert duplicate_second["id"] == duplicate_first["id"]
+        assert collision_a["id"] != collision_b["id"]
+        historical_times = (
+            (newer, "2024-01-01T00:00:00Z"),
+            (older, "2020-01-01T00:00:00Z"),
+            (collision_a, "2022-02-02T02:02:02Z"),
+            (collision_b, "2022-02-02T02:02:02Z"),
+        )
+        for message, expected_time in historical_times:
+            persisted = await client.get(f"/state/v1/messages/{message['id']}")
+            assert persisted.status_code == 200
+            assert persisted.json()["occurred_at"].startswith(expected_time[:19])
+        history_context = await client.post(
+            "/state/v1/context", json={"harness": "everos-e2e", "conversation_id": "history", "query": ""}
+        )
+        assert history_context.status_code == 200
+        history_text = [item["text"] for item in history_context.json()["records"]]
+        assert history_text.index("Historical older event.") < history_text.index("Historical newer event.")
         delivered = (await client.get("/state/v1/memory/index")).json()
         assert delivered["everos"]["enabled"] is True
         assert delivered["everos"]["pending"] == 0
+        assert isinstance(delivered["everos"], dict)
 
     restart_everos()
-    one = await _everos_search(sidecar_url, "sophia-1", "amber lantern")
-    two = await _everos_search(sidecar_url, "sophia-2", "amber lantern")
+    session_one = f"sophia-e2e-sophia-{first['conversation_id']}"
+    session_two = f"sophia-e2e-sophia-{second['conversation_id']}"
+    one = await _everos_search(sidecar_url, session_one, "amber lantern")
+    two = await _everos_search(sidecar_url, session_two, "amber lantern")
+    assistant_search = await _everos_search(
+        sidecar_url, session_one, "copper answer", user_id="assistant-sophia-e2e"
+    )
+    tool_search = await _everos_search(sidecar_url, session_one, "Tool output", user_id="user-sophia-e2e")
     assert "Conversation one keeps the amber lantern." in repr(one)
     assert "Conversation one keeps the amber lantern." not in repr(two)
+    assert "Assistant records the copper answer." in repr(assistant_search)
+    assert "Tool output must stay local." not in repr(one)
+    assert "Tool output must stay local." not in repr(tool_search)
 
     stop_everos()
     async with _client(_config(data_dir, plugin_mods, sidecar_url)) as client:
@@ -263,9 +405,79 @@ async def test_real_everos_projection_failure_retry_isolation_and_restart(tmp_pa
         assert all(item["fact_id"] != fact_id for item in facts.json()["facts"])
 
     restart_everos()
-    one = await _everos_search(sidecar_url, "sophia-1", "amber lantern")
-    two = await _everos_search(sidecar_url, "sophia-2", "amber lantern")
-    three = await _everos_search(sidecar_url, "sophia-3", "silver key")
+    session_three = f"sophia-e2e-sophia-{outage['conversation_id']}"
+    one = await _everos_search(sidecar_url, session_one, "amber lantern")
+    two = await _everos_search(sidecar_url, session_two, "amber lantern")
+    three = await _everos_search(sidecar_url, session_three, "silver key")
     assert "Conversation one keeps the amber lantern." in repr(one)
     assert "Conversation one keeps the amber lantern." not in repr(two)
     assert "Conversation three keeps the silver key." in repr(three)
+
+
+@pytest.mark.asyncio
+async def test_real_everos_instance_namespaces_and_backfill_without_ingest(tmp_path: Path, everos_server, request):
+    sidecar_url, _, stop_everos, restart_everos = everos_server
+    plugin_mods = _plugin_mods(tmp_path, Path(request.config.rootpath) / "examples" / "mods")
+    first_data = tmp_path / "instance-a"
+    second_data = tmp_path / "instance-b"
+
+    async with _client(
+        _config(first_data, plugin_mods, sidecar_url, instance_namespace="instance-a", user_sender_id="user-a", assistant_sender_id="assistant-a")
+    ) as client:
+        alpha_message = await _ingest(client, "shared", "Only instance alpha owns this record.")
+    async with _client(
+        _config(second_data, plugin_mods, sidecar_url, instance_namespace="instance-b", user_sender_id="user-b", assistant_sender_id="assistant-b")
+    ) as client:
+        beta_message = await _ingest(client, "shared", "Only instance beta owns this record.")
+
+    restart_everos()
+    alpha_session = f"instance-a-sophia-{alpha_message['conversation_id']}"
+    beta_session = f"instance-b-sophia-{beta_message['conversation_id']}"
+    alpha = await _everos_search(sidecar_url, alpha_session, "instance alpha", user_id="user-a")
+    beta = await _everos_search(sidecar_url, beta_session, "instance alpha", user_id="user-b")
+    assert "Only instance alpha owns this record." in repr(alpha)
+    assert "Only instance alpha owns this record." not in repr(beta)
+
+    stop_everos()
+    async with _client(_config(first_data, plugin_mods, sidecar_url, instance_namespace="instance-a", user_sender_id="user-a", assistant_sender_id="assistant-a")) as client:
+        buffered_message = await _ingest(client, "shared", "Buffered alpha survives sidecar outage.")
+        pending = (await client.get("/state/v1/memory/index")).json()
+        assert pending["everos"]["pending"] == 1
+    restart_everos()
+    async with _client(_config(first_data, plugin_mods, sidecar_url, instance_namespace="instance-a", user_sender_id="user-a", assistant_sender_id="assistant-a")) as client:
+        recovered = await _pending_status(client)
+        assert recovered["everos"]["pending"] == 0
+    buffered_session = f"instance-a-sophia-{buffered_message['conversation_id']}"
+    buffered = await _everos_search(sidecar_url, buffered_session, "Buffered alpha", user_id="user-a")
+    assert "Buffered alpha survives sidecar outage." in repr(buffered)
+
+
+@pytest.mark.asyncio
+async def test_external_malformed_and_slow_sidecars_keep_worker_alive(tmp_path: Path, external_sidecar, request):
+    sidecar, sidecar_url = external_sidecar
+    plugin_mods = _plugin_mods(tmp_path, Path(request.config.rootpath) / "examples" / "mods")
+    data_dir = tmp_path / "sophia-data"
+
+    async with _client(_config(data_dir, plugin_mods, sidecar_url, timeout_seconds=0.2)) as client:
+        malformed = await _ingest(client, "malformed", "Malformed sidecar response remains pending.")
+        status = (await client.get("/state/v1/memory/index")).json()
+        assert status["everos"]["pending"] == 1
+        assert status["everos"]["last_error"]
+        assert malformed["duplicate"] is False
+        sidecar.mode = "slow"
+        slow = await _ingest(client, "slow", "Slow sidecar does not kill the worker.")
+        status = (await client.get("/state/v1/memory/index")).json()
+        assert status["everos"]["pending"] == 2
+        assert slow["duplicate"] is False
+        assert (await client.get(f"/state/v1/messages/{slow['id']}")).status_code == 200
+
+    sidecar.mode = "valid"
+    recovered = None
+    for _ in range(3):
+        async with _client(_config(data_dir, plugin_mods, sidecar_url, timeout_seconds=0.2)) as client:
+            recovered = await _pending_status(client)
+        if recovered["everos"]["pending"] == 0:
+            break
+    assert recovered is not None
+    assert recovered["everos"]["pending"] == 0
+    assert recovered["everos"]["enabled"] is True
