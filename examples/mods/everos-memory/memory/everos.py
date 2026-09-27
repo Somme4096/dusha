@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import math
+import os
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
 from typing import Any
@@ -14,7 +15,8 @@ _OPTIONS = {
     "url", "app_id", "project_id", "instance_namespace", "user_sender_id",
     "assistant_sender_id", "timeout_seconds",
 }
-_GATEWAY_TIMEOUT = 15.0
+_RPC_TIMEOUT_ENV = "SOPHIA_MEMORY_RPC_TIMEOUT_SECONDS"
+_MIN_RPC_TIMEOUT = 0.5
 
 
 class EverOSMirror:
@@ -35,12 +37,21 @@ class EverOSMirror:
         self.assistant_sender_id = self._id(options["assistant_sender_id"])
         if self.user_sender_id == self.assistant_sender_id:
             raise ValueError("user_sender_id and assistant_sender_id must differ")
+        rpc_timeout_text = os.environ.get(_RPC_TIMEOUT_ENV)
+        if rpc_timeout_text is None:
+            raise ValueError("memory plugin RPC timeout is unavailable")
+        try:
+            rpc_timeout = float(rpc_timeout_text)
+        except (TypeError, ValueError) as error:
+            raise ValueError("memory plugin RPC timeout must be finite and positive") from error
+        if not math.isfinite(rpc_timeout) or rpc_timeout < _MIN_RPC_TIMEOUT:
+            raise ValueError("memory plugin RPC timeout is too low")
         timeout = options.get("timeout_seconds", 5)
         if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
-            raise ValueError("timeout_seconds must be finite, positive, and less than gateway timeout")
+            raise ValueError("timeout_seconds must be finite, positive, and no more than 60 percent of RPC timeout")
         self.timeout = float(timeout)
-        if not math.isfinite(self.timeout) or not 0 < self.timeout < _GATEWAY_TIMEOUT:
-            raise ValueError("timeout_seconds must be finite, positive, and less than gateway timeout")
+        if not math.isfinite(self.timeout) or not 0 < self.timeout <= rpc_timeout * 0.6:
+            raise ValueError("timeout_seconds must be finite, positive, and no more than 60 percent of RPC timeout")
         self.client = httpx.Client(
             timeout=httpx.Timeout(self.timeout), follow_redirects=False, trust_env=False,
         )
@@ -81,7 +92,7 @@ class EverOSMirror:
     def deliver_pending(self, limit: int = 100) -> dict[str, Any]:
         with self.database.connect() as db:
             rows = db.execute(
-                "SELECT * FROM everos_outbox WHERE delivered_at IS NULL ORDER BY id LIMIT ?", (max(1, min(limit, 1000)),)
+                "SELECT * FROM everos_outbox WHERE delivered_at IS NULL ORDER BY attempts, id LIMIT ?", (max(1, min(limit, 1000)),)
             ).fetchall()
         delivered = 0
         failed = 0

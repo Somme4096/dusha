@@ -44,6 +44,7 @@ _MODULE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _REQUIRED_FILES = ("README.md", "main.py", "pyproject.toml", "uv.lock")
 _SYNC_TIMEOUT = 120.0
 _RUN_TIMEOUT = 15.0
+_RPC_TIMEOUT_ENV = "SOPHIA_MEMORY_RPC_TIMEOUT_SECONDS"
 
 
 def _json_value(value: Any) -> Any:
@@ -166,7 +167,8 @@ class _SuiteMemory:
             self.proc = subprocess.Popen(
                 [str(_python_path(self.suite)), "-I", str(Path(__file__).with_name("memory_worker.py")), str(self.suite), str(self.database)],
                 cwd=self.suite, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                start_new_session=os.name != "nt", env={**os.environ, "PYTHONNOUSERSITE": "1"},
+                start_new_session=os.name != "nt",
+                env={**os.environ, "PYTHONNOUSERSITE": "1", _RPC_TIMEOUT_ENV: str(self.timeout)},
             )
         except OSError as exc:
             raise MemoryPluginError(f"memory plugin could not start: {exc}") from exc
