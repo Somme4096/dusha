@@ -57,6 +57,35 @@ class _OpenAIStub(BaseHTTPRequestHandler):
         return
 
 
+class _FlushDropProxy(BaseHTTPRequestHandler):
+    def do_POST(self) -> None:
+        server = self.server
+        length = int(self.headers.get("content-length", "0"))
+        body = self.rfile.read(length) if length else b""
+        if self.path.endswith("/memory/add"):
+            server.add_calls += 1
+        if self.path.endswith("/memory/flush"):
+            server.flush_calls += 1
+        with httpx.Client(timeout=10, trust_env=False) as client:
+            response = client.post(
+                server.upstream + self.path,
+                content=body,
+                headers={"Content-Type": self.headers.get("Content-Type", "application/json")},
+            )
+        if self.path.endswith("/memory/flush") and not server.dropped:
+            server.dropped = True
+            self.close_connection = True
+            return
+        self.send_response(response.status_code)
+        self.send_header("Content-Type", response.headers.get("Content-Type", "application/json"))
+        self.send_header("Content-Length", str(len(response.content)))
+        self.end_headers()
+        self.wfile.write(response.content)
+
+    def log_message(self, *_: object) -> None:
+        return
+
+
 @pytest.fixture
 def llm_stub():
     server = ThreadingHTTPServer(("127.0.0.1", 0), _OpenAIStub)
@@ -125,6 +154,23 @@ def everos_server(tmp_path: Path, llm_stub):
         yield url, root, stop, restart
     finally:
         stop()
+
+
+@pytest.fixture
+def flush_proxy(everos_server):
+    upstream, _, _, _ = everos_server
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _FlushDropProxy)
+    server.upstream = upstream
+    server.add_calls = 0
+    server.flush_calls = 0
+    server.dropped = False
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server, f"http://127.0.0.1:{server.server_port}", upstream
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
 
 
 def _config(data_dir: Path, mods_dir: Path, sidecar: str, *, enabled: bool) -> AppConfig:
@@ -208,6 +254,17 @@ async def _search(url: str, session_id: str) -> dict:
         return response.json()
 
 
+async def _wait_search(url: str, session_id: str) -> dict:
+    deadline = time.monotonic() + 10
+    result = await _search(url, session_id)
+    while time.monotonic() < deadline:
+        if result.get("data", {}).get("episodes"):
+            return result
+        await asyncio.sleep(0.1)
+        result = await _search(url, session_id)
+    return result
+
+
 def _mods(request, tmp_path: Path) -> Path:
     import shutil
     target = tmp_path / "mods"
@@ -258,3 +315,64 @@ async def test_flush_failure_restarts_without_readding_messages(tmp_path: Path, 
         recovered = await _wait_status(client, lambda value: value.get("processed", 0) >= 1)
         assert recovered.get("processed", 0) >= 1
     assert len(llm_stub[1].calls) > calls_before
+
+
+@pytest.mark.asyncio
+async def test_dropped_flush_response_retries_without_readding_messages(tmp_path: Path, flush_proxy, request):
+    proxy, proxy_url, real_url = flush_proxy
+    mods = _mods(request, tmp_path)
+    data_dir = tmp_path / "data"
+    async with _client(_config(data_dir, mods, proxy_url, enabled=True)) as client:
+        message = await _add(client, "dropped-response", "A dropped response still stores cobalt-orchid.")
+        failed = await _wait_status(client, lambda value: proxy.flush_calls >= 1 and value.get("last_error"))
+        assert proxy.flush_calls == 1
+        assert failed.get("processed", 0) == 0
+        assert proxy.add_calls == 1
+    async with _client(_config(data_dir, mods, proxy_url, enabled=True)) as client:
+        recovered = await _wait_status(client, lambda value: value.get("processed", 0) >= 1)
+        assert recovered.get("processed", 0) >= 1
+    assert proxy.add_calls == 1
+    assert proxy.flush_calls >= 2
+    result = await _wait_search(real_url, "flush-e2e-sophia-" + str(message["conversation_id"]))
+    assert any("cobalt-orchid" in repr(episode) for episode in result.get("data", {}).get("episodes", [])), result
+
+
+@pytest.mark.asyncio
+async def test_enabling_flush_processes_existing_buffer(tmp_path: Path, everos_server, request):
+    sidecar, _, _, _ = everos_server
+    mods = _mods(request, tmp_path)
+    data_dir = tmp_path / "data"
+    async with _client(_config(data_dir, mods, sidecar, enabled=False)) as client:
+        message = await _add(client, "transition", "A buffered cobalt-orchid enters extraction after enabling flush.")
+        buffered = await _status(client)
+        assert buffered.get("processed", 0) == 0
+        assert buffered.get("buffered", 0) == 1
+    async with _client(_config(data_dir, mods, sidecar, enabled=True)) as client:
+        processed = await _wait_status(client, lambda value: value.get("processed", 0) >= 1)
+        assert processed.get("processed", 0) >= 1
+    result = await _wait_search(sidecar, "flush-e2e-sophia-" + str(message["conversation_id"]))
+    assert any("cobalt-orchid" in repr(episode) for episode in result.get("data", {}).get("episodes", [])), result
+
+
+@pytest.mark.asyncio
+async def test_due_flush_and_pending_add_progress_together(tmp_path: Path, everos_server, request):
+    sidecar, _, stop, restart = everos_server
+    mods = _mods(request, tmp_path)
+    data_dir = tmp_path / "data"
+    async with _client(_config(data_dir, mods, sidecar, enabled=False)) as client:
+        first = await _add(client, "mixed", "The first cobalt-orchid record waits for flush.")
+    stop()
+    async with _client(_config(data_dir, mods, sidecar, enabled=True)) as client:
+        second = await _add(client, "mixed", "The second cobalt-orchid record waits for add delivery.", role="assistant")
+        blocked = await _wait_status(client, lambda value: value.get("pending", 0) >= 1 and value.get("flush_pending", 0) >= 1)
+        assert blocked.get("pending", 0) >= 1
+        assert blocked.get("flush_pending", 0) >= 1
+    restart()
+    async with _client(_config(data_dir, mods, sidecar, enabled=True)) as client:
+        progressed = await _wait_status(client, lambda value: value.get("pending", 0) == 0 and value.get("processed", 0) >= 2)
+        assert progressed.get("pending", 0) == 0
+        assert progressed.get("processed", 0) >= 2
+    first_result = await _wait_search(sidecar, "flush-e2e-sophia-" + str(first["conversation_id"]))
+    second_result = await _wait_search(sidecar, "flush-e2e-sophia-" + str(second["conversation_id"]))
+    assert any("cobalt-orchid" in repr(episode) for episode in first_result.get("data", {}).get("episodes", []))
+    assert any("cobalt-orchid" in repr(episode) for episode in second_result.get("data", {}).get("episodes", []))
