@@ -61,7 +61,7 @@ class Worker:
             rendered, facts = self.evergreen.render(**params)
             return {"rendered": rendered, "facts": facts}
         if method == "status":
-            return {"status": {"local": self.semantic.status(), "everos": self.everos.status()}}
+            return {"status": {**self.semantic.status(), "everos": self.everos.status()}}
         if method == "backfill_once":
             status = self.semantic.backfill_once(**params)
             status["everos"] = self.everos.deliver_pending(1)
