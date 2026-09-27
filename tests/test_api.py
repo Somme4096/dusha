@@ -9,7 +9,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from companion_gateway import api
+from companion_gateway import api, api_openai, api_state
 from companion_gateway.config import AppConfig, IdentityPromptConfig, MemoryConfig
 
 
@@ -26,10 +26,9 @@ def _to_thread_inline(monkeypatch):
     monkeypatch.setattr(api.asyncio, "to_thread", _run_inline)
 
 
-def _proxy_app(config, monkeypatch, fake_upstream=None):
+def _proxy_app(config, monkeypatch, fake_upstream):
     config.upstream.base_url = "https://upstream.invalid/v1"
-    if fake_upstream is not None:
-        monkeypatch.setattr(api, "_upstream_request", fake_upstream)
+    monkeypatch.setattr(api_openai, "_upstream_request", fake_upstream)
     return api.create_app(config)
 
 
@@ -93,7 +92,7 @@ async def _stream_post(config, monkeypatch, fake, content="Hi"):
     config.upstream.base_url = "https://upstream.invalid/v1"
     app = api.create_app(config)
     async with _client(app) as client:
-        monkeypatch.setattr(api.httpx, "AsyncClient", lambda *args, **kwargs: fake)
+        monkeypatch.setattr(api_openai.httpx, "AsyncClient", lambda *args, **kwargs: fake)
         response = await client.post("/v1/chat/completions",
                                      json={"model": "upstream", "stream": True,
                                            "messages": [{"role": "user", "content": content}]})
@@ -122,7 +121,7 @@ async def test_consolidated_error_mappings_keep_status_and_detail(config, monkey
             if detail is not None:
                 assert response.json()["detail"] == detail
     with pytest.raises(RuntimeError, match="boom"):
-        api._raise_http(RuntimeError("boom"))
+        api_state._raise_http(RuntimeError("boom"))
 
 
 async def test_state_api_and_openai_proxy_preserve_one_canonical_transcript(config, monkeypatch):
@@ -232,7 +231,6 @@ async def test_proxy_preserves_unknown_fields_and_caller_auth(config, monkeypatc
                                        "custom_message_field": "preserved"}
     assert captured["_headers"].get("authorization") == "Bearer caller-token"
 
-    # Upstream error responses are forwarded verbatim.
     async def fake_error(request, cfg, path, body):
         return httpx.Response(503, content=b"raw upstream error body", headers={"content-type": "text/plain"})
 
@@ -305,9 +303,7 @@ async def test_old_label_endpoints_and_affect_label_are_gone(config, monkeypatch
         message_id = message.json()["id"]
         record = await client.post(f"/state/v1/messages/{message_id}/affect", json={"label": "hostile"})
         event = await client.post("/state/v1/affect/events", json={"label": "neutral"})
-    # A supplied affect_label is rejected, never silently accepted.
     assert rejected.status_code == 422
-    # The label endpoints are absent.
     assert record.status_code in (404, 405)
     assert event.status_code in (404, 405)
 
@@ -595,7 +591,7 @@ async def test_auth_enabled_streaming_and_upstream_authorization(config, monkeyp
     fake = _FakeStreamClient(STREAM_CHUNKS)
     async with _client(app) as client:
         with monkeypatch.context() as patch:
-            patch.setattr(api.httpx, "AsyncClient", lambda *args, **kwargs: fake)
+            patch.setattr(api_openai.httpx, "AsyncClient", lambda *args, **kwargs: fake)
             streamed = await client.post(
                 "/v1/chat/completions",
                 json={"model": "upstream", "stream": True,
@@ -609,10 +605,10 @@ async def test_auth_enabled_streaming_and_upstream_authorization(config, monkeyp
     captured_headers: dict = {}
 
     async def fake_upstream(request, cfg, path, body):
-        captured_headers.update(api._upstream_headers(request, cfg))
+        captured_headers.update(api_openai._upstream_headers(request, cfg))
         return _reply("ok")
 
-    monkeypatch.setattr(api, "_upstream_request", fake_upstream)
+    monkeypatch.setattr(api_openai, "_upstream_request", fake_upstream)
     async with _client(app) as client:
         forwarded = await _chat(
             client,

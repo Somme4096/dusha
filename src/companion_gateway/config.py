@@ -1,18 +1,13 @@
 from __future__ import annotations
 
-import copy
 import json
 import math
 import os
-import re
 import types as _types
 import typing
-import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-
-import yaml
 
 from . import emotions as _emotions
 from .defaults import all_defaults
@@ -21,6 +16,7 @@ from .resources import loads_strict
 _DEFAULTS = all_defaults()
 _EMOTIONS = _emotions.default_emotions()
 _UPSTREAM = _DEFAULTS["upstream"]
+_API_OPENAI = _DEFAULTS["api_openai"]
 _MEMORY = _DEFAULTS["memory"]
 _EMBEDDING = _MEMORY["embedding"]
 _EVERGREEN = _DEFAULTS["evergreen"]
@@ -54,6 +50,11 @@ class UpstreamConfig:
     base_url: str = _UPSTREAM["base_url"]
     api_key_env: str = _UPSTREAM["api_key_env"]
     timeout_seconds: float = _UPSTREAM["timeout_seconds"]
+
+
+@dataclass(slots=True)
+class ApiOpenAIConfig:
+    enabled: bool = _API_OPENAI["enabled"]
 
 
 @dataclass(slots=True)
@@ -114,6 +115,7 @@ class DecisionConfig:
     options: dict[str, Any] = field(default_factory=lambda: dict(_DECISION["options"]))
     increment: float = _DECISION["increment"]
     mods_dir: str = _DECISION["mods_dir"]
+    timeout_seconds: float = _DECISION["timeout_seconds"]
 
     def __post_init__(self) -> None:
         value = self.increment
@@ -123,6 +125,13 @@ class DecisionConfig:
         if not math.isfinite(number) or not 0 < number <= 1:
             raise ValueError("decision.increment must be a finite number in (0, 1]")
         self.increment = number
+        timeout = self.timeout_seconds
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+            raise ValueError("decision.timeout_seconds must be a finite positive number")
+        timeout_number = float(timeout)
+        if not math.isfinite(timeout_number) or timeout_number <= 0:
+            raise ValueError("decision.timeout_seconds must be a finite positive number")
+        self.timeout_seconds = timeout_number
 
 
 @dataclass(slots=True)
@@ -164,6 +173,7 @@ class AppConfig:
     port: int = _DEFAULTS["port"]
     timezone: str = _DEFAULTS["timezone"]
     api_token_env: str = _DEFAULTS["api_token_env"]
+    api_openai: ApiOpenAIConfig = field(default_factory=ApiOpenAIConfig)
     identity_prompt: IdentityPromptConfig = field(
         default_factory=lambda: IdentityPromptConfig()
     )
@@ -251,28 +261,9 @@ def _memory_section(raw: Any) -> MemoryConfig:
     return MemoryConfig(**kwargs)
 
 
-class _UniqueKeyLoader(yaml.SafeLoader):
-    def construct_mapping(self, node: Any, deep: bool = False) -> dict:
-        self.flatten_mapping(node)
-        mapping: dict = {}
-        for key_node, value_node in node.value:
-            key = self.construct_object(key_node, deep=deep)
-            if key in mapping:
-                raise ValueError(f"duplicate key: {key!r}")
-            mapping[key] = self.construct_object(value_node, deep=deep)
-        return mapping
-
-
-def _read_config_file(path: Path, is_json: bool) -> dict:
+def _read_config_file(path: Path) -> dict:
     text = path.read_text(encoding="utf-8")
-    if is_json:
-        return loads_strict(text, source=str(path))
-    data = yaml.load(text, Loader=_UniqueKeyLoader)
-    if data is None:
-        return {}
-    if not isinstance(data, dict):
-        raise ValueError(f"{path} must contain a YAML mapping")
-    return data
+    return loads_strict(text, source=str(path))
 
 
 def _path_section(cls: type[Any], raw: Any, name: str, source_dir: Path) -> Any:
@@ -282,7 +273,7 @@ def _path_section(cls: type[Any], raw: Any, name: str, source_dir: Path) -> Any:
     return section
 
 
-def _app_config_from_raw(raw: dict[str, Any], source_dir: Path, is_json: bool) -> AppConfig:
+def _app_config_from_raw(raw: dict[str, Any], source_dir: Path) -> AppConfig:
     allowed = set(typing.get_type_hints(AppConfig)) | {"emotions"}
     unknown = sorted(set(raw) - allowed)
     if unknown:
@@ -329,7 +320,7 @@ def _app_config_from_raw(raw: dict[str, Any], source_dir: Path, is_json: bool) -
     if "data_dir" in raw:
         _validate_value("data_dir", raw["data_dir"], Path)
         data_dir = Path(raw["data_dir"]).expanduser()
-        if is_json and not data_dir.is_absolute():
+        if not data_dir.is_absolute():
             data_dir = source_dir / data_dir
         kwargs["data_dir"] = data_dir
 
@@ -338,6 +329,7 @@ def _app_config_from_raw(raw: dict[str, Any], source_dir: Path, is_json: bool) -
         identity_prompt=identity_prompt,
         prompts=prompts,
         upstream=_strict_section(UpstreamConfig, raw.get("upstream"), "upstream"),
+        api_openai=_strict_section(ApiOpenAIConfig, raw.get("api_openai"), "api_openai"),
         memory=_memory_section(raw.get("memory")),
         evergreen=_strict_section(EvergreenConfig, raw.get("evergreen"), "evergreen"),
         affect=affect,
@@ -349,22 +341,26 @@ def _app_config_from_raw(raw: dict[str, Any], source_dir: Path, is_json: bool) -
 def _resolve_config_path(explicit: str | Path | None) -> Path | None:
     if explicit is not None:
         path = Path(explicit)
+        if path.suffix.lower() != ".json":
+            raise ValueError(f"unsupported configuration format: {path}. Use a JSON file")
         if not path.exists():
             raise FileNotFoundError(f"configuration file not found: {path}")
         return path
     env = os.getenv("COMPANION_GATEWAY_CONFIG")
     if env:
         path = Path(env)
+        if path.suffix.lower() != ".json":
+            raise ValueError(f"unsupported configuration format: {path}. Use a JSON file")
         if not path.exists():
             raise FileNotFoundError(
                 f"configuration file not found (from COMPANION_GATEWAY_CONFIG): {path}"
             )
         return path
-    for name in ("config.json", "config.yaml"):
+    for name in ("config.json",):
         path = default_config_dir() / name
         if path.exists():
             return path
-    for candidate in ("config.json", "config.yaml"):
+    for candidate in ("config.json",):
         path = Path(candidate)
         if path.exists():
             return path
@@ -375,17 +371,10 @@ def load_config(path: str | Path | None = None) -> AppConfig:
     config_path = _resolve_config_path(path)
     if config_path is None:
         return AppConfig()
-    is_json = config_path.suffix.lower() == ".json"
-    raw = _read_config_file(config_path, is_json)
-    cfg = _app_config_from_raw(raw, config_path.parent, is_json=is_json)
-    if not is_json:
-        warnings.warn(
-            f"{config_path} is a legacy YAML config and is deprecated. "
-            "Use config.json or run 'companion-gateway migrate-config "
-            f"{config_path} config.json' to convert.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
+    if config_path.suffix.lower() != ".json":
+        raise ValueError(f"unsupported configuration format: {config_path}. Use a JSON file")
+    raw = _read_config_file(config_path)
+    cfg = _app_config_from_raw(raw, config_path.parent)
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
     return cfg
 
@@ -395,6 +384,7 @@ def _validate_packaged_defaults() -> None:
     for key in ("data_dir", "host", "port", "timezone", "api_token_env"):
         _validate_value(f"packaged defaults {key}", _DEFAULTS[key], hints[key])
     _strict_section(UpstreamConfig, _DEFAULTS["upstream"], "packaged defaults upstream")
+    _strict_section(ApiOpenAIConfig, _DEFAULTS["api_openai"], "packaged defaults api_openai")
     _memory_section(_DEFAULTS["memory"])
     _strict_section(EvergreenConfig, _DEFAULTS["evergreen"], "packaged defaults evergreen")
     _strict_section(ProactiveConfig, _DEFAULTS["proactive"], "packaged defaults proactive")
@@ -406,103 +396,3 @@ def _validate_packaged_defaults() -> None:
 
 
 _validate_packaged_defaults()
-
-
-
-_ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_CREDENTIAL_PATTERNS = [
-    re.compile(r"://[^/@\s]+:[^/@\s]+@"),
-    re.compile(r"\bBearer\s+\S+", re.I),
-    re.compile(r"\bsk-[A-Za-z0-9]{16,}\b"),
-    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
-    re.compile(r"-----BEGIN (RSA|OPENSSH|EC|PRIVATE)"),
-    re.compile(r"\bghp_[A-Za-z0-9]{20,}\b"),
-    re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"),
-]
-
-_MIGRATION_ORDER = [
-    "emotions",
-    "identity_prompt",
-    "prompts",
-    "data_dir",
-    "host",
-    "port",
-    "timezone",
-    "api_token_env",
-    "upstream",
-    "memory",
-    "evergreen",
-    "affect",
-    "proactive",
-    "decision",
-]
-
-_PATH_SECTIONS = {"emotions", "identity_prompt", "prompts"}
-
-
-def _scrub_secrets(value: Any, path: str = "") -> None:
-    if isinstance(value, dict):
-        for key, item in value.items():
-            if key in ("api_key_env", "api_token_env"):
-                if isinstance(item, str) and item and not _ENV_NAME.match(item):
-                    raise ValueError(
-                        f"{path}.{key} must be an environment variable name, not a literal credential"
-                    )
-            _scrub_secrets(item, f"{path}.{key}")
-    elif isinstance(value, list):
-        for index, item in enumerate(value):
-            _scrub_secrets(item, f"{path}[{index}]")
-    elif isinstance(value, str):
-        for pattern in _CREDENTIAL_PATTERNS:
-            if pattern.search(value):
-                raise ValueError(f"refusing to emit a possible secret value in {path or '<root>'}")
-
-
-def _transform_for_migration(raw: dict[str, Any], src: Path, is_json: bool) -> dict[str, Any]:
-    out: dict[str, Any] = {}
-    for key in _MIGRATION_ORDER:
-        if key not in raw:
-            continue
-        if key == "data_dir":
-            value = Path(str(raw["data_dir"])).expanduser()
-            if not value.is_absolute():
-                base = src.parent if is_json else Path.cwd()
-                value = (base / value).resolve()
-            out[key] = str(value)
-        elif key in _PATH_SECTIONS:
-            section = dict(raw[key])
-            if "path" in section and section["path"]:
-                value = Path(str(section["path"])).expanduser()
-                if not value.is_absolute():
-                    value = (src.parent / value).resolve()
-                section["path"] = str(value)
-            out[key] = section
-        elif key == "decision":
-            section = copy.deepcopy(raw[key])
-            mods_dir = section.get("mods_dir")
-            if mods_dir:
-                value = Path(str(mods_dir)).expanduser()
-                if not value.is_absolute():
-                    value = (src.parent / value).resolve()
-                section["mods_dir"] = str(value)
-            out[key] = section
-        else:
-            out[key] = copy.deepcopy(raw[key])
-    return out
-
-
-def migrate_config(source: str | Path, destination: str | Path, force: bool = False) -> dict:
-    src = Path(source)
-    if not src.exists():
-        raise FileNotFoundError(f"source configuration not found: {src}")
-    dest = Path(destination)
-    if dest.exists() and not force:
-        raise FileExistsError(f"destination already exists (use --force to overwrite): {dest}")
-    is_json = src.suffix.lower() == ".json"
-    raw = _read_config_file(src, is_json)
-    _app_config_from_raw(raw, src.parent, is_json=is_json)
-    emitted = _transform_for_migration(raw, src, is_json)
-    _scrub_secrets(emitted)
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text(json.dumps(emitted, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    return {"source": str(src), "destination": str(dest)}

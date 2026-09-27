@@ -27,7 +27,7 @@ cp config.example.json ~/.config/companion-gateway/config.json
 cp deploy/companion-gateway.service ~/.config/systemd/user/
 ```
 
-3. Reload the user daemon, then override the unit's config path. The shipped unit points `COMPANION_GATEWAY_CONFIG` at `config.yaml`, which does not exist in this setup. Do not edit `deploy/companion-gateway.service`; add a drop-in instead.
+3. Reload the user daemon, then override the unit's config path. The shipped unit points `COMPANION_GATEWAY_CONFIG` at `config.json`. Do not edit `deploy/companion-gateway.service`; add a drop-in instead.
 
 ```sh
 systemctl --user daemon-reload
@@ -112,7 +112,7 @@ The proxy uses a server-owned key when `upstream.api_key_env` is nonempty. It se
 
 ## Backup, restore, and troubleshoot
 
-Back up every user-authored file: the config file, the identity Markdown, custom prompts and emotions files, decision plugin files under the mods directory, and the database.
+Back up every user-authored file: the config file, the identity Markdown, custom prompts and emotions files, decision suite directories under the mods directory, and the database.
 
 Create a consistent live backup:
 

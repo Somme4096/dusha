@@ -1,10 +1,3 @@
-"""Deterministic characterization of the time-based affect engine.
-
-The label system is gone. These tests pin the retained time-based behavior
-(decay, silence, proactive-send deltas) and the new single-dimension decision
-increment. Every expected number is hardcoded, not recomputed from the engine.
-"""
-
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
@@ -74,9 +67,7 @@ def test_characterization_decision_increment_is_exact_and_bounded(svc):
     assert result["emotion"] == "fear"
     assert result["increment"] == 0.1
     assert result["state"]["base"]["fear"] == 0.1
-    # Only the selected dimension moves.
     assert result["state"]["base"]["anxiety"] == 0.2
-    # Repeated increases clamp at the value maximum.
     for _ in range(20):
         result = _decide(service, user["id"], "fear")
     assert result["state"]["base"]["fear"] == 1.0
@@ -123,7 +114,6 @@ def test_characterization_two_timescale_decay(svc):
     after24 = service.affect.status(now=NOW + timedelta(hours=24))
     assert after24["base"]["fear"] == 0.5047
     assert after24["mood"]["fear"] == 0.4982
-    # Dimensions the decision did not touch stay at their neutral values.
     assert after24["base"]["anxiety"] == 0.38
     assert after24["base"]["contentment"] == 0.35
 
@@ -261,7 +251,6 @@ def test_failed_delivery_waits_before_retry(svc):
 def test_invalid_decider_results_make_no_adjustment(svc, emotion):
     service = svc()
     user = _ingest(service, role="user", content="hello", external_id=f"inv-{emotion}")
-    # A decider returning a non-dimension value is ignored.
     assert service.affect.record_user_message(
         message="hello", source_message_id=user["id"],
         decider=lambda **_: emotion, instruction="", now=NOW,

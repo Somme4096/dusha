@@ -10,26 +10,23 @@ cp config.example.json config.json
 
 ## Config format, lookup, and path rules
 
-The service reads JSON first. `config.json` is the supported format. Legacy `config.yaml` still loads with a deprecation warning.
+The service reads JSON configuration only. `config.json` is the supported format.
 
 Config lookup order:
 
 1. `--config PATH`. A missing explicit file is an error.
 2. `COMPANION_GATEWAY_CONFIG`. A missing file is an error.
 3. `config.json` in the default config directory `~/.config/companion-gateway/`.
-4. `config.yaml` in the default config directory (legacy, warning).
-5. `config.json` in the current directory (legacy fallback).
-6. `config.yaml` in the current directory (legacy fallback, warning).
-7. Packaged defaults. A missing implicit file is valid.
+4. `config.json` in the current directory (fallback).
+5. Packaged defaults. A missing implicit file is valid.
 
-`config.json` wins when both files exist in the same directory. The loader never merges them.
+The loader never merges configuration files.
 
 Parsing is strict. Duplicate keys, unknown fields, `NaN`, `Infinity`, JSONC comments, and wrong types raise an actionable error.
 
-Path rules differ by format:
+Path rules:
 
 - JSON: `data_dir`, `emotions.path`, `identity_prompt.path`, `prompts.path`, and `decision.mods_dir` resolve against the config file directory.
-- Legacy YAML: `data_dir` resolves against the current working directory. The path sections resolve against the config file.
 - Absolute paths pass through unchanged.
 
 ## Core settings
@@ -38,6 +35,7 @@ Path rules differ by format:
 - `data_dir`: directory holding `state.sqlite3`.
 - `timezone`: local zone for quiet hours and daily limits.
 - `api_token_env`: name of the environment variable holding the shared API token. Empty keeps local unauthenticated mode.
+- `api_openai.enabled`: enables the optional OpenAI-compatible HTTP routes. It defaults to `true`. Changing it requires a service restart. When disabled, those routes return 404 and are omitted from OpenAPI, while state and health routes remain available.
 - `upstream`: `base_url`, `api_key_env` (default `UPSTREAM_API_KEY`), `timeout_seconds`. An empty `base_url` disables the chat proxy.
 
 Focused example:
@@ -105,44 +103,44 @@ Value precedence resolves in this order:
 
 An explicit override wins even when it equals the packaged default. Config fields carry an `UNSET` sentinel, so resolution never guesses the source. The engine snapshots these values at construction. Mutating the config object later changes nothing.
 
-## Decision plugins
+## Decision suites
 
-On each new user message the gateway can invoke one Python decision plugin. The plugin selects at most one emotion dimension from the resolved `emotions.json`; the engine then increases that dimension by `decision.increment`, clamped to the dimension range. No plugin, or a failed or invalid decision, means no decision-driven adjustment. Contact bookkeeping and proactive scheduling still run.
+On each new user message the gateway can invoke one Python decision suite. The suite selects at most one emotion dimension from the resolved `emotions.json`. The engine then increases that dimension by `decision.increment`, clamped to the dimension range. No suite, or a failed or invalid decision, means no decision-driven adjustment. Contact bookkeeping and proactive scheduling still run.
 
-The plugin contract is fixed. A plugin file exports:
+Each suite directory requires `README.md`, `main.py`, `pyproject.toml`, and `uv.lock`. You can include helper modules and subpackages. Install `uv` on the gateway's executable search path. The gateway synchronizes locked dependencies into the suite's dedicated environment during initialization. In `main.py`, export:
 
 ```python
-from companion_gateway.decision import DecisionRequest, DecisionResult
-
-def decide(request: DecisionRequest, options: dict) -> DecisionResult | None:
+def decide(request, options) -> dict[str, str] | None:
     ...
 ```
 
-`DecisionRequest` carries `message` (the stored user message text), `emotions` (the resolved dimension definitions), `state` (the current emotion snapshot), and `instruction` (the `decision_instruction` prompt slot). Return `DecisionResult(emotion="<dimension>")` for one allowed dimension, or `None` to abstain. The gateway hands the plugin deep copies of the definitions and state, so a plugin cannot mutate engine-owned objects. The gateway validates the returned dimension before it changes any state.
+The request has `message`, `emotions`, `state`, and `instruction` attributes. Return `{"emotion": "<dimension>"}` for one allowed dimension, or `None` to abstain. The runner passes sanitized request data and options to the child suite.
 
 Configuration:
 
 ```json
 {
   "decision": {
-    "module": "my_plugin",
+    "module": "my_suite",
     "options": {"endpoint": "http://127.0.0.1:8000"},
     "increment": 0.1,
+    "timeout_seconds": 15,
     "mods_dir": ""
   }
 }
 ```
 
-- `module`: a plain module name, resolved only under the mods directory as `<module>.py`. Empty disables decision-driven adjustment. A name containing a path separator or any non-identifier character is rejected, so a configured value cannot traverse to another directory.
-- `options`: passed through to the plugin verbatim.
+- `module`: a plain suite directory name, resolved only under the mods directory. Empty disables decision-driven adjustment. A name containing a path separator or any non-identifier character is rejected.
+- `options`: passed through to the suite verbatim.
 - `increment`: the bounded amount added to the selected dimension. Must be finite and in `(0, 1]`. Default `0.1`.
+- `timeout_seconds`: the outer deadline for each decision process. Must be finite and positive. Default `15`. Set it above any HTTP timeout configured in `options`.
 - `mods_dir`: an optional mods directory. Empty uses `<default config dir>/mods`, that is `~/.config/companion-gateway/mods`. A relative value resolves against the config file location.
 
 `COMPANION_GATEWAY_MODS_DIR` overrides `decision.mods_dir` when set. This is the recommended way to test an isolated mods tree without touching the live configuration.
 
-Decision plugins are trusted Python. The gateway loads the file with `importlib` and calls it in-process. It does not sandbox plugins: a plugin can read and write anything the service process can. Only install plugins you wrote or reviewed. A plugin that fails to load, raises, or returns a malformed result is logged and ignored; message ingest keeps working.
+Decision suites are trusted child processes. The runner uses the suite's dedicated `uv` environment, with inherited OS permissions and no container or OS sandbox. Only install suites you wrote or reviewed. A suite that fails to load, raises, or returns a malformed result is logged and ignored. Message ingest keeps working. HTTP adapters may define explicit options such as credentials and an optional literal-IP `allowed_ips` list. When present, every request and redirect must remain on an allowed literal address.
 
-The default `decision_instruction` asks the plugin to choose the companion's own emotional response to the message, not to classify the speaker's emotion. Replace it with the `prompts` overlay when you want different selection criteria.
+The default `decision_instruction` asks the suite to choose the companion's own emotional response to the message, not to classify the speaker's emotion. Replace it with the `prompts` overlay when you want different selection criteria.
 
 ## Retrieval and embeddings
 
@@ -188,18 +186,6 @@ Changing the endpoint, model, dimensions, or chunk sizes selects a new derived i
 ## Proactive scheduling
 
 `proactive.enabled` turns evaluation on. The scheduler runs every `proactive.poll_interval_seconds`. A message needs `proactive.minimum_silence_minutes` of silence. After a send, `cooldown_minutes` applies, `max_per_day` caps daily sends, and `max_unanswered` caps ignored messages. `quiet_start_hour` and `quiet_end_hour` block local quiet hours. The emotional gates `longing_threshold` and `fear_threshold` come from `emotions.json`. The service stores each decision before delivery, so restarts keep the limits and dedupe events.
-
-## Migrate a legacy YAML config
-
-Convert a legacy file once:
-
-```sh
-companion-gateway migrate-config config.yaml config.json
-```
-
-The command validates the source before writing. It rewrites `data_dir` and path-section values as absolute paths, so the destination keeps the same meaning wherever it lives. It refuses to overwrite an existing destination unless you pass `--force`.
-
-The command refuses literal credentials. Values in `api_key_env` and `api_token_env` must be environment variable names. Strings that resemble URL userinfo, bearer tokens, secret prefixes, or private keys stop the migration. Keep secrets in the environment.
 
 ## Related documentation
 

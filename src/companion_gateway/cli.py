@@ -9,7 +9,7 @@ from typing import Any
 import uvicorn
 
 from .api import create_app
-from .config import load_config, migrate_config
+from .config import load_config
 from .proactive import ProactiveEngine
 from .service import CompanionService
 
@@ -27,14 +27,6 @@ def parser() -> argparse.ArgumentParser:
 
     commands.add_parser("serve", help="Run the HTTP service")
     commands.add_parser("health", help="Check the database")
-
-    migrate = commands.add_parser(
-        "migrate-config",
-        help="Convert a legacy YAML (or JSON) config file to config.json",
-    )
-    migrate.add_argument("source")
-    migrate.add_argument("destination")
-    migrate.add_argument("--force", action="store_true", help="Overwrite the destination")
 
     backup = commands.add_parser("backup", help="Create a consistent SQLite backup")
     backup.add_argument("destination")
@@ -323,9 +315,6 @@ _COMMANDS: dict[str, Handler] = {
 
 def main() -> None:
     args = parser().parse_args()
-    if args.command == "migrate-config":
-        _print(migrate_config(args.source, args.destination, force=args.force))
-        return
     cfg = load_config(args.config)
     if args.command == "serve":
         uvicorn.run(create_app(cfg), host=cfg.host, port=cfg.port, log_level="info")

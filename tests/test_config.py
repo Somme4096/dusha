@@ -1,11 +1,7 @@
-"""Config file parsing, migration, path resolution, effective emotions, and CLI."""
-
 from __future__ import annotations
 
-import hashlib
 import json
-import sys
-from contextlib import nullcontext
+import hashlib
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -24,7 +20,6 @@ from companion_gateway.config import (
     ProactiveConfig,
     PromptsConfig,
     load_config,
-    migrate_config,
 )
 from companion_gateway.context import ContextBudgetError
 from companion_gateway.database import Database
@@ -92,8 +87,6 @@ def _ingest(service, *, harness="astrbot", conversation_id="one", role="user", c
 
 
 def _decide(service, message_id, emotion, *, now=NOW):
-    """Apply one inline decision (``None`` emotion means contact bookkeeping only)."""
-
     decider = None if emotion is None else (lambda **_: emotion)
     return service.affect.record_user_message(
         message="x", source_message_id=message_id, decider=decider, instruction="", now=now
@@ -107,14 +100,6 @@ def _low_longing(base):
 def _custom_service(svc, tmp_path, name, mutations=None, *, version="custom", **affect):
     path = _emotions_file(tmp_path, name, mutations, version)
     return svc(affect=AffectConfig(emotions_path=str(path), **affect))
-
-
-def _run_cli(monkeypatch, tmp_path, write_json, argv):
-    from companion_gateway import cli
-
-    config = write_json(tmp_path / "config.json", {"data_dir": "data"})
-    monkeypatch.setattr(sys, "argv", ["companion-gateway", "--config", str(config), *argv])
-    return cli.main()
 
 
 @pytest.mark.parametrize(
@@ -132,8 +117,6 @@ def _run_cli(monkeypatch, tmp_path, write_json, argv):
         ("json", '{"memory": {"recent_messages": true}}', "recent_messages must be int"),
         ("json", '{"decision": {"increment": 2}}', "decision.increment"),
         ("json", '{"decision": {"bogus": 1}}', r"unknown field\(s\) under decision"),
-        ("yaml", "host: a\nhost: b\n", "duplicate key"),
-        ("yaml", "bogus: 1\n", "unknown top-level field"),
     ],
 )
 def test_config_rejects_invalid_input(tmp_path, fmt, body, pattern):
@@ -152,24 +135,16 @@ def test_config_rejects_invalid_input(tmp_path, fmt, body, pattern):
             ("proactive.longing_threshold", 0.48),
             ("proactive.fear_threshold", 0.55),
         ]),
-        ("yaml", [
-            ("affect.dimensions.fear.neutral", 0.0),
-            ("proactive.quiet_end_hour", 8),
-        ]),
     ],
 )
 def test_config_examples_load(tmp_path, fmt, specific):
     text = (Path(__file__).parents[1] / f"config.example.{fmt}").read_text(encoding="utf-8")
-    if fmt == "json":
-        data = json.loads(text)
-        data["data_dir"] = str(tmp_path / "data")
-        text = json.dumps(data)
-    else:
-        text = text.replace("~/.local/share/companion-gateway", str(tmp_path / "data"))
+    data = json.loads(text)
+    data["data_dir"] = str(tmp_path / "data")
+    text = json.dumps(data)
     config = tmp_path / f"config.{fmt}"
     config.write_text(text, encoding="utf-8")
-    with pytest.warns(DeprecationWarning) if fmt == "yaml" else nullcontext():
-        cfg = load_config(config)
+    cfg = load_config(config)
     assert cfg.port == 8765
     assert cfg.upstream.base_url == "https://api.openai.com/v1"
     assert cfg.memory.retrieval_mode == "hybrid"
@@ -187,8 +162,7 @@ def test_config_precedence_env_and_missing(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     assert load_config().host == "from-json"
     (tmp_path / "config.json").unlink()
-    with pytest.warns(DeprecationWarning):
-        assert load_config().host == "from-yaml"
+    assert load_config().host == "127.0.0.1"
     (tmp_path / "config.yaml").unlink()
     assert load_config().host == "127.0.0.1"
 
@@ -206,6 +180,15 @@ def test_config_precedence_env_and_missing(tmp_path, monkeypatch):
         load_config(tmp_path / "missing.json")
 
 
+def test_yaml_config_is_rejected_and_not_discovered(tmp_path, monkeypatch):
+    yaml_config = tmp_path / "config.yaml"
+    yaml_config.write_text("host: from-yaml\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="unsupported configuration format"):
+        load_config(yaml_config)
+    monkeypatch.chdir(tmp_path)
+    assert load_config().host == "127.0.0.1"
+
+
 def test_default_config_dir_precedence(tmp_path, monkeypatch):
     home = tmp_path / "home"
     default_dir = home / ".config" / "companion-gateway"
@@ -217,7 +200,6 @@ def test_default_config_dir_precedence(tmp_path, monkeypatch):
     monkeypatch.chdir(cwd)
     (default_dir / "config.json").write_text('{"host": "from-default-dir"}', encoding="utf-8")
     (cwd / "config.json").write_text('{"host": "from-cwd"}', encoding="utf-8")
-    # Default config dir wins over the legacy current-directory fallback.
     assert load_config().host == "from-default-dir"
     (default_dir / "config.json").unlink()
     assert load_config().host == "from-cwd"
@@ -292,121 +274,6 @@ def test_paths_resolve_relative_to_config_file(tmp_path, svc, write_json, sectio
             assert svc(cfg=cfg).identity_text == "# Identity SENTINEL\nRaw user-authored identity text."
 
 
-def test_yaml_data_dir_keeps_cwd_semantics(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    cfg_dir = tmp_path / "cfg"
-    cfg_dir.mkdir()
-    config = cfg_dir / "config.yaml"
-    config.write_text("data_dir: data\n", encoding="utf-8")
-    with pytest.warns(DeprecationWarning):
-        cfg = load_config(config)
-    assert cfg.data_dir == Path("data")
-
-
-def test_migrate_config_converts_yaml_preserving_values(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    source = tmp_path / "legacy.yaml"
-    source.write_text(
-        "data_dir: data\n"
-        "memory:\n"
-        "  retrieval_mode: hybrid\n"
-        "  embedding:\n"
-        "    base_url: https://embedding.invalid/v1\n"
-        "    api_key_env: EMBEDDING_API_KEY\n"
-        "affect:\n"
-        "  dimensions:\n"
-        "    fear:\n"
-        "      neutral: 0.1\n",
-        encoding="utf-8",
-    )
-    destination = tmp_path / "out" / "config.json"
-    result = migrate_config(source, destination)
-    assert result["destination"] == str(destination)
-    emitted = json.loads(destination.read_text(encoding="utf-8"))
-    assert emitted["memory"]["retrieval_mode"] == "hybrid"
-    assert emitted["affect"]["dimensions"]["fear"]["neutral"] == 0.1
-    assert Path(emitted["data_dir"]) == (Path.cwd() / "data").resolve()
-
-
-def test_migrate_config_preserves_paths_and_expected_version(tmp_path):
-    conf_dir = tmp_path / "conf"
-    conf_dir.mkdir()
-    identity = _identity_file(tmp_path)
-    source = conf_dir / "config.yaml"
-    source.write_text(
-        "emotions:\n  path: custom.json\n  expected_version: \"0.2.0\"\n"
-        f"identity_prompt:\n  path: {identity}\n"
-        "prompts:\n"
-        f"  path: {identity}\n",
-        encoding="utf-8",
-    )
-    destination = tmp_path / "elsewhere.json"
-    migrate_config(source, destination)
-    emitted = json.loads(destination.read_text(encoding="utf-8"))
-    assert emitted["emotions"]["expected_version"] == "0.2.0"
-    assert Path(emitted["emotions"]["path"]) == (conf_dir / "custom.json").resolve()
-    assert Path(emitted["identity_prompt"]["path"]) == Path(identity).resolve()
-    assert Path(emitted["prompts"]["path"]) == Path(identity).resolve()
-
-
-def test_migrate_config_refuses_overwrite_without_force(tmp_path):
-    source = tmp_path / "a.yaml"
-    source.write_text("host: a\n", encoding="utf-8")
-    destination = tmp_path / "out.json"
-    destination.write_text("{}", encoding="utf-8")
-    with pytest.raises(FileExistsError, match="already exists"):
-        migrate_config(source, destination)
-    migrate_config(source, destination, force=True)
-    # A literal secret in api_key_env is refused after migration.
-    source.write_text("upstream:\n  api_key_env: sk-literal-value-not-an-env-name\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="environment variable name"):
-        migrate_config(source, tmp_path / "c.json")
-
-
-def test_cli_migrate_config_smoke(tmp_path, monkeypatch):
-    from companion_gateway import cli as cli_module
-
-    source = tmp_path / "c.yaml"
-    source.write_text("host: example-host\n", encoding="utf-8")
-    destination = tmp_path / "c.json"
-    monkeypatch.setattr(sys, "argv", ["companion-gateway", "migrate-config", str(source), str(destination)])
-    cli_module.main()
-    assert json.loads(destination.read_text(encoding="utf-8"))["host"] == "example-host"
-
-
-@pytest.mark.parametrize(
-    ("argv", "expected"),
-    [
-        (["health"], '"database": "ok"'),
-        (["memory", "recent"], '"messages": []'),
-        (["memory", "reindex"], '"status": "rebuilt"'),
-    ],
-)
-def test_cli_dispatch(monkeypatch, tmp_path, write_json, capsys, argv, expected):
-    _run_cli(monkeypatch, tmp_path, write_json, argv)
-    assert expected in capsys.readouterr().out
-
-
-def test_cli_evergreen_remember_then_list(monkeypatch, tmp_path, write_json, capsys):
-    _run_cli(monkeypatch, tmp_path, write_json, ["evergreen", "remember", "user.fav", "tea"])
-    assert '"key": "user.fav"' in capsys.readouterr().out
-    _run_cli(monkeypatch, tmp_path, write_json, ["evergreen", "list"])
-    assert '"key": "user.fav"' in capsys.readouterr().out
-
-
-def test_cli_memory_show_missing_message_exits_1(monkeypatch, tmp_path, write_json, capsys):
-    with pytest.raises(SystemExit) as exc_info:
-        _run_cli(monkeypatch, tmp_path, write_json, ["memory", "show", "999"])
-    assert exc_info.value.code == 1
-    assert "message not found" in capsys.readouterr().err
-
-
-def test_cli_affect_show(monkeypatch, tmp_path, write_json, capsys):
-    _run_cli(monkeypatch, tmp_path, write_json, ["affect", "show"])
-    out = capsys.readouterr().out
-    assert '"base"' in out and '"mood"' in out
-
-
 def test_custom_emotions_file_load_and_resolve(tmp_path, svc, write_json):
     path = _emotions_file(tmp_path, "custom", lambda base: base["dimensions"]["fear"].update(neutral=0.1))
     loaded = load_emotions(path)
@@ -419,7 +286,6 @@ def test_custom_emotions_file_load_and_resolve(tmp_path, svc, write_json):
     with pytest.raises(ValueError, match="emotions file not found"):
         resolve_emotions(AffectConfig(emotions_path=str(tmp_path / "missing.json")))
 
-    # A config file pointing at a custom emotions file reaches the engine.
     engine_path = _emotions_file(
         tmp_path, "engine", lambda base: base["dimensions"]["fear"].update(neutral=0.25),
         version="0.2.0-custom",
@@ -507,7 +373,6 @@ def test_custom_impact_scale_consumed(tmp_path, svc):
     _decide(default_service, default_user["id"], None)
     default_service.affect.on_proactive_sent(now=NOW + timedelta(hours=1))
     default_lowered = default_service.affect.status(now=NOW + timedelta(hours=1))["base"]["longing"]
-    # A smaller impact scale produces a smaller proactive-send decrease.
     assert lowered > default_lowered
 
 
@@ -531,29 +396,23 @@ def test_custom_proactive_thresholds_change_evaluate(tmp_path, svc):
         event = ProactiveEngine(service, service.config).evaluate(know + timedelta(hours=4))
         return event["reason"] if event else None
 
-    # Default thresholds: fear stays above 0.55 -> fear reason.
     assert evaluate_reason() == "fear"
-    # Custom thresholds: fear below 0.9, longing above 0.2 -> silence reason.
     assert evaluate_reason(str(path)) == "silence"
-    # Custom high longing threshold blocks the event.
     assert evaluate_reason(str(high_longing)) is None
 
 
 def test_explicit_override_wins_over_custom_file(tmp_path, svc, write_json):
     def mutate(base):
         base["affect"].update(mood_follow_hours=24.0, silence_longing_per_hour=0.09)
-    # Programmatic explicit override equal to the packaged default.
     service = _custom_service(svc, tmp_path, "override", mutate, mood_follow_hours=12.0)
     assert service.affect.emotions["affect"]["mood_follow_hours"] == 12.0
     assert service.affect.emotions["affect"]["silence_longing_per_hour"] == 0.09
-    # Config-file explicit override equal to the packaged default.
     path = _emotions_file(tmp_path, "override", mutate)
     config = write_json(tmp_path / "config.json", {
         "data_dir": "data", "emotions": {"path": str(path)}, "affect": {"mood_follow_hours": 12.0},
     })
     service = svc(cfg=load_config(config))
     assert service.affect.emotions["affect"]["mood_follow_hours"] == 12.0
-    # An explicit proactive override beats the custom file's thresholds.
     proactive_path = _emotions_file(tmp_path, "proactive-2", _low_longing)
     service = svc(
         affect=AffectConfig(emotions_path=str(proactive_path)), proactive=ProactiveConfig(fear_threshold=0.55)
@@ -574,7 +433,6 @@ def test_fingerprints_differ_when_effective_behavior_differs(tmp_path, svc):
         AffectConfig(emotions_path=str(path))
     )
     assert fp(AffectConfig()) == default_fingerprint()
-    # Proactive overrides fold into the fingerprint at assembly time.
     service = svc(affect=AffectConfig(), proactive=ProactiveConfig(fear_threshold=0.7))
     engine = ProactiveEngine(service, service.config)
     assert engine._emotional["fear_threshold"] == 0.7
@@ -818,7 +676,6 @@ def test_context_budget_trims_records_keeps_evergreen(tmp_path, svc):
 def test_composer_budget_selection_and_boundaries(tmp_path, svc):
     service = svc()
     snapshot = service.affect.status()
-    # Mandatory identity and companion cannot fit a tiny budget.
     small = MemoryConfig(recent_messages=2, search_hits=4, context_messages=1, injection_max_chars=64)
     with pytest.raises(ContextBudgetError, match="too small for mandatory identity and companion"):
         svc(memory=small, identity_prompt=_identity_config(tmp_path)).build_context(query="")
@@ -833,7 +690,6 @@ def test_composer_budget_selection_and_boundaries(tmp_path, svc):
             affect_snapshot=snapshot, affect_text="", evergreen_facts=list(facts),
             session_records=list(records))
 
-    # An oversized fact never fits, so the evergreen block is dropped entirely.
     result = compose(1500, [_fact("big", "x" * 3000)])
     assert result["evergreen_facts"] == []
     assert result["injection"].startswith("<companion_state>")
@@ -843,12 +699,10 @@ def test_composer_budget_selection_and_boundaries(tmp_path, svc):
     two_len = len(compose(200_000, [f1, f2])["injection"])
     assert one_len > mandatory_len
     assert two_len > one_len
-    # At exactly one_len only the first fact fits and no records share it.
     result = compose(one_len, [f1, f2, f3])
     assert result["evergreen_facts"] == [f1]
     assert result["records"] == []
     assert len(result["injection"]) == one_len
-    # At the mandatory boundary no record fits either.
     result = compose(mandatory_len, records=[record])
     assert result["records"] == []
     assert len(result["injection"]) == mandatory_len
@@ -877,7 +731,6 @@ def test_context_structured_fields_and_side_effect_free(tmp_path, svc):
     assert result["context"]["instructions"]["memory"] == payload["instructions"]["memory"]
 
 
-    # Repeated context builds are side-effect free.
     service = svc(identity_prompt=_identity_config(tmp_path))
     before = service.memory.recent(limit=50)
     service.build_context(query="")
@@ -954,7 +807,6 @@ def test_custom_prompts_affect_engine_behavior(tmp_path, svc, mutate, contains, 
     if excludes:
         assert excludes not in text
 
-    # A custom proactive generation instruction reaches generated events.
     prompts = _prompts_config(
         tmp_path, lambda s: s.update(proactive_generation_instruction="SENTINEL_PROACTIVE_INSTRUCTION"))
     service = svc(prompts=prompts, decision=DecisionConfig(increment=1.0))

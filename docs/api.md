@@ -11,7 +11,7 @@ The state API lives under `/state/v1/*`. The optional OpenAI-compatible proxy li
 | Method | Path | Purpose | Statuses |
 | --- | --- | --- | --- |
 | GET | `/health` | Process, database, and index status | 200 |
-| POST | `/state/v1/messages` | Store one message; invoke the decision plugin | 200, 401, 422 |
+| POST | `/state/v1/messages` | Store one message, invoke the decision suite | 200, 401, 422 |
 | GET | `/state/v1/messages/{message_id}` | Read one stored message | 200, 401, 404 |
 | POST | `/state/v1/memory/search` | Search the archive with adjacent context | 200, 401 |
 | GET | `/state/v1/memory/{message_id}` | Read a message plus neighbors | 200, 401, 404 |
@@ -45,7 +45,7 @@ A full exchange runs four steps. The proxy performs all four when you point a cl
 
 ### 1. Ingest the user message
 
-`POST /state/v1/messages` stores one canonical message. `content` accepts a plain string or OpenAI-style structured content. A new user message marks user contact and, when a decision plugin is configured, invokes it to select at most one emotion dimension for a bounded increase. Assistant and tool messages store as usual.
+`POST /state/v1/messages` stores one canonical message. `content` accepts a plain string or OpenAI-style structured content. A new user message marks user contact and, when a decision suite is configured, invokes it to select at most one emotion dimension for a bounded increase. Assistant and tool messages store as usual.
 
 ```json
 {
@@ -59,9 +59,9 @@ A full exchange runs four steps. The proxy performs all four when you point a cl
 }
 ```
 
-The response returns the stored `id`, a `duplicate` flag, the internal `conversation_id`, the message `sha256`, and `affect` for a new user message. `affect` is `null` when no plugin is configured or the plugin abstained or failed. Otherwise it holds `emotion`, `increment`, `decision_id`, and the updated `state`. A supplied `affect_label` is rejected with `422`; labels are gone.
+The response returns the stored `id`, a `duplicate` flag, the internal `conversation_id`, the message `sha256`, and `affect` for a new user message. `affect` is `null` when no suite is configured or the suite abstained or failed. Otherwise it holds `emotion`, `increment`, `decision_id`, and the updated `state`. A supplied `affect_label` is rejected with `422`; labels are gone.
 
-Replaying the same `external_id` inside the same `(harness, conversation_id)` stores one message and returns `duplicate: true` with the original `id`, without invoking the plugin again. That scope is the deduplication the API performs. No global idempotency layer exists.
+Replaying the same `external_id` inside the same `(harness, conversation_id)` stores one message and returns `duplicate: true` with the original `id`, without invoking the suite again. That scope is the deduplication the API performs. No global idempotency layer exists.
 
 ### 2. Build context
 
@@ -99,13 +99,13 @@ X-Companion-Route: opaque-return-address
 
 ### 4. Archive the assistant reply
 
-Call `POST /state/v1/messages` with `role: "assistant"`. The gateway stores the reply and leaves affect untouched. Only a new user message invokes the decision plugin.
+Call `POST /state/v1/messages` with `role: "assistant"`. The gateway stores the reply and leaves affect untouched. Only a new user message invokes the decision suite.
 
 ## Affect
 
 `GET /state/v1/affect` returns `base` and `mood` for all 16 dimensions, timestamps, and `unanswered_proactive`. This read advances decay and silence effects to the current time, then persists the result. Reading affect changes state.
 
-There are no labels. The gateway has no keyword rules, no staging, and no agent labeling endpoints. On a new user message the service calls the configured decision plugin (see [configuration.md](configuration.md#decision-plugins)). The plugin returns at most one dimension name from the resolved `emotions.json`; the engine increases that dimension by the configured bounded `decision.increment` and clamps it. A missing, failed, or invalid decision changes nothing. Every applied decision is recorded in the `affect_decisions` table.
+There are no labels. The gateway has no keyword rules, no staging, and no agent labeling endpoints. On a new user message the service calls the configured decision suite (see [configuration.md](configuration.md#decision-suites)). The suite returns at most one dimension name from the resolved `emotions.json`; the engine increases that dimension by the configured bounded `decision.increment` and clamps it. A missing, failed, or invalid decision changes nothing. Every applied decision is recorded in the `affect_decisions` table.
 
 ## Evergreen facts
 
@@ -199,11 +199,11 @@ The plugin registers six LLM tools when the provider supports tools:
 | `forget_evergreen_fact` | `fact_id`, `expected_revision`, `reason` | `POST /state/v1/evergreen/facts/{id}/forget` |
 | `review_evergreen_facts` | `due_only`, `include_inactive`, `limit` | `GET /state/v1/evergreen/facts` |
 
-The six tools read or manage memory and facts. Tools return JSON with `ok: true` on success, or `ok: false` plus `error` and, for HTTP failures, `status`. Affect is no longer exposed as a tool; the gateway's configured decision plugin owns it.
+The six tools read or manage memory and facts. Tools return JSON with `ok: true` on success, or `ok: false` plus `error` and, for HTTP failures, `status`. Affect is no longer exposed as a tool; the gateway's configured decision suite owns it.
 
 ### Behavior
 
-For each exchange the plugin stores the user message, builds context with `exclude_message_ids` set to that message and `include_recent: false`, then injects the result into AstrBot's current request. It leaves the active persona and recent history untouched. After the model responds, it archives the assistant text. User-message ingest itself invokes the configured decision plugin; the AstrBot plugin only adds memory and fact tools.
+For each exchange the plugin stores the user message, builds context with `exclude_message_ids` set to that message and `include_recent: false`, then injects the result into AstrBot's current request. It leaves the active persona and recent history untouched. After the model responds, it archives the assistant text. User-message ingest itself invokes the configured decision suite; the AstrBot plugin only adds memory and fact tools.
 
 The plugin polls with `consumer=astrbot` and `harness=astrbot`. On delivery it checks the route platform, loads the route persona, generates one message from `generation_instruction` and the event context, sends through `Context.send_message`, and acknowledges `sent`. On failure it acknowledges `failed`.
 

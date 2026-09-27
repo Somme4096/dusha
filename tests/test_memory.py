@@ -58,8 +58,6 @@ def test_database_schema_and_upgrade_path(svc, tmp_path):
         external_id="migration-message",
     )
 
-    # Simulate a version 3 database carrying a pending label classification and
-    # the retired recent_labels state key.
     with service.database.connect() as db:
         db.execute(
             "CREATE TABLE affect_events (id INTEGER PRIMARY KEY AUTOINCREMENT, label TEXT NOT NULL, "
@@ -102,10 +100,8 @@ def test_database_schema_and_upgrade_path(svc, tmp_path):
         assert db.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='legacy_affect_classifications'"
         ).fetchone()
-        # The archived pending label is preserved but never applied.
         assert db.execute("SELECT status FROM legacy_affect_classifications").fetchone()[0] == "pending"
         assert db.execute("SELECT COUNT(*) FROM affect_decisions").fetchone()[0] == 0
-        # The active snapshot is preserved without recent_labels.
         state_json = db.execute("SELECT state_json FROM affect_state WHERE id=1").fetchone()[0]
         assert "recent_labels" not in state_json
         assert json.loads(state_json)["base"]["fear"] == 0.0
@@ -116,8 +112,6 @@ def test_database_upgrades_version_two_through_the_chain(svc):
     service = svc()
     stored = _ingest(service, conversation_id="v2", content="Keep this exact text.",
                      external_id="v2-message")
-    # Simulate a version 2 database: an affect_events table and no
-    # affect_classifications table.
     with service.database.connect() as db:
         db.execute("CREATE TABLE affect_events (id INTEGER PRIMARY KEY, label TEXT)")
         db.execute(
@@ -292,7 +286,6 @@ def test_review_due_and_duplicate_key_rules_are_deterministic(svc):
     with pytest.raises(EvergreenConflict, match="fact key already exists"):
         service.evergreen.remember(key="user.preference.units", text="Duplicate value.", now=now)
 
-    # Reactivating an old fact cannot duplicate an active key either.
     service.evergreen.forget(
         fact_id=fact["fact_id"], expected_revision=1, reason="Replacing the logical fact.", now=now
     )
@@ -397,7 +390,6 @@ def test_model_change_uses_a_new_disposable_embedding_key(svc, config):
     assert second.semantic.backfill_once(force=True)["embedded"] == 1
     assert second.memory.recent(limit=1)[0]["text"] == "The brass key is safe."
 
-    # Non-ASCII model/base_url must keep the legacy ascii-escaped key formula.
     index = SemanticIndex(
         Database(config.database_path),
         MemoryConfig(
@@ -439,18 +431,12 @@ def test_openai_embedding_client_sends_configured_request(monkeypatch):
     client.close()
 
 
-def test_nested_embedding_configuration_loads_from_yaml(tmp_path):
-    path = tmp_path / "config.yaml"
+def test_nested_embedding_configuration_loads_from_json(tmp_path):
+    path = tmp_path / "config.json"
     path.write_text(
-        """memory:
-  retrieval_mode: hybrid
-  child_chars: 900
-  embedding:
-    base_url: https://embedding.invalid/v1
-    api_key_env: CUSTOM_KEY
-    model: chosen-model
-    dimensions: 768
-""",
+        '{"memory": {"retrieval_mode": "hybrid", "child_chars": 900, '
+        '"embedding": {"base_url": "https://embedding.invalid/v1", '
+        '"api_key_env": "CUSTOM_KEY", "model": "chosen-model", "dimensions": 768}}}',
         encoding="utf-8",
     )
     config = load_config(path)

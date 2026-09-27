@@ -1,34 +1,23 @@
-"""Contract tests for the externally hosted Laya decision mod.
-
-The mod is loaded from ``examples/mods/laya.py`` exactly as the gateway loads
-it from ``~/.config/companion-gateway/mods/``. HTTP is always mocked, so the
-suite never touches a real endpoint or imports ``laya``/``torch``.
-"""
-
 from __future__ import annotations
 
-import copy
 import importlib.util
+import json
+import subprocess
 import sys
-import types
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 
-import httpx
 import pytest
 
-from companion_gateway.decision import DecisionRequest, DecisionResult
-
-_MOD_PATH = Path(__file__).resolve().parents[1] / "examples" / "mods" / "laya.py"
+_MOD_PATH = Path(__file__).resolve().parents[1] / "examples" / "mods" / "laya" / "main.py"
 
 
 def _load_laya():
-    name = "_laya_mod_under_test"
-    if name in sys.modules:
-        return sys.modules[name]
-    spec = importlib.util.spec_from_file_location(name, _MOD_PATH)
-    assert spec is not None and spec.loader is not None
+    spec = importlib.util.spec_from_file_location("laya_suite_under_test", _MOD_PATH)
+    assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -36,247 +25,128 @@ def _load_laya():
 laya = _load_laya()
 
 
-def test_adapter_binds_the_real_core_contract():
-    """No local stub: the adapter and tests use the shipped decision types."""
-
-    import companion_gateway.decision as decision
-
-    assert DecisionRequest is decision.DecisionRequest
-    assert DecisionResult is decision.DecisionResult
-    assert laya.DecisionRequest is decision.DecisionRequest
-    assert laya.DecisionResult is decision.DecisionResult
-
-
-def _response(status: int = 200, **kwargs) -> httpx.Response:
-    request = httpx.Request("POST", "https://laya.example/v1/systemone")
-    return httpx.Response(status, request=request, **kwargs)
-
-
-def _choice_response(choice: str, type_: str = "choice") -> httpx.Response:
-    return _response(
-        json={
-            "model": "laya-rl-agent",
-            "answers": {"emotion": {"type": type_, "choice": choice}},
-            "usage": {"input_tokens": 12, "output_tokens": 0},
-        }
+def _request() -> SimpleNamespace:
+    return SimpleNamespace(
+        message="hello",
+        emotions={"affectionate": {"description": "warm"}},
+        state={"longing": 0.4},
+        instruction="Pick one.",
     )
 
 
-def _request(**overrides) -> DecisionRequest:
-    values = {
-        "message": "hello there",
-        "emotions": {"affectionate": {"description": "warm and close"}, "fear_separation": {}},
-        "state": {"longing": 0.4},
-        "instruction": "Pick the emotion that best fits.",
-    }
-    values.update(overrides)
-    return DecisionRequest(**values)
+class _Handler(BaseHTTPRequestHandler):
+    response_status = 200
+    response_body = {"answers": {"emotion": {"type": "choice", "choice": "affectionate"}}}
+    redirect_to: str | None = None
+    redirect_count = 0
+    last_authorization: str | None = None
 
+    def do_POST(self):
+        type(self).last_authorization = self.headers.get("Authorization")
+        if self.redirect_to and self.redirect_count:
+            type(self).redirect_count -= 1
+            self.send_response(302)
+            self.send_header("Location", self.redirect_to)
+            self.end_headers()
+            return
+        self.send_response(self.response_status)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(self.response_body).encode())
 
-class _Recorder:
-    def __init__(self, response=None, error=None):
-        self.calls: list[tuple[str, dict]] = []
-        self._response = response
-        self._error = error
-
-    def __call__(self, url, **kwargs):
-        self.calls.append((url, kwargs))
-        if self._error is not None:
-            raise self._error
-        return self._response
-
-    @property
-    def body(self) -> dict:
-        return self.calls[-1][1]["json"]
+    def log_message(self, format, *args):
+        pass
 
 
 @pytest.fixture
-def post(monkeypatch):
-    """Install a recording fake for the mod's ``httpx.post``."""
-
-    def install(response=None, error=None) -> _Recorder:
-        recorder = _Recorder(response=response, error=error)
-        fake = types.SimpleNamespace(
-            post=recorder,
-            HTTPStatusError=httpx.HTTPStatusError,
-            RequestError=httpx.RequestError,
-        )
-        monkeypatch.setattr(laya, "httpx", fake)
-        return recorder
-
-    return install
+def server():
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield httpd
+    finally:
+        httpd.shutdown()
+        thread.join()
 
 
-def test_request_shape_and_selected_emotion(post):
-    recorder = post(_choice_response("affectionate"))
-    request = _request()
-    state_snapshot = copy.deepcopy(request.state)
-
-    result = laya.decide(request, {"base_url": "https://laya.example/base/"})
-
-    assert isinstance(result, DecisionResult)
-    assert result.emotion == "affectionate"
-    assert len(recorder.calls) == 1
-    url, kwargs = recorder.calls[0]
-    assert url == "https://laya.example/base/v1/systemone"
-    assert kwargs["timeout"] == 10.0
-    assert kwargs["headers"] is None
-    assert kwargs["json"] == {
-        "state": {"message": "hello there", "emotion_state": {"longing": 0.4}},
-        "questions": {
-            "emotion": {
-                "type": "choice",
-                "instructions": "Pick the emotion that best fits.",
-                "criteria": {
-                    "affectionate": "warm and close",
-                    "fear_separation": "fear separation",
-                },
-            }
-        },
-    }
-    assert "model" not in kwargs["json"]
-    assert request.state == state_snapshot
-    assert request.message == "hello there"
+def _url(server) -> str:
+    return f"http://127.0.0.1:{server.server_port}"
 
 
-@pytest.mark.parametrize(
-    "definition",
-    [{}, {"description": None}, {"description": "   "}, {"description": 5}, "not-a-mapping"],
-)
-def test_criteria_falls_back_to_humanized_dimension(post, definition):
-    recorder = post(_choice_response("fear_separation"))
-
-    laya.decide(_request(emotions={"fear_separation": definition}), {"base_url": "https://x"})
-
-    assert recorder.body["questions"]["emotion"]["criteria"] == {"fear_separation": "fear separation"}
+def test_real_local_http_success_and_contract(server):
+    result = laya.decide(_request(), {"base_url": _url(server), "allowed_ips": ["127.0.0.1"]})
+    assert result == {"emotion": "affectionate"}
 
 
-def test_model_option_is_forwarded_only_when_set(post):
-    recorder = post(_choice_response("affectionate"))
-
-    laya.decide(_request(), {"base_url": "https://x", "model": "english"})
-
-    assert recorder.body["model"] == "english"
+def test_allowed_ip_is_optional(server):
+    assert laya.decide(_request(), {"base_url": _url(server)}) == {"emotion": "affectionate"}
 
 
-def test_api_key_env_adds_bearer_header(post, monkeypatch):
-    monkeypatch.setenv("LAYA_TOKEN", "sekret")
-    recorder = post(_choice_response("affectionate"))
-
-    laya.decide(_request(), {"base_url": "https://x", "api_key_env": "LAYA_TOKEN"})
-
-    assert recorder.calls[0][1]["headers"] == {"Authorization": "Bearer sekret"}
+def test_denied_address_is_rejected_before_request(server):
+    with pytest.raises(ValueError, match="allowed_ips"):
+        laya.decide(_request(), {"base_url": _url(server), "allowed_ips": ["127.0.0.2"]})
 
 
-@pytest.mark.parametrize("value", [None, "", "   "])
-def test_missing_api_key_env_is_rejected_without_calling(post, monkeypatch, value):
-    monkeypatch.delenv("LAYA_TOKEN", raising=False)
-    if value is not None:
-        monkeypatch.setenv("LAYA_TOKEN", value)
-    recorder = post(_choice_response("affectionate"))
-
-    with pytest.raises(RuntimeError, match="LAYA_TOKEN"):
-        laya.decide(_request(), {"base_url": "https://x", "api_key_env": "LAYA_TOKEN"})
-
-    assert recorder.calls == []
+@pytest.mark.parametrize("value", [["not-an-ip"], "127.0.0.1", [3]])
+def test_invalid_allowed_ips_are_rejected(server, value):
+    with pytest.raises(ValueError, match="allowed_ips"):
+        laya.decide(_request(), {"base_url": _url(server), "allowed_ips": value})
 
 
-@pytest.mark.parametrize("value", [0, -1, 0.0, float("inf"), float("nan"), "10", True, None])
-def test_invalid_timeout_is_rejected_without_calling(post, value):
-    recorder = post(_choice_response("affectionate"))
-
-    with pytest.raises(ValueError, match="timeout_seconds"):
-        laya.decide(_request(), {"base_url": "https://x", "timeout_seconds": value})
-
-    assert recorder.calls == []
-
-
-def test_custom_timeout_is_passed(post):
-    recorder = post(_choice_response("affectionate"))
-
-    laya.decide(_request(), {"base_url": "https://x", "timeout_seconds": 2.5})
-
-    assert recorder.calls[0][1]["timeout"] == 2.5
+def test_redirect_cannot_bypass_allowlist(server):
+    _Handler.redirect_to = "http://127.0.0.2:1/v1/systemone"
+    _Handler.redirect_count = 1
+    try:
+        with pytest.raises(laya.LayaModError, match="allowed_ips"):
+            laya.decide(_request(), {"base_url": _url(server), "allowed_ips": ["127.0.0.1"]})
+    finally:
+        _Handler.redirect_to = None
+        _Handler.redirect_count = 0
 
 
-@pytest.mark.parametrize("options", [{}, {"base_url": ""}, {"base_url": "   "}, {"base_url": 5}])
-def test_missing_or_invalid_base_url_is_rejected_without_calling(post, options):
-    recorder = post(_choice_response("affectionate"))
-
-    with pytest.raises(ValueError, match="base_url"):
-        laya.decide(_request(), options)
-
-    assert recorder.calls == []
-
-
-def test_options_must_be_a_mapping():
-    with pytest.raises(TypeError):
-        laya.decide(_request(), None)
-
-
-def test_empty_emotions_abstains_without_network(post):
-    recorder = post(_choice_response("affectionate"))
-
-    assert laya.decide(_request(emotions={}), {"base_url": "https://x"}) is None
-    assert recorder.calls == []
+def test_cross_origin_redirect_drops_explicit_credentials(server):
+    target = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=target.serve_forever, daemon=True)
+    thread.start()
+    _Handler.redirect_to = f"http://127.0.0.1:{target.server_port}/v1/systemone"
+    _Handler.redirect_count = 1
+    _Handler.last_authorization = None
+    try:
+        assert laya.decide(_request(), {"base_url": _url(server), "api_key": "secret"}) == {
+            "emotion": "affectionate"
+        }
+        assert _Handler.last_authorization is None
+    finally:
+        _Handler.redirect_to = None
+        _Handler.redirect_count = 0
+        target.shutdown()
+        thread.join()
 
 
-@pytest.mark.parametrize(
-    ("response", "match"),
-    [
-        (_response(content=b"<html>", headers={"content-type": "text/html"}), "JSON"),
-        (_response(json=["nope"]), "JSON object"),
-        (_response(json={"model": "x"}), "answers"),
-        (_response(json={"answers": []}), "answers"),
-        (_response(json={"answers": {"emotion": "affectionate"}}), "answers.emotion"),
-        (_response(json={"answers": {"emotion": {"type": "score", "score": 1.0}}}), "choice"),
-        (_response(json={"answers": {"emotion": {"type": "choice"}}}), "allowed emotions"),
-        (_response(json={"answers": {"emotion": {"type": "choice", "choice": 3}}}), "allowed emotions"),
-        (
-            _response(json={"answers": {"emotion": {"type": "choice", "choice": "angry"}}}),
-            "allowed emotions",
-        ),
-    ],
-)
-def test_malformed_or_invalid_response_raises(post, response, match):
-    recorder = post(response)
-
-    with pytest.raises(laya.LayaModError, match=match):
-        laya.decide(_request(), {"base_url": "https://x"})
-
-    assert len(recorder.calls) == 1
+def test_provider_failure_is_reported(server):
+    _Handler.response_status = 503
+    try:
+        with pytest.raises(laya.LayaModError, match="HTTP 503"):
+            laya.decide(_request(), {"base_url": _url(server)})
+    finally:
+        _Handler.response_status = 200
 
 
-def test_http_error_status_raises(post):
-    recorder = post(_response(500, text="boom"))
-
-    with pytest.raises(laya.LayaModError, match="HTTP 500"):
-        laya.decide(_request(), {"base_url": "https://x"})
-
-    assert len(recorder.calls) == 1
-
-
-def test_network_error_raises(post):
-    recorder = post(error=httpx.ConnectError("connection refused"))
-
-    with pytest.raises(laya.LayaModError, match="failed"):
-        laya.decide(_request(), {"base_url": "https://x"})
-
-    assert len(recorder.calls) == 1
-
-
-def test_does_not_mutate_request_or_state(post):
-    recorder = post(_choice_response("affectionate"))
-    emotions = {"affectionate": {"description": "warm"}, "contentment": {}}
-    state = {"longing": 0.5, "nested": {"a": 1}}
-    request = _request(emotions=emotions, state=state)
-    emotions_snapshot = copy.deepcopy(emotions)
-    state_snapshot = copy.deepcopy(state)
-
-    laya.decide(request, {"base_url": "https://x", "model": "english"})
-
-    assert request.emotions == emotions_snapshot
-    assert request.state == state_snapshot
-    assert state == state_snapshot
-    assert emotions == emotions_snapshot
-    assert recorder.body["state"]["emotion_state"] == state_snapshot
+def test_subprocess_suite_entrypoint(server):
+    script = """
+import importlib.util, json, sys
+from types import SimpleNamespace
+spec = importlib.util.spec_from_file_location('suite', sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+req = SimpleNamespace(message='hello', emotions={'affectionate': {}}, state={}, instruction='Pick one')
+print(json.dumps(mod.decide(req, {'base_url': sys.argv[2]})))
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", script, str(_MOD_PATH), _url(server)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert json.loads(completed.stdout) == {"emotion": "affectionate"}

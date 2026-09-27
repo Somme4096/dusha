@@ -8,6 +8,9 @@
   "port": 8765,
   "timezone": "Asia/Taipei",
   "api_token_env": "",
+  "api_openai": {
+    "enabled": true
+  },
   "identity_prompt": {
     "path": ""
   },

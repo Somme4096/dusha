@@ -1,30 +1,31 @@
 from __future__ import annotations
 
 import copy
-import hashlib
-import importlib.machinery
-import importlib.util
+import json
 import logging
 import os
 import re
-import sys
-from collections.abc import Callable
+import signal
+import threading
+import time
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from types import ModuleType
-from typing import Any
+from typing import Any, Callable
 
 from .config import default_config_dir
 
 logger = logging.getLogger("companion_gateway")
 
 _MODULE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_MODS_PACKAGE = "companion_gateway_mods"
+_REQUIRED_FILES = ("README.md", "main.py", "pyproject.toml", "uv.lock")
+_SYNC_TIMEOUT = 120.0
+_RUN_TIMEOUT = 15.0
+_MAX_OUTPUT = 1_048_576
 
 
 @dataclass(frozen=True)
 class DecisionRequest:
-
     message: str
     emotions: dict[str, dict[str, Any]]
     state: dict[str, Any]
@@ -33,7 +34,6 @@ class DecisionRequest:
 
 @dataclass(frozen=True)
 class DecisionResult:
-
     emotion: str
 
 
@@ -52,90 +52,208 @@ def resolve_mods_dir(config: Any) -> Path:
     return default_config_dir() / "mods"
 
 
-def _module_key(module_name: str, path: Path) -> str:
-    digest = hashlib.sha256(str(path).encode("utf-8")).hexdigest()[:12]
-    return f"{_MODS_PACKAGE}.{module_name}_{digest}"
+def _inside(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+    except ValueError:
+        return False
+    return True
 
 
-def _ensure_mods_package(mods_dir: Path) -> None:
-    package = sys.modules.get(_MODS_PACKAGE)
-    if package is None:
-        package = ModuleType(_MODS_PACKAGE)
-        package.__spec__ = importlib.machinery.ModuleSpec(
-            _MODS_PACKAGE, loader=None, is_package=True
-        )
-        package.__spec__.submodule_search_locations = [str(mods_dir)]
-        package.__path__ = [str(mods_dir)]
-        sys.modules[_MODS_PACKAGE] = package
-        return
-    paths = getattr(package, "__path__", None)
-    if paths is None:
-        paths = []
-        package.__path__ = paths
-    if str(mods_dir) not in paths:
-        paths.insert(0, str(mods_dir))
-        spec = getattr(package, "__spec__", None)
-        if spec is not None and spec.submodule_search_locations is not None:
-            spec.submodule_search_locations = list(paths)
-
-
-def _load_module(module_name: str, mods_dir: Path) -> ModuleType:
+def _suite(module_name: str, mods_dir: Path) -> Path:
     if not _MODULE_NAME.fullmatch(module_name):
         raise DecisionPluginError(
             f"decision.module must be a plain module name, got {module_name!r}"
         )
-    path = mods_dir / f"{module_name}.py"
-    if not path.is_file():
-        raise DecisionPluginError(f"decision plugin not found: {path}")
-    resolved = path.resolve()
-    key = _module_key(module_name, resolved)
-    existing = sys.modules.get(key)
-    if existing is not None and getattr(existing, "__file__", None) == str(resolved):
-        return existing
-    _ensure_mods_package(mods_dir)
-    spec = importlib.util.spec_from_file_location(key, resolved)
-    if spec is None or spec.loader is None:
-        raise DecisionPluginError(f"cannot load decision plugin: {path}")
-    module = importlib.util.module_from_spec(spec)
-    previous = sys.modules.get(key)
-    sys.modules[key] = module
+    root = mods_dir.expanduser().resolve()
+    suite = (root / module_name).resolve()
+    if not _inside(suite, root) or not suite.is_dir():
+        raise DecisionPluginError(f"decision suite not found: {root / module_name}")
+    for name in _REQUIRED_FILES:
+        item = suite / name
+        resolved = item.resolve()
+        if not item.is_file() or not _inside(resolved, suite):
+            raise DecisionPluginError(f"invalid decision suite: missing or escaping {name}")
+    return suite
+
+
+def _environment() -> dict[str, str]:
+    allowed = {"PATH", "HOME", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "LC_CTYPE", "SYSTEMROOT"}
+    result = {key: value for key, value in os.environ.items() if key in allowed}
+    result["PYTHONNOUSERSITE"] = "1"
+    return result
+
+
+def _python_path(suite: Path) -> Path:
+    if os.name == "nt":
+        return suite / ".venv" / "Scripts" / "python.exe"
+    return suite / ".venv" / "bin" / "python"
+
+
+def _terminate(proc: subprocess.Popen[bytes]) -> None:
+    if os.name != "nt":
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    else:
+        proc.kill()
+
+
+def _run_bounded(
+    command: list[str], *, cwd: Path, env: dict[str, str], timeout: float, input_data: bytes | None = None
+) -> tuple[int, bytes, bytes]:
+    proc = subprocess.Popen(
+        command,
+        cwd=cwd,
+        stdin=subprocess.PIPE if input_data is not None else subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        shell=False,
+        start_new_session=os.name != "nt",
+    )
+    streams: list[bytearray] = [bytearray(), bytearray()]
+    overflow = threading.Event()
+
+    def write_input() -> None:
+        if input_data is None or proc.stdin is None:
+            return
+        try:
+            proc.stdin.write(input_data)
+            proc.stdin.close()
+        except (BrokenPipeError, OSError):
+            pass
+
+    def drain(stream: Any, buffer: bytearray) -> None:
+        while True:
+            chunk = stream.read(65536)
+            if not chunk:
+                return
+            if len(buffer) <= _MAX_OUTPUT:
+                buffer.extend(chunk[: _MAX_OUTPUT + 1 - len(buffer)])
+            if len(buffer) > _MAX_OUTPUT:
+                overflow.set()
+
+    threads = [
+        threading.Thread(target=drain, args=(proc.stdout, streams[0]), daemon=True),
+        threading.Thread(target=drain, args=(proc.stderr, streams[1]), daemon=True),
+    ]
+    writer = threading.Thread(target=write_input, daemon=True)
+    writer.start()
+    for thread in threads:
+        thread.start()
+    deadline = time.monotonic() + timeout
+    while proc.poll() is None:
+        if overflow.is_set() or time.monotonic() >= deadline:
+            _terminate(proc)
+            break
+        time.sleep(0.01)
+    _terminate(proc)
+    remaining = max(0.0, deadline - time.monotonic())
     try:
-        spec.loader.exec_module(module)
-    except BaseException:
-        if previous is not None:
-            sys.modules[key] = previous
-        else:
-            sys.modules.pop(key, None)
-        raise
-    return module
+        returncode = proc.wait(timeout=remaining)
+    except subprocess.TimeoutExpired:
+        _terminate(proc)
+        try:
+            returncode = proc.wait(timeout=0.1)
+        except subprocess.TimeoutExpired:
+            returncode = -signal.SIGKILL if os.name != "nt" else -1
+    for thread in threads + [writer]:
+        thread.join(timeout=max(0.0, deadline - time.monotonic()))
+    return returncode, bytes(streams[0]), bytes(streams[1])
+
+
+def _sync(suite: Path) -> None:
+    environment_path = suite / ".venv"
+    if environment_path.exists() or environment_path.is_symlink():
+        if environment_path.is_symlink() or not environment_path.is_dir():
+            raise DecisionPluginError("decision suite environment target is invalid")
+        if not _inside(environment_path.resolve(), suite):
+            raise DecisionPluginError("decision suite environment escapes suite")
+    environment = _environment()
+    environment["UV_PROJECT_ENVIRONMENT"] = str(environment_path)
+    try:
+        returncode, _, _ = _run_bounded(
+            ["uv", "--no-config", "sync", "--locked", "--no-dev", "--project", str(suite)],
+            cwd=suite,
+            env=environment,
+            timeout=_SYNC_TIMEOUT,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+        raise DecisionPluginError(f"decision suite initialization failed: {exc}") from exc
+    if returncode != 0:
+        raise DecisionPluginError("decision suite initialization failed")
+    if environment_path.is_symlink() or not _inside(environment_path.resolve(), suite):
+        raise DecisionPluginError("decision suite environment escapes suite")
+    if not _python_path(suite).is_file():
+        raise DecisionPluginError("decision suite environment was not created")
+
+
+def _load_decider(module_name: str, mods_dir: Path, timeout: float) -> Callable[..., Any]:
+    suite = _suite(module_name, mods_dir)
+    _sync(suite)
+    return _SuiteDecider(suite, timeout)
+
+
+class _SuiteDecider:
+    def __init__(self, suite: Path, timeout: float):
+        self.suite = suite
+        self.python = _python_path(suite)
+        self.worker = Path(__file__).with_name("decision_worker.py").resolve()
+        self.timeout = timeout
+
+    def __call__(self, request: DecisionRequest, options: dict[str, Any]) -> Any:
+        payload = json.dumps({
+            "request": {
+                "message": request.message,
+                "emotions": request.emotions,
+                "state": request.state,
+                "instruction": request.instruction,
+            },
+            "options": options,
+        }, ensure_ascii=False)
+        proc: subprocess.Popen[bytes] | None = None
+        try:
+            returncode, stdout, stderr = _run_bounded(
+                [str(self.python), "-I", str(self.worker), str(self.suite)],
+                cwd=self.suite,
+                env=_environment(),
+                timeout=self.timeout,
+                input_data=payload.encode("utf-8"),
+            )
+        except OSError as exc:
+            raise DecisionPluginError(f"decision suite could not start: {exc}") from exc
+        if len(stdout) > _MAX_OUTPUT or len(stderr) > _MAX_OUTPUT or returncode != 0:
+            raise DecisionPluginError("decision suite failed")
+        try:
+            result = json.loads(stdout.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise DecisionPluginError("decision suite returned invalid output") from exc
+        if result is None:
+            return None
+        if not isinstance(result, dict) or set(result) != {"emotion"} or not isinstance(result["emotion"], str):
+            raise DecisionPluginError("decision suite returned an invalid result")
+        return DecisionResult(result["emotion"])
 
 
 def load_decider(config: Any) -> Callable[..., Any] | None:
     decision = getattr(config, "decision", None)
     module_name = str(getattr(decision, "module", "") or "").strip()
     if not module_name:
-        logger.warning(
-            "no decision module configured. Set decision.module to enable "
-            "decision-driven emotional adjustments. No fallback will be used"
-        )
         return None
     try:
-        module = _load_module(module_name, resolve_mods_dir(config))
-        decide = getattr(module, "decide", None)
-        if not callable(decide):
-            raise DecisionPluginError(
-                f"decision plugin {module_name!r} does not export a callable decide()"
-            )
-        return decide
-    except Exception:
-        logger.exception(
-            "failed to load decision plugin %r. Decision-driven adjustment disabled", module_name
+        return _load_decider(
+            module_name,
+            resolve_mods_dir(config),
+            float(getattr(decision, "timeout_seconds", _RUN_TIMEOUT)),
         )
+    except Exception:
+        logger.exception("failed to initialize decision suite %r", module_name)
         return None
 
 
 class DecisionProvider:
-
     def __init__(self, config: Any):
         self.config = config
         self.decide = load_decider(config)
@@ -147,37 +265,18 @@ class DecisionProvider:
     def enabled(self) -> bool:
         return self.decide is not None
 
-    def evaluate(
-        self,
-        *,
-        message: str,
-        emotions: dict[str, dict[str, Any]],
-        state: dict[str, Any],
-        instruction: str,
-    ) -> str | None:
+    def evaluate(self, *, message: str, emotions: dict[str, dict[str, Any]], state: dict[str, Any], instruction: str) -> str | None:
         if self.decide is None:
             return None
-        request = DecisionRequest(
-            message=str(message),
-            emotions=copy.deepcopy(emotions),
-            state=copy.deepcopy(state),
-            instruction=str(instruction),
-        )
+        request = DecisionRequest(str(message), copy.deepcopy(emotions), copy.deepcopy(state), str(instruction))
         try:
             result = self.decide(request, copy.deepcopy(self.options))
+            emotion = getattr(result, "emotion", None) if result is not None else None
         except Exception:
-            logger.exception("decision plugin failed. No decision-driven adjustment")
-            return None
-        if result is None:
-            return None
-        try:
-            emotion = getattr(result, "emotion", None)
-        except Exception:
-            logger.exception(
-                "decision plugin result could not be read. No decision-driven adjustment"
-            )
+            logger.exception("decision suite failed. No decision-driven adjustment")
             return None
         if not isinstance(emotion, str) or emotion not in emotions:
-            logger.warning("decision plugin returned invalid emotion: %r", emotion)
+            if emotion is not None:
+                logger.warning("decision suite returned invalid emotion: %r", emotion)
             return None
         return emotion

@@ -29,13 +29,13 @@ Success reports `"status": "ok"` and a passing `database` integrity check. If st
 
 ## How it works
 
-A user message reaches the gateway, which builds context from memory, personality, and affect state and returns it to your harness or model. The harness gets the reply through the gateway. A trusted Python decision plugin can select one emotion dimension to adjust per new user message; see [docs/configuration.md](docs/configuration.md#decision-plugins).
+A user message reaches the gateway, which builds context from memory, personality, and affect state and returns it to your harness or model. The harness gets the reply through the gateway. A trusted decision suite can select one emotion dimension to adjust per new user message. See [docs/configuration.md](docs/configuration.md#decision-suites).
 
 Build your harness plugin with the [API and integration guide](docs/api.md).
 
 ## Documentation
 
-- [docs/configuration.md](docs/configuration.md): settings, identity and prompt files, and legacy config migration.
+- [docs/configuration.md](docs/configuration.md): JSON settings, identity and prompt files.
 - [docs/guide.md](docs/guide.md): service setup, auth and network, backup, and troubleshooting.
 - [docs/api.md](docs/api.md): HTTP endpoints and harness integration, including AstrBot.
 - [third-party-notices.md](third-party-notices.md): licenses and adapted work.
