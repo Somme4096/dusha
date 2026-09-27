@@ -68,6 +68,10 @@ class Worker:
             self.semantic.close()
             return None
         if method == "match_phrase":
+            message = str(params["message"]).casefold()
+            for phrase in options.get("phrase_patterns", []):
+                if str(phrase["pattern"]).casefold() in message:
+                    return {"deltas": phrase["deltas"]}
             return {"deltas": None}
         raise ValueError(f"unknown memory method: {method}")
 

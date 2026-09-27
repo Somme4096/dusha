@@ -15,6 +15,7 @@ from .memory_plugin import (
     EnsureMessageChunksRequest,
     GetMessageRequest,
     IngestMessageRequest,
+    MatchPhraseRequest,
     RecentMessagesRequest,
     RenderFactsRequest,
     SearchRequest,
@@ -60,6 +61,7 @@ class CompanionService:
             prompts=self.prompts,
             decision_increment=config.decision.increment,
         )
+        self.phrase_matcher = self._phrase_matcher if self.memory.enabled else None
         self.composer = ContextComposer(
             prompts=self.prompts,
             budget=config.memory.injection_max_chars,
@@ -117,6 +119,7 @@ class CompanionService:
                     message=stored_message["text"], source_message_id=message.id,
                     decider=self.decision.evaluate if self.decision.enabled else None,
                     instruction=str(self.prompts["decision_instruction"]), now=message_time,
+                    phrase_matcher=self.phrase_matcher,
                 )
             return {"id": message.id, "duplicate": message.duplicate,
                     "conversation_id": message.conversation_id, "sha256": message.sha256,
@@ -143,6 +146,7 @@ class CompanionService:
                 decider=self.decision.evaluate if self.decision.enabled else None,
                 instruction=str(self.prompts["decision_instruction"]),
                 now=message_time,
+                phrase_matcher=self.phrase_matcher,
             )
         return {
             "id": message.id,
@@ -286,6 +290,10 @@ class CompanionService:
         if not self.memory.enabled:
             return fallback()
         return getattr(self.memory, method)(request)
+
+    def _phrase_matcher(self, message: str) -> dict[str, float] | None:
+        result = self.memory.match_phrase(MatchPhraseRequest(message=message))
+        return result.deltas if result is not None else None
 
     def backup(self, destination: str) -> str:
         return str(self.database.backup(destination))

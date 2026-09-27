@@ -15,6 +15,7 @@ from .serialization import compact_json
 from .timeutil import isoformat, parse_time, utc_now
 
 Decider = Callable[..., "str | None"]
+PhraseMatcher = Callable[[str], dict[str, float] | None]
 
 
 class AffectEngine:
@@ -67,9 +68,14 @@ class AffectEngine:
         negative = set(self.emotions["negative_dimensions"])
         impact = float(self.emotions["impact_scale"])
         for name, nominal in deltas.items():
-            if name not in base:
+            if not isinstance(name, str) or name not in base or isinstance(nominal, bool):
                 continue
-            delta = nominal * scale
+            try:
+                delta = float(nominal) * scale
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(delta):
+                continue
             current = float(base[name])
             effective = (
                 delta * impact * (1 - current) if delta > 0 else delta * impact * current
@@ -152,6 +158,7 @@ class AffectEngine:
         source_message_id: int | None,
         decider: Decider | None,
         instruction: str,
+        phrase_matcher: PhraseMatcher | None = None,
         now: datetime | None = None,
     ) -> dict[str, Any] | None:
         requested = now if now is not None else utc_now()
@@ -212,6 +219,26 @@ class AffectEngine:
                     decision_id = int(cursor.lastrowid)
                 updated = db.execute("SELECT * FROM affect_state WHERE id=1").fetchone()
                 public = self._public_state(state, updated, current)
+
+        if phrase_matcher is not None:
+            try:
+                deltas = phrase_matcher(message)
+                if isinstance(deltas, dict):
+                    deltas = dict(deltas.items())
+                else:
+                    deltas = None
+            except Exception:
+                deltas = None
+            if deltas:
+                with self._lock, self.database.connect() as db:
+                    row, state = self._load_row(db, requested)
+                    phase_now = now if now is not None else utc_now()
+                    current = max(phase_now, parse_time(row["last_updated_at"]))
+                    self._advance(row, state, current)
+                    self._apply_deltas(state, deltas)
+                    self._save(db, state, current)
+                    updated = db.execute("SELECT * FROM affect_state WHERE id=1").fetchone()
+                    public = self._public_state(state, updated, current)
         if emotion is None:
             return None
         return {
