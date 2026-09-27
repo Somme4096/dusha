@@ -21,6 +21,14 @@ The SQLite example is available in
 directory into the configured mods directory. The gateway creates its isolated
 `uv` environment from the plugin's `pyproject.toml` and `uv.lock`.
 
+The EverOS archival mirror is available in
+[`everos-memory`](everos-memory/README.md). It stores the authoritative archive
+in local SQLite, keeps Sophia search local, and queues delivery when the local
+EverOS server is unavailable. Only `user`, `assistant`, and `tool` messages are
+mirrored. Both stores contain plaintext and need separate backups. See the
+[Sophia project README](https://github.com/Somme4096/sophia) for public API
+descriptions.
+
 ## `laya`
 
 Pure HTTP adapter for a running [Laya](https://github.com/NandhaKishorM/laya)

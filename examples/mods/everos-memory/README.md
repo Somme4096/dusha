@@ -1,12 +1,8 @@
 # EverOS memory plugin
 
 The plugin directory identifier is `everos_memory`. Configure it under
-`memory_plugin.module`. It exports the memory operations used by the gateway.
-
-The gateway supplies the request fields described by
-[`memory_plugin.py`](https://github.com/Somme4096/sophia/blob/main/src/companion_gateway/memory_plugin.py).
-Each operation follows `fn(request, options)`. See the
-[project README](https://github.com/Somme4096/sophia) for the public API.
+`memory_plugin.module`. See the [Sophia project README](https://github.com/Somme4096/sophia)
+for public API descriptions.
 
 ## Install
 
@@ -23,17 +19,30 @@ The gateway creates an isolated `uv` environment from `pyproject.toml` and
 ```json
 {
   "memory_plugin": {
-    "module": "sqlite_memory",
+    "module": "everos_memory",
     "mods_dir": "mods",
     "timeout_seconds": 15,
-    "options": {}
+    "options": {
+      "everos": {
+        "url": "http://127.0.0.1:8000",
+        "app_id": "sophia",
+        "project_id": "default",
+        "sender_id": "sophia",
+        "timeout_seconds": 5
+      }
+    }
   }
 }
 ```
 
-Set `everos` options to enable the loopback archival mirror. The supported
-options are `url`, `app_id`, `project_id`, `sender_id`, and `timeout_seconds`.
-Messages remain authoritative in the local SQLite store.
+This is a local SQLite-authoritative archival mirror. Sophia search remains
+local. Only `user`, `assistant`, and `tool` messages are mirrored. If the local
+EverOS server is unavailable, delivery is queued in SQLite for later retry.
+Both stores contain plaintext and need separate backups.
+
+Use the [EverOS setup documentation](https://github.com/EverMind-AI/EverOS) to
+configure the server. A normal EverOS server requires LLM configuration even
+when ingestion is deferred. This plugin does not make the server credential-free.
 
 ## Phrase patterns
 
