@@ -243,7 +243,9 @@ class EverOSMirror:
         now = self._now().isoformat()
         with self.database.connect() as db:
             add = db.execute(
-                "SELECT * FROM everos_outbox WHERE delivered_at IS NULL ORDER BY attempts, id LIMIT 1"
+                """SELECT o.*, m.ingested_at AS queued_at
+                   FROM everos_outbox o JOIN messages m ON m.id=o.message_id
+                   WHERE o.delivered_at IS NULL ORDER BY o.attempts, o.id LIMIT 1"""
             ).fetchone()
             flush = db.execute(
                 """SELECT * FROM everos_flush_state
@@ -255,7 +257,7 @@ class EverOSMirror:
             flush = None
         if add is None and flush is None:
             return {"attempted": 0, "delivered": 0, "failed": 0, "flushed": 0, "flush_failed": 0}
-        if flush is None or (add is not None and (int(add["attempts"]), add["ingested_at"]) <= (int(flush["attempts"]), flush["due_at"])):
+        if flush is None or (add is not None and (int(add["attempts"]), add["queued_at"]) <= (int(flush["attempts"]), flush["due_at"])):
             delivered = int(self._deliver_row(add))
             return {"attempted": 1, "delivered": delivered, "failed": 1 - delivered, "flushed": 0, "flush_failed": 0}
         flushed = int(self._flush_row(flush))
