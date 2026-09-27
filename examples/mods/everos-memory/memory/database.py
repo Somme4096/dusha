@@ -215,13 +215,32 @@ class Database:
                 timestamp INTEGER NOT NULL,
                 attempts INTEGER NOT NULL DEFAULT 0,
                 last_error TEXT,
-                delivered_at TEXT
+                delivered_at TEXT,
+                flush_generation INTEGER NOT NULL DEFAULT 0,
+                processed_at TEXT
             );
             CREATE INDEX IF NOT EXISTS everos_outbox_pending
             ON everos_outbox(delivered_at, id);
             CREATE UNIQUE INDEX IF NOT EXISTS everos_outbox_session_timestamp
             ON everos_outbox(session_id, timestamp);
+            CREATE TABLE IF NOT EXISTS everos_flush_state (
+                app_id TEXT NOT NULL,
+                project_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                requested_generation INTEGER NOT NULL DEFAULT 0,
+                processed_generation INTEGER NOT NULL DEFAULT 0,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                last_result TEXT,
+                due_at TEXT,
+                PRIMARY KEY(app_id, project_id, session_id)
+            );
             """)
+            columns = {row[1] for row in db.execute("PRAGMA table_info(everos_outbox)")}
+            if "flush_generation" not in columns:
+                db.execute("ALTER TABLE everos_outbox ADD COLUMN flush_generation INTEGER NOT NULL DEFAULT 0")
+            if "processed_at" not in columns:
+                db.execute("ALTER TABLE everos_outbox ADD COLUMN processed_at TEXT")
 
     def _prepare_schema(self) -> None:
         if not self.path.exists():

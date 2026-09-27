@@ -64,7 +64,7 @@ class Worker:
             return {"status": {**self.semantic.status(), "everos": self.everos.status()}}
         if method == "backfill_once":
             status = self.semantic.backfill_once(**params)
-            status["everos"] = self.everos.deliver_pending(1)
+            status["everos"] = self.everos.backfill_once()
             return {"status": status}
         if method == "ensure_message_chunks":
             return {"chunks": self.semantic.ensure_message_chunks(params["message_id"])}
