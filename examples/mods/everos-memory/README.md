@@ -37,11 +37,19 @@ The gateway creates an isolated `uv` environment from `pyproject.toml` and
 }
 ```
 
+Set `memory_plugin.timeout_seconds` above `options.everos.timeout_seconds` with
+enough margin for the gateway to handle a timed-out sidecar request. The
+example uses 15 seconds for the plugin and 5 seconds for EverOS.
+
 This is a local SQLite-authoritative archival mirror. Sophia search remains
 local. Only `user` and `assistant` messages are mirrored. Tool messages are not
 mirrored. If the local EverOS server is unavailable, delivery is queued in
-SQLite. Each backfill makes one delivery attempt. Both stores contain plaintext
-and need separate backups.
+SQLite. Messages with valid timestamps before the Unix epoch remain local and
+are intentionally not mirrored because EverOS requires positive millisecond
+timestamps. Each backfill makes one delivery attempt. The retry queue
+prioritizes rows with fewer attempts, so later rows can deliver while a
+permanently rejected row remains pending. Both stores contain plaintext and
+need separate backups.
 
 Use the [EverOS setup documentation](https://github.com/EverMind-AI/EverOS) to
 configure the server. Running EverOS requires LLM settings, but deferred writes
