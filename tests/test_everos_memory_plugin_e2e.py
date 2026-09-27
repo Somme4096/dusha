@@ -104,24 +104,23 @@ def everos_server(tmp_path: Path, dummy_llm_server: str):
 
     def restart() -> None:
         nonlocal process
-        process.terminate()
-        try:
-            process.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=10)
+        stop()
         process = launch()
         wait_ready()
 
+    def stop() -> None:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=10)
+
     try:
-        yield url, root, restart
+        yield url, root, stop, restart
     finally:
-        process.terminate()
-        try:
-            process.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=10)
+        stop()
 
 
 def _config(data_dir: Path, mods_dir: Path, sidecar_url: str) -> AppConfig:
@@ -183,29 +182,42 @@ async def _everos_search(url: str, session_id: str, query: str) -> dict:
 
 @pytest.mark.asyncio
 async def test_real_everos_projection_failure_retry_isolation_and_restart(tmp_path: Path, everos_server, request):
-    sidecar_url, _, restart_everos = everos_server
+    sidecar_url, _, stop_everos, restart_everos = everos_server
     mods_dir = Path(request.config.rootpath) / "examples" / "mods"
     plugin_mods = tmp_path / "mods"
-    shutil.copytree(mods_dir / "everos-memory", plugin_mods / "everos_memory")
+    shutil.copytree(mods_dir / "everos-memory", plugin_mods / "everos_memory", ignore=shutil.ignore_patterns(".venv"))
     data_dir = tmp_path / "sophia-data"
-    failed_port = _unused_port()
-    failed_url = f"http://127.0.0.1:{failed_port}"
 
-    async with _client(_config(data_dir, plugin_mods, failed_url)) as client:
+    async with _client(_config(data_dir, plugin_mods, sidecar_url)) as client:
         first = await _ingest(client, "one", "Conversation one keeps the amber lantern.")
         second = await _ingest(client, "two", "Conversation two keeps the violet telescope.")
         assert first["id"] != second["id"]
+        delivered = (await client.get("/state/v1/memory/index")).json()
+        assert delivered["everos"]["enabled"] is True
+        assert delivered["everos"]["pending"] == 0
+
+    restart_everos()
+    one = await _everos_search(sidecar_url, "sophia-1", "amber lantern")
+    two = await _everos_search(sidecar_url, "sophia-2", "amber lantern")
+    assert "Conversation one keeps the amber lantern." in repr(one)
+    assert "Conversation one keeps the amber lantern." not in repr(two)
+
+    stop_everos()
+    async with _client(_config(data_dir, plugin_mods, sidecar_url)) as client:
+        outage = await _ingest(client, "three", "Conversation three keeps the silver key.")
+        assert outage["id"] > second["id"]
         failed_status = (await client.get("/state/v1/memory/index")).json()
         assert failed_status["everos"]["enabled"] is True
-        assert failed_status["everos"]["pending"] == 2
-        assert failed_status["everos"]["attempts"] >= 2
+        assert failed_status["everos"]["pending"] == 1
+        assert failed_status["everos"]["attempts"] >= 1
         local = await client.post("/state/v1/memory/search", json={"query": "amber lantern"})
         assert local.status_code == 200
         assert local.json()["results"]
 
+    restart_everos()
     async with _client(_config(data_dir, plugin_mods, sidecar_url)) as client:
         retry = await _ingest(client, "one", "Conversation one adds a brass compass.")
-        assert retry["id"] > second["id"]
+        assert retry["id"] > outage["id"]
         recovered = (await client.get("/state/v1/memory/index")).json()
         assert recovered["everos"]["enabled"] is True
         assert recovered["everos"]["pending"] == 0
@@ -253,5 +265,7 @@ async def test_real_everos_projection_failure_retry_isolation_and_restart(tmp_pa
     restart_everos()
     one = await _everos_search(sidecar_url, "sophia-1", "amber lantern")
     two = await _everos_search(sidecar_url, "sophia-2", "amber lantern")
+    three = await _everos_search(sidecar_url, "sophia-3", "silver key")
     assert "Conversation one keeps the amber lantern." in repr(one)
     assert "Conversation one keeps the amber lantern." not in repr(two)
+    assert "Conversation three keeps the silver key." in repr(three)
