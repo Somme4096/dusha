@@ -27,7 +27,9 @@ The gateway creates an isolated `uv` environment from `pyproject.toml` and
         "url": "http://127.0.0.1:8000",
         "app_id": "sophia",
         "project_id": "default",
-        "sender_id": "sophia",
+        "instance_namespace": "sophia-local",
+        "user_sender_id": "user",
+        "assistant_sender_id": "assistant",
         "timeout_seconds": 5
       }
     }
@@ -36,13 +38,14 @@ The gateway creates an isolated `uv` environment from `pyproject.toml` and
 ```
 
 This is a local SQLite-authoritative archival mirror. Sophia search remains
-local. Only `user`, `assistant`, and `tool` messages are mirrored. If the local
-EverOS server is unavailable, delivery is queued in SQLite for later retry.
-Both stores contain plaintext and need separate backups.
+local. Only `user` and `assistant` messages are mirrored. Tool messages are not
+mirrored. If the local EverOS server is unavailable, delivery is queued in
+SQLite. Each backfill makes one delivery attempt. Both stores contain plaintext
+and need separate backups.
 
 Use the [EverOS setup documentation](https://github.com/EverMind-AI/EverOS) to
-configure the server. A normal EverOS server requires LLM configuration even
-when ingestion is deferred. This plugin does not make the server credential-free.
+configure the server. Running EverOS requires LLM settings, but deferred writes
+do not invoke the LLM. This plugin does not make the server credential-free.
 
 ## Phrase patterns
 
