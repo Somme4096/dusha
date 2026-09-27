@@ -21,6 +21,12 @@ _MEMORY = _DEFAULTS["memory"]
 _EMBEDDING = _MEMORY["embedding"]
 _EVERGREEN = _DEFAULTS["evergreen"]
 _DECISION = _DEFAULTS["decision"]
+_MEMORY_PLUGIN = _DEFAULTS.get("memory_plugin", {
+    "module": "",
+    "options": {},
+    "mods_dir": "",
+    "timeout_seconds": 15.0,
+})
 _AFFECT_KNOBS = _EMOTIONS["affect"]
 _PROACTIVE_EMOTIONAL = _EMOTIONS["proactive"]
 _PROACTIVE = _DEFAULTS["proactive"]
@@ -135,6 +141,23 @@ class DecisionConfig:
 
 
 @dataclass(slots=True)
+class MemoryPluginConfig:
+    module: str = _MEMORY_PLUGIN["module"]
+    options: dict[str, Any] = field(default_factory=lambda: dict(_MEMORY_PLUGIN["options"]))
+    mods_dir: str = _MEMORY_PLUGIN["mods_dir"]
+    timeout_seconds: float = _MEMORY_PLUGIN["timeout_seconds"]
+
+    def __post_init__(self) -> None:
+        value = self.timeout_seconds
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("memory_plugin.timeout_seconds must be a finite positive number")
+        number = float(value)
+        if not math.isfinite(number) or number <= 0:
+            raise ValueError("memory_plugin.timeout_seconds must be a finite positive number")
+        self.timeout_seconds = number
+
+
+@dataclass(slots=True)
 class ProactiveConfig:
     enabled: bool = _PROACTIVE["enabled"]
     poll_interval_seconds: int = _PROACTIVE["poll_interval_seconds"]
@@ -184,6 +207,7 @@ class AppConfig:
     affect: AffectConfig = field(default_factory=lambda: AffectConfig())
     proactive: ProactiveConfig = field(default_factory=lambda: ProactiveConfig())
     decision: DecisionConfig = field(default_factory=lambda: DecisionConfig())
+    memory_plugin: MemoryPluginConfig = field(default_factory=lambda: MemoryPluginConfig())
 
     @property
     def database_path(self) -> Path:
@@ -287,6 +311,11 @@ def _app_config_from_raw(raw: dict[str, Any], source_dir: Path) -> AppConfig:
     decision = _strict_section(DecisionConfig, raw.get("decision"), "decision")
     if decision.mods_dir and not Path(decision.mods_dir).is_absolute():
         decision.mods_dir = str((source_dir / Path(decision.mods_dir).expanduser()).resolve())
+    memory_plugin = _strict_section(
+        MemoryPluginConfig, raw.get("memory_plugin"), "memory_plugin"
+    )
+    if memory_plugin.mods_dir and not Path(memory_plugin.mods_dir).is_absolute():
+        memory_plugin.mods_dir = str((source_dir / Path(memory_plugin.mods_dir).expanduser()).resolve())
     emotions_raw = raw.get("emotions")
     if emotions_raw is not None:
         if not isinstance(emotions_raw, dict):
@@ -335,6 +364,7 @@ def _app_config_from_raw(raw: dict[str, Any], source_dir: Path) -> AppConfig:
         affect=affect,
         proactive=_strict_section(ProactiveConfig, raw.get("proactive"), "proactive"),
         decision=decision,
+        memory_plugin=memory_plugin,
     )
 
 
@@ -389,6 +419,10 @@ def _validate_packaged_defaults() -> None:
     _strict_section(EvergreenConfig, _DEFAULTS["evergreen"], "packaged defaults evergreen")
     _strict_section(ProactiveConfig, _DEFAULTS["proactive"], "packaged defaults proactive")
     _strict_section(DecisionConfig, _DEFAULTS["decision"], "packaged defaults decision")
+    _strict_section(
+        MemoryPluginConfig, _DEFAULTS.get("memory_plugin", _MEMORY_PLUGIN),
+        "packaged defaults memory_plugin",
+    )
     _strict_section(
         IdentityPromptConfig, _DEFAULTS["identity_prompt"], "packaged defaults identity_prompt"
     )

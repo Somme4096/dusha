@@ -11,7 +11,7 @@ from types import SimpleNamespace
 class _BoundedOutput(io.StringIO):
     def write(self, value: str) -> int:
         if self.tell() + len(value) > 1_048_576:
-            raise RuntimeError("decision suite output limit exceeded")
+            raise RuntimeError("decision plugin output limit exceeded")
         return super().write(value)
 
 

@@ -29,7 +29,7 @@ Success reports `"status": "ok"` and a passing `database` integrity check. If st
 
 ## How it works
 
-A user message reaches the gateway, which builds context from memory, personality, and affect state and returns it to your harness or model. The harness gets the reply through the gateway. A trusted decision suite can select one emotion dimension to adjust per new user message. See [docs/configuration.md](docs/configuration.md#decision-suites).
+A user message reaches the gateway, which builds context from memory, personality, and affect state and returns it to your harness or model. The harness gets the reply through the gateway. A trusted decision plugin can select one emotion dimension to adjust per new user message. See [docs/configuration.md](docs/configuration.md#decision-plugins).
 
 Build your harness plugin with the [API and integration guide](docs/api.md).
 

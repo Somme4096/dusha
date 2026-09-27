@@ -1,21 +1,33 @@
-# Decision suites
+# Decision plugins
 
-Optional decision suites. The gateway loads a suite directory named by
-`decision.module` from `decision.mods_dir`. A suite exports one function:
+Optional decision plugins. The gateway loads a plugin directory named by
+`decision.module` from `decision.mods_dir`. A plugin exports one function:
 
 `decide(request, options)`, where request has `message`, `emotions`, `state`,
 and `instruction`. Return `{"emotion": name}` or `None`.
 
-Suites run in a dedicated `uv` environment and child process. OS permissions
-are inherited intentionally. They are not containers or OS sandboxes. A suite
+Plugins run in a dedicated `uv` environment and child process. OS permissions
+are inherited intentionally. They are not containers or OS sandboxes. A plugin
 must not assume credentials exist in inherited environment variables.
+
+## Memory plugins
+
+The gateway also supports memory plugins for message ingestion, recall,
+evergreen facts, and optional affect phrase matching. Memory plugins follow the
+same convention as decision plugins. They export `remember`, `recall`, `forget`,
+`render_facts`, and `match_phrase`, each receiving `(request, options)`.
+
+The SQLite example is available in
+[`sqlite-memory`](sqlite-memory/README.md). Install it by copying the plugin
+directory into the configured mods directory. The gateway creates its isolated
+`uv` environment from the plugin's `pyproject.toml` and `uv.lock`.
 
 ## `laya`
 
 Pure HTTP adapter for a running [Laya](https://github.com/NandhaKishorM/laya)
 service (`POST /v1/systemone`). No `laya`/`torch` dependency.
 
-Install the suite directory into the gateway's mods directory:
+Install the plugin directory into the gateway's mods directory:
 
 ```sh
 mkdir -p ~/.config/companion-gateway/mods
@@ -28,7 +40,7 @@ Options passed to the mod:
 | ----------------- | -------- | -------------------------------------------------------------- |
 | `base_url`        | yes      | Laya server root, e.g. `http://127.0.0.1:8000`. No default.    |
 | `timeout_seconds` | no       | Finite positive timeout; default `10`.                         |
-| `api_key`         | no       | Explicit bearer token supplied to the suite.                 |
+| `api_key`         | no       | Explicit bearer token supplied to the plugin.                |
 | `model`           | no       | Laya checkpoint name; omitted so the server auto-selects.      |
 | `allowed_ips`     | no       | Literal IPv4 or IPv6 addresses allowed for all requests.      |
 

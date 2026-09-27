@@ -63,17 +63,17 @@ def _inside(path: Path, parent: Path) -> bool:
 def _suite(module_name: str, mods_dir: Path) -> Path:
     if not _MODULE_NAME.fullmatch(module_name):
         raise DecisionPluginError(
-            f"decision.module must be a plain module name, got {module_name!r}"
+            f"decision.module must contain a plain plugin name, got {module_name!r}"
         )
     root = mods_dir.expanduser().resolve()
     suite = (root / module_name).resolve()
     if not _inside(suite, root) or not suite.is_dir():
-        raise DecisionPluginError(f"decision suite not found: {root / module_name}")
+        raise DecisionPluginError(f"decision plugin not found: {root / module_name}")
     for name in _REQUIRED_FILES:
         item = suite / name
         resolved = item.resolve()
         if not item.is_file() or not _inside(resolved, suite):
-            raise DecisionPluginError(f"invalid decision suite: missing or escaping {name}")
+            raise DecisionPluginError(f"invalid decision plugin: missing or escaping {name}")
     return suite
 
 
@@ -168,9 +168,9 @@ def _sync(suite: Path) -> None:
     environment_path = suite / ".venv"
     if environment_path.exists() or environment_path.is_symlink():
         if environment_path.is_symlink() or not environment_path.is_dir():
-            raise DecisionPluginError("decision suite environment target is invalid")
+            raise DecisionPluginError("decision plugin environment target is invalid")
         if not _inside(environment_path.resolve(), suite):
-            raise DecisionPluginError("decision suite environment escapes suite")
+            raise DecisionPluginError("decision plugin environment escapes plugin")
     environment = _environment()
     environment["UV_PROJECT_ENVIRONMENT"] = str(environment_path)
     try:
@@ -181,13 +181,13 @@ def _sync(suite: Path) -> None:
             timeout=_SYNC_TIMEOUT,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
-        raise DecisionPluginError(f"decision suite initialization failed: {exc}") from exc
+        raise DecisionPluginError(f"decision plugin initialization failed: {exc}") from exc
     if returncode != 0:
-        raise DecisionPluginError("decision suite initialization failed")
+        raise DecisionPluginError("decision plugin initialization failed")
     if environment_path.is_symlink() or not _inside(environment_path.resolve(), suite):
-        raise DecisionPluginError("decision suite environment escapes suite")
+        raise DecisionPluginError("decision plugin environment escapes plugin")
     if not _python_path(suite).is_file():
-        raise DecisionPluginError("decision suite environment was not created")
+        raise DecisionPluginError("decision plugin environment was not created")
 
 
 def _load_decider(module_name: str, mods_dir: Path, timeout: float) -> Callable[..., Any]:
@@ -223,17 +223,17 @@ class _SuiteDecider:
                 input_data=payload.encode("utf-8"),
             )
         except OSError as exc:
-            raise DecisionPluginError(f"decision suite could not start: {exc}") from exc
+            raise DecisionPluginError(f"decision plugin could not start: {exc}") from exc
         if len(stdout) > _MAX_OUTPUT or len(stderr) > _MAX_OUTPUT or returncode != 0:
-            raise DecisionPluginError("decision suite failed")
+            raise DecisionPluginError("decision plugin failed")
         try:
             result = json.loads(stdout.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise DecisionPluginError("decision suite returned invalid output") from exc
+            raise DecisionPluginError("decision plugin returned invalid output") from exc
         if result is None:
             return None
         if not isinstance(result, dict) or set(result) != {"emotion"} or not isinstance(result["emotion"], str):
-            raise DecisionPluginError("decision suite returned an invalid result")
+            raise DecisionPluginError("decision plugin returned an invalid result")
         return DecisionResult(result["emotion"])
 
 
@@ -249,7 +249,7 @@ def load_decider(config: Any) -> Callable[..., Any] | None:
             float(getattr(decision, "timeout_seconds", _RUN_TIMEOUT)),
         )
     except Exception:
-        logger.exception("failed to initialize decision suite %r", module_name)
+        logger.exception("failed to initialize decision plugin %r", module_name)
         return None
 
 
@@ -273,10 +273,10 @@ class DecisionProvider:
             result = self.decide(request, copy.deepcopy(self.options))
             emotion = getattr(result, "emotion", None) if result is not None else None
         except Exception:
-            logger.exception("decision suite failed. No decision-driven adjustment")
+            logger.exception("decision plugin failed. No decision-driven adjustment")
             return None
         if not isinstance(emotion, str) or emotion not in emotions:
             if emotion is not None:
-                logger.warning("decision suite returned invalid emotion: %r", emotion)
+                logger.warning("decision plugin returned invalid emotion: %r", emotion)
             return None
         return emotion

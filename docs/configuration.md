@@ -103,18 +103,18 @@ Value precedence resolves in this order:
 
 An explicit override wins even when it equals the packaged default. Config fields carry an `UNSET` sentinel, so resolution never guesses the source. The engine snapshots these values at construction. Mutating the config object later changes nothing.
 
-## Decision suites
+## Decision plugins
 
-On each new user message the gateway can invoke one Python decision suite. The suite selects at most one emotion dimension from the resolved `emotions.json`. The engine then increases that dimension by `decision.increment`, clamped to the dimension range. No suite, or a failed or invalid decision, means no decision-driven adjustment. Contact bookkeeping and proactive scheduling still run.
+On each new user message the gateway can invoke one Python decision plugin. The plugin selects at most one emotion dimension from the resolved `emotions.json`. The engine then increases that dimension by `decision.increment`, clamped to the dimension range. No plugin, or a failed or invalid decision, means no decision-driven adjustment. Contact bookkeeping and proactive scheduling still run.
 
-Each suite directory requires `README.md`, `main.py`, `pyproject.toml`, and `uv.lock`. You can include helper modules and subpackages. Install `uv` on the gateway's executable search path. The gateway synchronizes locked dependencies into the suite's dedicated environment during initialization. In `main.py`, export:
+Each plugin directory requires `README.md`, `main.py`, `pyproject.toml`, and `uv.lock`. You can include helper modules and subpackages. Install `uv` on the gateway's executable search path. The gateway synchronizes locked dependencies into the plugin's dedicated environment during initialization. In `main.py`, export:
 
 ```python
 def decide(request, options) -> dict[str, str] | None:
     ...
 ```
 
-The request has `message`, `emotions`, `state`, and `instruction` attributes. Return `{"emotion": "<dimension>"}` for one allowed dimension, or `None` to abstain. The runner passes sanitized request data and options to the child suite.
+The request has `message`, `emotions`, `state`, and `instruction` attributes. Return `{"emotion": "<dimension>"}` for one allowed dimension, or `None` to abstain. The runner passes sanitized request data and options to the child plugin.
 
 Configuration:
 
@@ -130,17 +130,17 @@ Configuration:
 }
 ```
 
-- `module`: a plain suite directory name, resolved only under the mods directory. Empty disables decision-driven adjustment. A name containing a path separator or any non-identifier character is rejected.
-- `options`: passed through to the suite verbatim.
+- `module`: a plain plugin directory name, resolved only under the mods directory. Empty disables decision-driven adjustment. A name containing a path separator or any non-identifier character is rejected.
+- `options`: passed through to the plugin verbatim.
 - `increment`: the bounded amount added to the selected dimension. Must be finite and in `(0, 1]`. Default `0.1`.
 - `timeout_seconds`: the outer deadline for each decision process. Must be finite and positive. Default `15`. Set it above any HTTP timeout configured in `options`.
 - `mods_dir`: an optional mods directory. Empty uses `<default config dir>/mods`, that is `~/.config/companion-gateway/mods`. A relative value resolves against the config file location.
 
 `COMPANION_GATEWAY_MODS_DIR` overrides `decision.mods_dir` when set. This is the recommended way to test an isolated mods tree without touching the live configuration.
 
-Decision suites are trusted child processes. The runner uses the suite's dedicated `uv` environment, with inherited OS permissions and no container or OS sandbox. Only install suites you wrote or reviewed. A suite that fails to load, raises, or returns a malformed result is logged and ignored. Message ingest keeps working. HTTP adapters may define explicit options such as credentials and an optional literal-IP `allowed_ips` list. When present, every request and redirect must remain on an allowed literal address.
+Decision plugins are trusted child processes. The runner uses the plugin's dedicated `uv` environment, with inherited OS permissions and no container or OS sandbox. Only install plugins you wrote or reviewed. A plugin that fails to load, raises, or returns a malformed result is logged and ignored. Message ingest keeps working. HTTP adapters may define explicit options such as credentials and an optional literal-IP `allowed_ips` list. When present, every request and redirect must remain on an allowed literal address.
 
-The default `decision_instruction` asks the suite to choose the companion's own emotional response to the message, not to classify the speaker's emotion. Replace it with the `prompts` overlay when you want different selection criteria.
+The default `decision_instruction` asks the plugin to choose the companion's own emotional response to the message, not to classify the speaker's emotion. Replace it with the `prompts` overlay when you want different selection criteria.
 
 ## Retrieval and embeddings
 

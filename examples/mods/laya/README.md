@@ -1,10 +1,10 @@
-# Laya decision suite
+# Laya decision plugin
 
-This suite calls a running [Laya](https://github.com/NandhaKishorM/laya) HTTP
-service. The public suite API is documented in the project [README](https://github.com/Somme4096/sophia).
+This plugin calls a running [Laya](https://github.com/NandhaKishorM/laya) HTTP
+service. The public plugin API is documented in the project [README](https://github.com/Somme4096/sophia).
 
 The gateway runs it in its dedicated `uv` environment as a child process. The
-suite has inherited OS permissions and is not a container or OS sandbox.
+plugin has inherited OS permissions and is not a container or OS sandbox.
 
 The runner passes `decide(request, options)`. `request` has `message`,
 `emotions`, `state`, and `instruction`. The function returns `{"emotion":

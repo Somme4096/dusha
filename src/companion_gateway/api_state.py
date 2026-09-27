@@ -9,6 +9,19 @@ from pydantic import BaseModel, ConfigDict, Field
 from . import schema as _schema
 from .context import ContextBudgetError
 from .evergreen import EvergreenConflict
+from .evergreen import EvergreenStore
+from .memory import MemoryStore
+from .semantic import SemanticIndex
+from .memory_plugin import (
+    FactHistoryRequest,
+    ForgetFactRequest,
+    GetMessageRequest,
+    ListFactsRequest,
+    MemoryContextRequest,
+    RememberFactRequest,
+    ReviseFactRequest,
+    SearchRequest,
+)
 from .proactive import ProactiveEngine
 from .service import CompanionService
 
@@ -115,6 +128,10 @@ class AckInput(GatewayInput):
 
 def create_state_router(service: CompanionService, proactive: ProactiveEngine, authorized) -> APIRouter:
     router = APIRouter()
+    memory_provider = service.memory
+    memory_store: MemoryStore | None = service._memory_fallback
+    evergreen_store: EvergreenStore | None = service._evergreen_fallback
+    semantic_index: SemanticIndex | None = service._semantic_fallback
 
     @router.get(
         "/state/v1/memory/index",
@@ -126,7 +143,10 @@ def create_state_router(service: CompanionService, proactive: ProactiveEngine, a
         },
     )
     async def memory_index_status() -> dict[str, Any]:
-        return await asyncio.to_thread(service.semantic.status)
+        if semantic_index is not None:
+            return await asyncio.to_thread(semantic_index.status)
+        result = await asyncio.to_thread(memory_provider.status)
+        return result.status
 
     @router.post(
         "/state/v1/messages",
@@ -160,7 +180,11 @@ def create_state_router(service: CompanionService, proactive: ProactiveEngine, a
         },
     )
     async def get_message(message_id: int) -> dict[str, Any]:
-        message = await asyncio.to_thread(service.memory.get, message_id)
+        if memory_store is not None:
+            message = await asyncio.to_thread(memory_store.get, message_id)
+        else:
+            result = await asyncio.to_thread(memory_provider.get, GetMessageRequest(message_id))
+            message = result.message if result is not None else None
         if not message:
             raise HTTPException(status_code=404, detail="message not found")
         return message
@@ -174,13 +198,18 @@ def create_state_router(service: CompanionService, proactive: ProactiveEngine, a
         responses={401: _ERROR_DOCS[401]},
     )
     async def search_memory(body: SearchInput) -> dict[str, Any]:
+        if memory_store is not None:
+            results = await asyncio.to_thread(memory_store.search, body.query, max(1, min(body.limit, 50)), max(0, min(body.context_messages, 10)))
+            return {"results": results}
         results = await asyncio.to_thread(
-            service.memory.search,
-            body.query,
-            max(1, min(body.limit, 50)),
-            max(0, min(body.context_messages, 10)),
+            memory_provider.search,
+            SearchRequest(
+                query=body.query,
+                limit=max(1, min(body.limit, 50)),
+                context_messages=max(0, min(body.context_messages, 10)),
+            ),
         )
-        return {"results": results}
+        return {"results": results.results if results is not None else []}
 
     @router.get(
         "/state/v1/memory/{message_id}",
@@ -193,11 +222,13 @@ def create_state_router(service: CompanionService, proactive: ProactiveEngine, a
         message_id: int,
         context_messages: int = Query(1, ge=0, le=10),
     ) -> dict[str, Any]:
-        messages = await asyncio.to_thread(
-            service.memory.context,
-            message_id,
-            context_messages,
-        )
+        if memory_store is not None:
+            messages = await asyncio.to_thread(memory_store.context, message_id, context_messages)
+        else:
+            results = await asyncio.to_thread(
+                memory_provider.context, MemoryContextRequest(message_id, context_messages)
+            )
+            messages = results.messages if results is not None else []
         if not messages:
             raise HTTPException(status_code=404, detail="memory record not found")
         return {"messages": messages}
@@ -211,20 +242,23 @@ def create_state_router(service: CompanionService, proactive: ProactiveEngine, a
         responses={401: _ERROR_DOCS[401], 409: _ERROR_DOCS[409], 422: _ERROR_DOCS[422]},
     )
     async def remember_fact(body: RememberFactInput) -> dict[str, Any]:
+        function = (lambda request: evergreen_store.remember(**request)) if evergreen_store is not None else memory_provider.remember
+        request = (dict(
+            key=body.key, text=body.text, priority=body.priority,
+            source_message_id=body.source_message_id, reason=body.reason,
+            review_after=body.review_after, expires_at=body.expires_at, created_by="agent",
+        ) if evergreen_store is not None else RememberFactRequest(
+            key=body.key, text=body.text, priority=body.priority,
+            source_message_id=body.source_message_id, reason=body.reason,
+            review_after=body.review_after, expires_at=body.expires_at, created_by="agent",
+        ))
         fact = await _service_call(
-            service.evergreen.remember,
-            key=body.key,
-            text=body.text,
-            priority=body.priority,
-            source_message_id=body.source_message_id,
-            reason=body.reason,
-            review_after=body.review_after,
-            expires_at=body.expires_at,
-            created_by="agent",
+            function,
+            request,
             errors=(EvergreenConflict, ValueError),
             conflict=EvergreenConflict,
         )
-        return {"fact": fact}
+        return {"fact": fact if evergreen_store is not None else fact.fact}
 
     @router.get(
         "/state/v1/evergreen/facts",
@@ -238,13 +272,11 @@ def create_state_router(service: CompanionService, proactive: ProactiveEngine, a
         due_only: bool = False,
         limit: int = Query(100, ge=1, le=500),
     ) -> dict[str, Any]:
-        facts = await asyncio.to_thread(
-            service.evergreen.list_current,
-            include_inactive=include_inactive,
-            due_only=due_only,
-            limit=limit,
-        )
-        return {"facts": facts}
+        if evergreen_store is not None:
+            facts = await asyncio.to_thread(evergreen_store.list_current, include_inactive=include_inactive, due_only=due_only, limit=limit)
+            return {"facts": facts}
+        facts = await asyncio.to_thread(memory_provider.list_current, ListFactsRequest(include_inactive=include_inactive, due_only=due_only, limit=limit))
+        return {"facts": facts.facts if facts is not None else []}
 
     @router.get(
         "/state/v1/evergreen/facts/{fact_id}/history",
@@ -254,13 +286,15 @@ def create_state_router(service: CompanionService, proactive: ProactiveEngine, a
         responses={401: _ERROR_DOCS[401], 404: _ERROR_DOCS[404]},
     )
     async def fact_history(fact_id: str) -> dict[str, Any]:
+        function = evergreen_store.history if evergreen_store is not None else memory_provider.history
+        request = fact_id if evergreen_store is not None else FactHistoryRequest(fact_id)
         revisions = await _service_call(
-            service.evergreen.history,
-            fact_id,
+            function,
+            request,
             errors=(KeyError,),
             not_found="evergreen fact not found",
         )
-        return {"revisions": revisions}
+        return {"revisions": revisions if evergreen_store is not None else revisions.revisions}
 
     @router.post(
         "/state/v1/evergreen/facts/{fact_id}/revisions",
@@ -289,14 +323,16 @@ def create_state_router(service: CompanionService, proactive: ProactiveEngine, a
             kwargs["review_after"] = body.review_after
         if "expires_at" in body.model_fields_set:
             kwargs["expires_at"] = body.expires_at
+        function = (lambda request: evergreen_store.revise(**request)) if evergreen_store is not None else memory_provider.revise
+        request = ReviseFactRequest(**kwargs) if evergreen_store is None else kwargs
         fact = await _service_call(
-            service.evergreen.revise,
+            function,
+            request,
             errors=(KeyError, EvergreenConflict, ValueError),
             not_found="evergreen fact not found",
             conflict=EvergreenConflict,
-            **kwargs,
         )
-        return {"fact": fact}
+        return {"fact": fact if evergreen_store is not None else fact.fact}
 
     @router.post(
         "/state/v1/evergreen/facts/{fact_id}/forget",
@@ -311,18 +347,20 @@ def create_state_router(service: CompanionService, proactive: ProactiveEngine, a
         },
     )
     async def forget_fact(fact_id: str, body: ForgetFactInput) -> dict[str, Any]:
+        function = (lambda request: evergreen_store.forget(**request)) if evergreen_store is not None else memory_provider.forget
+        request = (dict(fact_id=fact_id, expected_revision=body.expected_revision, reason=body.reason,
+                        source_message_id=body.source_message_id, created_by="agent")
+                   if evergreen_store is not None else ForgetFactRequest(
+                       fact_id=fact_id, expected_revision=body.expected_revision, reason=body.reason,
+                       source_message_id=body.source_message_id, created_by="agent"))
         fact = await _service_call(
-            service.evergreen.forget,
-            fact_id=fact_id,
-            expected_revision=body.expected_revision,
-            reason=body.reason,
-            source_message_id=body.source_message_id,
-            created_by="agent",
+            function,
+            request,
             errors=(KeyError, EvergreenConflict, ValueError),
             not_found="evergreen fact not found",
             conflict=EvergreenConflict,
         )
-        return {"fact": fact}
+        return {"fact": fact if evergreen_store is not None else fact.fact}
 
     @router.post(
         "/state/v1/context",
