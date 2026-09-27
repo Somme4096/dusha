@@ -1,13 +1,12 @@
 # SQLite memory plugin
 
-The SQLite memory plugin is a memory-plugin entry point for the companion
-gateway. It follows the same convention as decision plugins. The plugin exports
-message, evergreen, index, and affect operations.
+The plugin directory identifier is `sqlite_memory`. Configure it under
+`memory_plugin.module`. It exports the memory operations used by the gateway.
 
 The gateway supplies the request fields described by
 [`memory_plugin.py`](https://github.com/Somme4096/sophia/blob/main/src/companion_gateway/memory_plugin.py).
-Each operation
-receives an options dictionary and returns the corresponding result mapping.
+Each operation follows `fn(request, options)`. See the
+[project README](https://github.com/Somme4096/sophia) for the public API.
 
 ## Install
 
@@ -15,11 +14,22 @@ Copy the plugin directory into the gateway's configured mods directory.
 
 ```sh
 mkdir -p ~/.config/companion-gateway/mods
-cp -R examples/mods/sqlite-memory ~/.config/companion-gateway/mods/sqlite-memory
+cp -R examples/mods/sqlite-memory ~/.config/companion-gateway/mods/sqlite_memory
 ```
 
 The gateway creates an isolated `uv` environment from `pyproject.toml` and
 `uv.lock` when it loads the plugin.
+
+```json
+{
+  "memory_plugin": {
+    "module": "sqlite_memory",
+    "mods_dir": "mods",
+    "timeout_seconds": 15,
+    "options": {}
+  }
+}
+```
 
 ## Phrase patterns
 

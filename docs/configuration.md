@@ -107,14 +107,14 @@ An explicit override wins even when it equals the packaged default. Config field
 
 On each new user message the gateway can invoke one Python decision plugin. The plugin selects at most one emotion dimension from the resolved `emotions.json`. The engine then increases that dimension by `decision.increment`, clamped to the dimension range. No plugin, or a failed or invalid decision, means no decision-driven adjustment. Contact bookkeeping and proactive scheduling still run.
 
-Each plugin directory requires `README.md`, `main.py`, `pyproject.toml`, and `uv.lock`. You can include helper modules and subpackages. Install `uv` on the gateway's executable search path. The gateway synchronizes locked dependencies into the plugin's dedicated environment during initialization. In `main.py`, export:
+Each plugin directory requires `README.md`, `main.py`, `pyproject.toml`, and `uv.lock`. Install `uv` on the gateway's executable search path. The gateway synchronizes locked dependencies into the plugin's dedicated environment during initialization. Every exported operation in `main.py` follows `fn(request, options)`:
 
 ```python
-def decide(request, options) -> dict[str, str] | None:
+def decide(request, options):
     ...
 ```
 
-The request has `message`, `emotions`, `state`, and `instruction` attributes. Return `{"emotion": "<dimension>"}` for one allowed dimension, or `None` to abstain. The runner passes sanitized request data and options to the child plugin.
+The runner passes sanitized request data and options to the child plugin. Decision plugins return `{"emotion": "<dimension>"}` or `None`. Memory operation names and result schemas are documented in the [project README](https://github.com/Somme4096/sophia).
 
 Configuration:
 
@@ -130,11 +130,24 @@ Configuration:
 }
 ```
 
-- `module`: a plain plugin directory name, resolved only under the mods directory. Empty disables decision-driven adjustment. A name containing a path separator or any non-identifier character is rejected.
+- `module`: a plain plugin directory name, resolved only under the mods directory. Empty disables the plugin. A name containing a path separator or any non-identifier character is rejected.
 - `options`: passed through to the plugin verbatim.
 - `increment`: the bounded amount added to the selected dimension. Must be finite and in `(0, 1]`. Default `0.1`.
 - `timeout_seconds`: the outer deadline for each decision process. Must be finite and positive. Default `15`. Set it above any HTTP timeout configured in `options`.
 - `mods_dir`: an optional mods directory. Empty uses `<default config dir>/mods`, that is `~/.config/companion-gateway/mods`. A relative value resolves against the config file location.
+
+Memory plugins use the same fields and the same `fn(request, options)` contract:
+
+```json
+{
+  "memory_plugin": {
+    "module": "sqlite_memory",
+    "mods_dir": "mods",
+    "timeout_seconds": 15,
+    "options": {}
+  }
+}
+```
 
 `COMPANION_GATEWAY_MODS_DIR` overrides `decision.mods_dir` when set. This is the recommended way to test an isolated mods tree without touching the live configuration.
 

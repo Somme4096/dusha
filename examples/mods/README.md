@@ -1,7 +1,7 @@
-# Decision plugins
+# Plugins
 
-Optional decision plugins. The gateway loads a plugin directory named by
-`decision.module` from `decision.mods_dir`. A plugin exports one function:
+Optional decision plugins load from `decision.mods_dir`. A plugin directory is
+identified by `decision.module` and exports `decide(request, options)`.
 
 `decide(request, options)`, where request has `message`, `emotions`, `state`,
 and `instruction`. Return `{"emotion": name}` or `None`.
@@ -12,10 +12,9 @@ must not assume credentials exist in inherited environment variables.
 
 ## Memory plugins
 
-The gateway also supports memory plugins for message ingestion, recall,
-evergreen facts, and optional affect phrase matching. Memory plugins follow the
-same convention as decision plugins. They export `remember`, `recall`, `forget`,
-`render_facts`, and `match_phrase`, each receiving `(request, options)`.
+Memory plugins use `memory_plugin.module` and `memory_plugin.mods_dir`. Every
+exported operation has the Python contract `fn(request, options)`. See the
+[project README](https://github.com/Somme4096/sophia) for the public API.
 
 The SQLite example is available in
 [`sqlite-memory`](sqlite-memory/README.md). Install it by copying the plugin

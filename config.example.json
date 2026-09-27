@@ -45,6 +45,12 @@
       "failure_cooldown_seconds": 60
     }
   },
+  "memory_plugin": {
+    "module": "sqlite_memory",
+    "mods_dir": "",
+    "timeout_seconds": 15,
+    "options": {}
+  },
   "evergreen": {
     "enabled": true,
     "max_items": 32,
