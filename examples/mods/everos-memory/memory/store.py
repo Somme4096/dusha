@@ -124,21 +124,24 @@ class MemoryStore:
                 ),
             )
             message_id = int(cursor.lastrowid)
-            if self.everos is not None and role in {"user", "assistant", "tool"}:
+            if self.everos is not None and role in {"user", "assistant"}:
                 session_id = self.everos.ensure_session(db, internal_conversation)
-                timestamp = max(
-                    int(when.timestamp() * 1000),
-                    int(db.execute(
-                        "SELECT COALESCE(MAX(timestamp), 0) + 1 FROM everos_outbox WHERE session_id=?",
-                        (session_id,),
-                    ).fetchone()[0]),
+                timestamp = int(when.timestamp() * 1000)
+                while db.execute(
+                    "SELECT 1 FROM everos_outbox WHERE session_id=? AND timestamp=?",
+                    (session_id, timestamp),
+                ).fetchone():
+                    timestamp += 1
+                sender_id = (
+                    self.everos.user_sender_id
+                    if role == "user" else self.everos.assistant_sender_id
                 )
                 db.execute(
                     """INSERT INTO everos_outbox
                        (message_id, session_id, app_id, project_id, sender_id, role, text, timestamp)
                        VALUES(?,?,?,?,?,?,?,?)""",
-                    (message_id, session_id, self.everos.app_id, self.everos.project_id,
-                     self.everos.sender_id, role, text, timestamp),
+                     (message_id, session_id, self.everos.app_id, self.everos.project_id,
+                      sender_id, role, text, timestamp),
                 )
             return StoredMessage(message_id, False, internal_conversation, digest)
 

@@ -219,6 +219,8 @@ class Database:
             );
             CREATE INDEX IF NOT EXISTS everos_outbox_pending
             ON everos_outbox(delivered_at, id);
+            CREATE UNIQUE INDEX IF NOT EXISTS everos_outbox_session_timestamp
+            ON everos_outbox(session_id, timestamp);
             """)
 
     def _prepare_schema(self) -> None:

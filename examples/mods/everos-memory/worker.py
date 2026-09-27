@@ -64,7 +64,7 @@ class Worker:
             return {"status": {"local": self.semantic.status(), "everos": self.everos.status()}}
         if method == "backfill_once":
             status = self.semantic.backfill_once(**params)
-            status["everos"] = self.everos.deliver_pending(params.get("limit", 100))
+            status["everos"] = self.everos.deliver_pending(1)
             return {"status": status}
         if method == "ensure_message_chunks":
             return {"chunks": self.semantic.ensure_message_chunks(params["message_id"])}
@@ -72,6 +72,7 @@ class Worker:
             return {"status": self.semantic.rebuild_chunks()}
         if method == "close":
             self.semantic.close()
+            self.everos.close()
             return None
         if method == "match_phrase":
             message = str(params["message"]).casefold()
