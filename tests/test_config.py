@@ -147,7 +147,7 @@ def test_config_examples_load(tmp_path, fmt, specific):
     cfg = load_config(config)
     assert cfg.port == 8765
     assert cfg.upstream.base_url == "https://api.openai.com/v1"
-    assert cfg.memory.retrieval_mode == "hybrid"
+    assert cfg.memory.retrieval_mode == "lexical"
     for field, expected in specific:
         value = cfg
         for part in field.split("."):

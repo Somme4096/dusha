@@ -45,7 +45,7 @@ example uses 15 seconds for the plugin and 5 seconds for EverOS.
 ## What the plugin owns
 
 The gateway owns message and evergreen storage in its built-in SQLite store.
-The plugin owns only the EverOS sidecar delivery path and three extension
+The plugin owns only the EverOS sidecar delivery path and four extension
 tables in the same database file: `everos_sessions`, `everos_session_map`,
 `everos_outbox`, and `everos_flush_state`. It never creates or migrates core
 message, fact, affect, or proactive tables.

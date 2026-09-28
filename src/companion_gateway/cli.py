@@ -41,7 +41,7 @@ def parser() -> argparse.ArgumentParser:
     recent = memory_commands.add_parser("recent")
     recent.add_argument("--limit", type=int, default=20)
     memory_commands.add_parser("reindex")
-    index = memory_commands.add_parser("index", help="Manage the disposable semantic index")
+    index = memory_commands.add_parser("index", help="Manage the memory index and plugin status")
     index_commands = index.add_subparsers(dest="index_command", required=True)
     index_commands.add_parser("status")
     backfill = index_commands.add_parser("backfill")
