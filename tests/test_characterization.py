@@ -208,7 +208,7 @@ def test_queue_lease_ack_cooldown_and_restart(svc):
     assert restarted.evaluate(now + timedelta(minutes=359)) is None
     state = restarted_service.affect.status(now)
     assert state["unanswered_proactive"] == 1
-    assert any(message["text"] == "Checking in." for message in restarted_service.memory.recent())
+    assert any(message["text"] == "Checking in." for message in restarted_service._memory_fallback.recent())
 
 
 def test_user_reply_resets_unanswered_limit(svc):

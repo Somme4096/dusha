@@ -145,7 +145,7 @@ async def test_state_api_and_openai_proxy_preserve_one_canonical_transcript(conf
         assert search.status_code == 200
         recalled = [m["text"] for hit in search.json()["results"] for m in hit["messages"]]
         assert "Remember the amber window." in recalled
-    stored = app.state.service.memory.recent(limit=10)
+    stored = app.state.service._memory_fallback.recent(limit=10)
     assert [m["text"] for m in stored] == ["Hello.", "First reply.", "Remember the amber window.",
                                            "Second reply."]
     assert stored[0]["content"] == {"role": "user", "content": "Hello."}
@@ -172,7 +172,7 @@ async def test_proxy_replay_dedups_through_upstream_round_trip(config, monkeypat
         first = await _chat(client, transcript)
         replay = await _chat(client, transcript)
         assert first.status_code == replay.status_code == 200
-    stored = app.state.service.memory.recent(limit=10)
+    stored = app.state.service._memory_fallback.recent(limit=10)
     assert [m["text"] for m in stored] == [
         "Hello.", "A reply.", "Remember the amber window.", "Final reply.",
     ]
@@ -199,7 +199,7 @@ async def test_proxy_tool_call_body_preserved_and_archived(config, monkeypatch):
             client, [{"role": "user", "content": "Look it up."}], {"X-Conversation-Id": "tools"}
         )
     assert response.status_code == 200
-    stored = app.state.service.memory.recent(limit=10)
+    stored = app.state.service._memory_fallback.recent(limit=10)
     assert stored[-1]["content"] == tool_message
     assert '"name":"lookup"' in stored[-1]["text"]
 
@@ -279,7 +279,7 @@ async def test_proxy_stream_passthrough_and_drain(config, monkeypatch, fake, sta
         assert response.content == b"upstream exploded"
         assert response.headers["content-type"].startswith("text/plain")
     elif check == "drain":
-        stored = app.state.service.memory.recent(limit=10)
+        stored = app.state.service._memory_fallback.recent(limit=10)
         assert [m["role"] for m in stored] == ["user", "assistant"]
         assert stored[-1]["text"] == stored[-1]["content"] == "streamed reply"
         assert stored[-1]["external_id"].startswith("proxy:")

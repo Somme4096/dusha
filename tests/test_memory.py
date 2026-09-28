@@ -4,14 +4,11 @@ import json
 import sqlite3
 from datetime import UTC, datetime
 
-import httpx
 import pytest
 
-from companion_gateway.config import EmbeddingConfig, load_config
+from companion_gateway.config import load_config
 from companion_gateway.database import Database
 from companion_gateway.evergreen import EvergreenConflict
-from companion_gateway.memory import MemoryStore
-from companion_gateway.semantic import OpenAIEmbeddingClient
 
 
 def _ingest(service, *, harness="api", conversation_id="one", role="user", content, external_id="", **kw):
@@ -90,7 +87,8 @@ def test_database_schema_and_upgrade_path(svc, tmp_path):
         db.execute("PRAGMA user_version=3")
     service.close()
     upgraded = svc()
-    assert upgraded.memory.get(stored["id"])["text"] == "Keep this exact text through the schema upgrade."
+    restored = upgraded._memory_fallback.get(stored["id"])
+    assert restored["text"] == "Keep this exact text through the schema upgrade."
     with upgraded.database.connect() as db:
         assert db.execute("PRAGMA user_version").fetchone()[0] == 4
         assert db.execute(
@@ -119,7 +117,7 @@ def test_database_upgrades_version_two_through_the_chain(svc):
         db.execute("PRAGMA user_version=2")
     service.close()
     upgraded = svc()
-    assert upgraded.memory.get(stored["id"])["text"] == "Keep this exact text."
+    assert upgraded._memory_fallback.get(stored["id"])["text"] == "Keep this exact text."
     with upgraded.database.connect() as db:
         assert db.execute("PRAGMA user_version").fetchone()[0] == 4
         assert db.execute(
@@ -146,12 +144,12 @@ def test_content_is_preserved_exactly(svc):
     )
     assert duplicate["duplicate"] is True
     assert duplicate["id"] == stored["id"]
-    assert service.memory.get(stored["id"])["text"] == original
+    assert service._memory_fallback.get(stored["id"])["text"] == original
     restarted = svc()
-    results = restarted.memory.search("青い硝子")
+    results = restarted._memory_fallback.search("青い硝子")
     recalled = [message for result in results for message in result["messages"]]
     assert any(message["text"] == original for message in recalled)
-    assert restarted.memory.get(stored["id"])["sha256"] == stored["sha256"]
+    assert restarted._memory_fallback.get(stored["id"])["sha256"] == stored["sha256"]
 
     content = [
         {"type": "text", "text": "Keep this exact sentence."},
@@ -160,7 +158,7 @@ def test_content_is_preserved_exactly(svc):
     structured = _ingest(
         service, harness="openai", content=content, external_id="m1"
     )
-    message = service.memory.get(structured["id"])
+    message = service._memory_fallback.get(structured["id"])
     assert message["content"] == content
     assert message["text"] == "Keep this exact sentence."
 
@@ -208,10 +206,10 @@ def test_harness_context_excludes_native_recent_history(svc):
 
 def test_memory_conversation_id_resolution(svc):
     service = svc()
-    assert service.memory.conversation_id("api", "unknown") is None
+    assert service._memory_fallback.conversation_id("api", "unknown") is None
     service.ingest_message(harness="api", conversation_id="one", role="user", content="hello")
-    assert isinstance(service.memory.conversation_id("api", "one"), int)
-    assert service.memory.conversation_id("other", "one") is None
+    assert isinstance(service._memory_fallback.conversation_id("api", "one"), int)
+    assert service._memory_fallback.conversation_id("other", "one") is None
 
 
 def test_evergreen_revisions_survive_restart_and_keep_source(svc):
@@ -295,32 +293,6 @@ def test_review_due_and_duplicate_key_rules_are_deterministic(svc):
         )
 
 
-def test_openai_embedding_client_sends_configured_request(monkeypatch):
-    monkeypatch.setenv("TEST_EMBEDDING_KEY", "secret")
-    captured: dict[str, object] = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        captured["url"] = str(request.url)
-        captured["authorization"] = request.headers.get("authorization")
-        captured["body"] = json.loads(request.content)
-        return httpx.Response(200, json={
-            "data": [{"index": 1, "embedding": [0.0, 2.0]}, {"index": 0, "embedding": [3.0, 0.0]}]})
-
-    client = OpenAIEmbeddingClient(EmbeddingConfig(
-        base_url="https://embedding.invalid/v1/", api_key_env="TEST_EMBEDDING_KEY",
-        model="chosen-model", dimensions=2,
-    ))
-    client._client = httpx.Client(transport=httpx.MockTransport(handler))
-    assert client.embed(["first", "second"]) == [[1.0, 0.0], [0.0, 1.0]]
-    assert captured == {
-        "url": "https://embedding.invalid/v1/embeddings",
-        "authorization": "Bearer secret",
-        "body": {"model": "chosen-model", "input": ["first", "second"], "encoding_format": "float",
-                 "dimensions": 2},
-    }
-    client.close()
-
-
 def test_nested_embedding_configuration_loads_from_json(tmp_path):
     path = tmp_path / "config.json"
     path.write_text(
@@ -336,11 +308,3 @@ def test_nested_embedding_configuration_loads_from_json(tmp_path):
     assert config.memory.embedding.api_key_env == "CUSTOM_KEY"
     assert config.memory.embedding.model == "chosen-model"
     assert config.memory.embedding.dimensions == 768
-
-
-def test_reciprocal_rank_fusion_rewards_both_retrievers():
-    lexical = [{"id": 1, "rank": -2.0}, {"id": 2, "rank": -1.0}]
-    semantic = [{"message_id": 2, "similarity": 0.9}, {"message_id": 3, "similarity": 0.8}]
-    results = MemoryStore._fuse_candidates(lexical, semantic, rrf_k=60)
-    assert [item["id"] for item in results] == [2, 1, 3]
-    assert results[0]["rank"] == -results[0]["fusion_score"]

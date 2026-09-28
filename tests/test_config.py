@@ -732,10 +732,10 @@ def test_context_structured_fields_and_side_effect_free(tmp_path, svc):
 
 
     service = svc(identity_prompt=_identity_config(tmp_path))
-    before = service.memory.recent(limit=50)
+    before = service._memory_fallback.recent(limit=50)
     service.build_context(query="")
     service.build_context(query="")
-    after = service.memory.recent(limit=50)
+    after = service._memory_fallback.recent(limit=50)
     assert [item["text"] for item in before] == [item["text"] for item in after]
     with service.database.connect() as db:
         assert db.execute("SELECT COUNT(*) FROM affect_decisions").fetchone()[0] == 0
