@@ -103,6 +103,14 @@ def ensure_message_chunks(request, options):
     return {"chunks": 0}
 
 
+def rebuild_chunks(request, options):
+    return {"status": {"source": "boundary", "chunks": 0}}
+
+
+def rebuild_index(request, options):
+    return {"status": {"source": "boundary", "rebuilt": True}}
+
+
 def backfill_once(request, options):
     return {"status": {"source": "boundary", "backfilled": True}}
 
@@ -440,3 +448,133 @@ async def test_plugin_injects_context_within_budget_without_displacing_builtin_f
     query, _scope, max_chars = requests[-1]
     assert query == "vault"
     assert 0 < max_chars <= 500
+
+
+async def test_health_and_index_report_lexical_only_without_plugin(tmp_path: Path):
+    config_path = _write_json(
+        tmp_path / "config.json",
+        {"data_dir": str(tmp_path / "data"), "storage": {"enabled": True}},
+    )
+    config = load_config(config_path)
+
+    async with _client(config) as (client, _):
+        health = await client.get("/health")
+        assert health.status_code == 200, health.text
+        health_index = health.json()["memory_index"]
+        assert health_index["mode"] == "lexical"
+        assert health_index["retrieval"] == "lexical"
+        assert health_index["plugin_enabled"] is False
+
+        index = await client.get("/state/v1/memory/index")
+        assert index.status_code == 200, index.text
+        assert index.json()["mode"] == "lexical"
+        assert index.json()["retrieval"] == "lexical"
+        assert index.json()["plugin_enabled"] is False
+
+    status = _cli(config_path, "memory", "index", "status")
+    assert status.returncode == 0, status.stderr
+    assert json.loads(status.stdout)["retrieval"] == "lexical"
+
+    backfill = _cli(config_path, "memory", "index", "backfill")
+    assert backfill.returncode == 0, backfill.stderr
+    assert json.loads(backfill.stdout)["enabled"] is False
+
+    rebuild = _cli(config_path, "memory", "index", "rebuild")
+    assert rebuild.returncode == 0, rebuild.stderr
+    assert json.loads(rebuild.stdout)["status"] == "rebuilt"
+
+    reindex = _cli(config_path, "memory", "reindex")
+    assert reindex.returncode == 0, reindex.stderr
+    assert json.loads(reindex.stdout) == {"status": "rebuilt"}
+
+
+async def test_health_and_index_report_plugin_status_with_configured_plugin(
+    tmp_path: Path, boundary_plugin: Path
+):
+    config = _config(tmp_path, mods=boundary_plugin, fail=False)
+    config_path = _write_json(
+        tmp_path / "config.json",
+        {
+            "data_dir": str(tmp_path / "data"),
+            "memory_plugin": {"module": "boundary_memory", "mods_dir": str(boundary_plugin)},
+        },
+    )
+
+    async with _client(config) as (client, _):
+        health = await client.get("/health")
+        assert health.status_code == 200, health.text
+        assert health.json()["memory_index"] == {"source": "boundary", "healthy": True}
+
+        index = await client.get("/state/v1/memory/index")
+        assert index.status_code == 200, index.text
+        assert index.json() == {"source": "boundary", "healthy": True}
+
+    status = _cli(config_path, "memory", "index", "status")
+    assert status.returncode == 0, status.stderr
+    assert json.loads(status.stdout) == {"source": "boundary", "healthy": True}
+
+    backfill = _cli(config_path, "memory", "index", "backfill")
+    assert backfill.returncode == 0, backfill.stderr
+    assert json.loads(backfill.stdout) == {"source": "boundary", "backfilled": True}
+
+    rebuild = _cli(config_path, "memory", "index", "rebuild")
+    assert rebuild.returncode == 0, rebuild.stderr
+    assert json.loads(rebuild.stdout) == {"source": "boundary", "chunks": 0}
+
+    reindex = _cli(config_path, "memory", "reindex")
+    assert reindex.returncode == 0, reindex.stderr
+    assert json.loads(reindex.stdout) == {"status": "rebuilt"}
+
+
+async def test_health_survives_storage_disabled_and_index_reports_unavailable(tmp_path: Path):
+    config_path = _write_json(
+        tmp_path / "config.json",
+        {"data_dir": str(tmp_path / "data"), "storage": {"enabled": False}},
+    )
+    config = load_config(config_path)
+
+    async with _client(config) as (client, _):
+        health = await client.get("/health")
+        assert health.status_code == 200, health.text
+        assert isinstance(health.json()["memory_index"], dict)
+
+        index = await client.get("/state/v1/memory/index")
+        _assert_unavailable(index)
+
+    _assert_cli_unavailable(_cli(config_path, "memory", "index", "status"))
+    _assert_cli_unavailable(_cli(config_path, "memory", "index", "backfill"))
+    _assert_cli_unavailable(_cli(config_path, "memory", "index", "rebuild"))
+    _assert_cli_unavailable(_cli(config_path, "memory", "reindex"))
+
+
+async def test_version_four_database_recreates_missing_plugin_ingest_state(tmp_path: Path):
+    config_path = _write_json(tmp_path / "config.json", {"data_dir": str(tmp_path / "data")})
+    config = load_config(config_path)
+    database = tmp_path / "data" / "state.sqlite3"
+
+    async with _client(config) as (client, _):
+        created = await _ingest(client, "v4", "V4_MESSAGE_MARKER")
+        message_id = created["id"]
+
+    assert _rows(database, "SELECT 1 FROM sqlite_master WHERE type='table' AND name='plugin_ingest_state'")
+    assert _rows(database, "PRAGMA user_version")[0][0] == 4
+
+    db = sqlite3.connect(database)
+    db.execute("DROP TABLE plugin_ingest_state")
+    db.commit()
+    db.close()
+    missing = _rows(
+        database,
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='plugin_ingest_state'",
+    )
+    assert missing == []
+
+    async with _client(config) as (client, _):
+        health = await client.get("/health")
+        assert health.status_code == 200, health.text
+        fetched = await client.get(f"/state/v1/messages/{message_id}")
+        assert fetched.status_code == 200, fetched.text
+        assert fetched.json()["text"] == "V4_MESSAGE_MARKER"
+
+    assert _rows(database, "SELECT 1 FROM sqlite_master WHERE type='table' AND name='plugin_ingest_state'")
+    assert _rows(database, "PRAGMA user_version")[0][0] == 4
