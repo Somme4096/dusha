@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import shutil
+import subprocess
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -10,13 +12,99 @@ import pytest
 from companion_gateway import api
 from companion_gateway.config import AppConfig, DecisionConfig, EvergreenConfig, MemoryConfig, MemoryPluginConfig
 
+GENERIC_PLUGIN_SOURCE = '''\
+import sqlite3
+
+
+def _connect(options):
+    db = sqlite3.connect(options["database_path"], timeout=10)
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS generic_received "
+        "(message_id INTEGER PRIMARY KEY, text TEXT NOT NULL)"
+    )
+    return db
+
+
+def ingest_messages(request, options):
+    db = _connect(options)
+    messages = getattr(request, "messages", None) or ()
+    ids = []
+    try:
+        for message in messages:
+            ident = int(message["id"])
+            ids.append(ident)
+            db.execute(
+                "INSERT OR IGNORE INTO generic_received(message_id, text) VALUES (?, ?)",
+                (ident, str(message.get("text", ""))),
+            )
+        db.commit()
+    finally:
+        db.close()
+    return {"highest_id": max(ids) if ids else 0}
+
+
+def inject_context(request, options):
+    if options.get("context_fail"):
+        raise RuntimeError("configured context failure")
+    db = _connect(options)
+    try:
+        row = db.execute(
+            "SELECT text FROM generic_received ORDER BY message_id DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        db.close()
+    latest = str(row[0]) if row else ""
+    return {
+        "text": "GENERIC_PLUGIN_CONTEXT",
+        "records": [{"source": "generic", "text": "GENERIC_PLUGIN_RECORD " + latest}],
+    }
+
+
+def match_phrase(request, options):
+    message = str(getattr(request, "message", "")).casefold()
+    for phrase in options.get("phrase_patterns", []):
+        if str(phrase["pattern"]).casefold() in message:
+            return {"deltas": phrase["deltas"]}
+    return {"deltas": None}
+
+
+def status(request, options):
+    return {"status": {"source": "generic", "healthy": True}}
+
+
+def ensure_message_chunks(request, options):
+    return {"chunks": 0}
+
+
+def rebuild_chunks(request, options):
+    return {"status": {"source": "generic", "chunks": 0}}
+
+
+def rebuild_index(request, options):
+    return {"status": {"source": "generic", "rebuilt": True}}
+
+
+def backfill_once(request, options):
+    return {"status": {"source": "generic", "backfilled": True}}
+
+
+def close(request, options):
+    return None
+'''
+
 
 @pytest.fixture(scope="session")
-def sqlite_plugin(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    mods = tmp_path_factory.mktemp("memory-mods")
-    source = Path(__file__).parents[1] / "examples" / "mods" / "sqlite-memory"
-    destination = mods / "sqlite_memory"
-    shutil.copytree(source, destination, ignore=shutil.ignore_patterns(".venv", "__pycache__", "*.pyc"))
+def generic_plugin(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    mods = tmp_path_factory.mktemp("generic-mods")
+    suite = mods / "generic_memory"
+    suite.mkdir()
+    (suite / "README.md").write_text("generic e2e plugin\n", encoding="utf-8")
+    (suite / "main.py").write_text(GENERIC_PLUGIN_SOURCE, encoding="utf-8")
+    (suite / "pyproject.toml").write_text(
+        '[project]\nname = "generic-memory"\nversion = "0.1.0"\nrequires-python = ">=3.11"\n',
+        encoding="utf-8",
+    )
+    subprocess.run(["uv", "--no-config", "lock", "--directory", str(suite)], check=True)
     return mods
 
 
@@ -37,13 +125,16 @@ def decision_plugin(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 
 @pytest.fixture
-def configured_app(tmp_path: Path, sqlite_plugin: Path, decision_plugin: Path):
+def configured_app(tmp_path: Path, generic_plugin: Path, decision_plugin: Path):
     def make(
         *,
         options: dict | None = None,
         data_dir: Path | None = None,
         decision_enabled: bool = False,
+        context_fail: bool = False,
     ) -> AppConfig:
+        merged = dict(options or {})
+        merged["context_fail"] = context_fail
         return AppConfig(
             data_dir=data_dir or tmp_path / "data",
             memory=MemoryConfig(recent_messages=8, search_hits=8, context_messages=1, injection_max_chars=20_000),
@@ -53,9 +144,10 @@ def configured_app(tmp_path: Path, sqlite_plugin: Path, decision_plugin: Path):
                 mods_dir=str(decision_plugin),
             ),
             memory_plugin=MemoryPluginConfig(
-                module="sqlite_memory",
-                mods_dir=str(sqlite_plugin),
-                options=options or {},
+                module="generic_memory",
+                mods_dir=str(generic_plugin),
+                ingest_backfill_interval_seconds=1,
+                options=merged,
             ),
         )
 
@@ -175,7 +267,7 @@ async def test_evergreen_lifecycle_errors_and_phrase_only_update(configured_app)
         assert affect.json()["base"]["intimacy"] > before_second_match["intimacy"]
 
 
-async def test_restart_preserves_plugin_messages_and_evergreen(configured_app):
+async def test_restart_preserves_builtin_messages_and_evergreen(configured_app):
     data_dir = configured_app().data_dir
     async with _client(configured_app(data_dir=data_dir)) as client:
         message = await _ingest(client, "persistent", "Persist this memory across restart.")
@@ -227,3 +319,61 @@ async def test_decision_plugin_sees_state_before_phrase_delta(configured_app):
         assert affect["base"]["intimacy"] > 0.2
         assert affect["base"]["dejection"] == pytest.approx(0.15)
         assert affect["base"]["elation"] > 0.2
+
+
+async def test_plugin_context_is_source_labeled_across_restart_and_falls_back(configured_app):
+    data_dir = configured_app().data_dir
+    async with _client(configured_app(data_dir=data_dir)) as client:
+        message = await _ingest(client, "transition", "Core lexical retrieval keeps the transition marker.")
+        search = await client.post("/state/v1/memory/search", json={"query": "transition marker"})
+        assert search.status_code == 200, search.text
+        assert any(
+            "transition marker" in item["text"]
+            for hit in search.json()["results"]
+            for item in hit["messages"]
+        )
+        context = await client.post(
+            "/state/v1/context",
+            json={"harness": "e2e", "conversation_id": "transition", "query": "transition"},
+        )
+        assert context.status_code == 200, context.text
+        plugin_context = context.json()["context"]["memory"].get("plugin_context")
+        assert plugin_context is not None, context.text
+        assert plugin_context["source"]
+        blob = json.dumps(plugin_context)
+        assert "GENERIC_PLUGIN_RECORD" in blob, blob
+        assert "Core lexical retrieval keeps the transition marker." in blob, blob
+        assert "memory_id" not in blob, blob
+
+    async with _client(configured_app(data_dir=data_dir)) as client:
+        fetched = await client.get(f"/state/v1/messages/{message['id']}")
+        assert fetched.status_code == 200
+        search = await client.post("/state/v1/memory/search", json={"query": "transition marker"})
+        assert search.status_code == 200, search.text
+        assert any(
+            "transition marker" in item["text"]
+            for hit in search.json()["results"]
+            for item in hit["messages"]
+        )
+        context = await client.post(
+            "/state/v1/context",
+            json={"harness": "e2e", "conversation_id": "transition", "query": "transition"},
+        )
+        assert context.status_code == 200, context.text
+        plugin_context = context.json()["context"]["memory"].get("plugin_context")
+        assert plugin_context is not None, context.text
+        assert "GENERIC_PLUGIN_RECORD" in json.dumps(plugin_context)
+
+    async with _client(configured_app(data_dir=data_dir, context_fail=True)) as client:
+        context = await client.post(
+            "/state/v1/context",
+            json={"harness": "e2e", "conversation_id": "transition", "query": "transition"},
+        )
+        assert context.status_code == 200, context.text
+        body = context.json()
+        assert "Core lexical retrieval keeps the transition marker." in body["injection"]
+        assert any(
+            "Core lexical retrieval keeps the transition marker." in item["text"]
+            for item in body["records"]
+        )
+        assert body["context"]["memory"].get("plugin_context") is None
