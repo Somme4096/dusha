@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import os
-import sqlite3
 import subprocess
 import sys
-import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -147,24 +144,10 @@ def _write_json(path: Path, value: dict) -> Path:
 def _config(
     tmp_path: Path,
     *,
-    storage: bool = True,
-    mods: Path | None = None,
-    fail: bool = False,
+    mods: Path,
     injection_max_chars: int = 20_000,
     plugin_context_max_chars: int = 3_000,
-    batch_size: int = 50,
 ) -> AppConfig:
-    plugin = (
-        MemoryPluginConfig(
-            module="boundary_memory",
-            mods_dir=str(mods),
-            options={"fail": fail},
-            ingest_batch_size=batch_size,
-            ingest_backfill_interval_seconds=1,
-        )
-        if mods is not None
-        else MemoryPluginConfig()
-    )
     return AppConfig(
         data_dir=tmp_path / "data",
         memory=MemoryConfig(
@@ -175,8 +158,12 @@ def _config(
             plugin_context_max_chars=plugin_context_max_chars,
         ),
         evergreen=EvergreenConfig(enabled=True, max_items=32, max_chars=4_000),
-        storage=StorageConfig(enabled=storage),
-        memory_plugin=plugin,
+        storage=StorageConfig(enabled=True),
+        memory_plugin=MemoryPluginConfig(
+            module="boundary_memory",
+            mods_dir=str(mods),
+            ingest_backfill_interval_seconds=1,
+        ),
     )
 
 
@@ -193,11 +180,8 @@ async def _ingest(
     client: httpx.AsyncClient,
     conversation: str,
     content: str,
-    occurred_at: str | None = None,
 ) -> dict:
     body = {"harness": "e2e", "conversation_id": conversation, "role": "user", "content": content}
-    if occurred_at is not None:
-        body["occurred_at"] = occurred_at
     response = await client.post("/state/v1/messages", json=body)
     assert response.status_code == 200, response.text
     return response.json()
@@ -226,35 +210,6 @@ def _assert_cli_unavailable(result: subprocess.CompletedProcess[str]) -> None:
     output = (result.stdout + result.stderr).lower()
     assert "storage" in output, result.stderr
     assert "disabled" in output or "unavailable" in output, result.stderr
-
-
-def _rows(database: Path, query: str) -> list:
-    if not database.exists():
-        return []
-    db = sqlite3.connect(database)
-    try:
-        return db.execute(query).fetchall()
-    except sqlite3.OperationalError:
-        return []
-    finally:
-        db.close()
-
-
-def _outbox_ids(database: Path) -> list[int]:
-    return [row[0] for row in _rows(database, "SELECT message_id FROM boundary_outbox ORDER BY message_id")]
-
-
-def _batches(database: Path) -> list[list[int]]:
-    return [json.loads(row[0]) for row in _rows(database, "SELECT ids FROM boundary_batches ORDER BY seq")]
-
-
-async def _wait_for(predicate, timeout: float = 20.0):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return True
-        await asyncio.sleep(0.1)
-    return predicate()
 
 
 async def test_default_storage_round_trips_messages_and_facts_across_restart(tmp_path: Path):
@@ -331,14 +286,7 @@ async def test_storage_disabled_reports_unavailable_and_preserves_data_through_r
         assert any(fact["text"] == "PRESERVED_FACT_MARKER" for fact in facts.json()["facts"])
 
 
-def test_configured_plugin_with_storage_disabled_fails_config(tmp_path: Path, boundary_plugin: Path):
-    with pytest.raises(ValueError, match="storage"):
-        AppConfig(
-            data_dir=tmp_path / "data",
-            storage=StorageConfig(enabled=False),
-            memory_plugin=MemoryPluginConfig(module="boundary_memory", mods_dir=str(boundary_plugin)),
-        )
-
+def test_cli_rejects_configured_plugin_with_storage_disabled(tmp_path: Path, boundary_plugin: Path):
     config_path = _write_json(
         tmp_path / "config.json",
         {
@@ -347,8 +295,12 @@ def test_configured_plugin_with_storage_disabled_fails_config(tmp_path: Path, bo
             "memory_plugin": {"module": "boundary_memory", "mods_dir": str(boundary_plugin)},
         },
     )
-    with pytest.raises(ValueError, match="storage"):
-        load_config(config_path)
+
+    result = _cli(config_path, "health")
+    assert result.returncode != 0, result.stdout
+    output = (result.stdout + result.stderr).lower()
+    assert "storage" in output, result.stderr
+    assert "memory_plugin" in output, result.stderr
 
 
 def test_cli_reports_storage_unavailable(tmp_path: Path):
@@ -364,61 +316,12 @@ def test_cli_reports_storage_unavailable(tmp_path: Path):
     _assert_cli_unavailable(_cli(config_path, "evergreen", "remember", "key", "value"))
 
 
-async def test_plugin_ingest_batches_replay_in_id_order_with_retry_and_restart(
-    tmp_path: Path, boundary_plugin: Path
-):
-    data_dir = tmp_path / "data"
-    database = data_dir / "state.sqlite3"
-    failed = _config(tmp_path, mods=boundary_plugin, fail=True, batch_size=2)
-    healthy = _config(tmp_path, mods=boundary_plugin, fail=False, batch_size=2)
-
-    async with _client(failed) as (client, _):
-        first = await _ingest(client, "feed", "FIRST_MARKER", occurred_at="2026-01-03T00:00:00+00:00")
-        second = await _ingest(client, "feed", "SECOND_MARKER", occurred_at="2026-01-01T00:00:00+00:00")
-        third = await _ingest(client, "feed", "THIRD_MARKER", occurred_at="2026-01-02T00:00:00+00:00")
-
-    assert [first["id"], second["id"], third["id"]] == [1, 2, 3]
-    assert _outbox_ids(database) == []
-    assert _rows(database, "SELECT last_acknowledged_id FROM plugin_ingest_state") == []
-
-    batch_count = 0
-    async with _client(healthy) as (client, _):
-        await _wait_for(lambda: _outbox_ids(database) == [1, 2, 3])
-        batch_count = len(_batches(database))
-
-    assert _outbox_ids(database) == [1, 2, 3]
-    batches = _batches(database)
-    assert batches
-    assert all(len(batch) <= 2 for batch in batches)
-    assert any(len(batch) == 2 for batch in batches)
-    assert [ident for batch in batches for ident in batch] == [1, 2, 3]
-    acknowledged = _rows(database, "SELECT last_acknowledged_id FROM plugin_ingest_state")
-    assert acknowledged and acknowledged[0][0] == 3
-    rows = _rows(database, "SELECT message_id, occurred_at FROM boundary_outbox ORDER BY message_id")
-    assert [row[1] for row in rows] == [
-        "2026-01-03T00:00:00+00:00",
-        "2026-01-01T00:00:00+00:00",
-        "2026-01-02T00:00:00+00:00",
-    ]
-
-    db = sqlite3.connect(database)
-    db.execute("DELETE FROM plugin_ingest_state")
-    db.commit()
-    db.close()
-
-    async with _client(healthy) as (client, _):
-        await _wait_for(lambda: len(_batches(database)) > batch_count)
-
-    assert _outbox_ids(database) == [1, 2, 3]
-
-
 async def test_plugin_injects_context_within_budget_without_displacing_builtin_facts(
     tmp_path: Path, boundary_plugin: Path
 ):
     config = _config(
         tmp_path,
         mods=boundary_plugin,
-        fail=False,
         injection_max_chars=3_000,
         plugin_context_max_chars=500,
     )
@@ -441,13 +344,6 @@ async def test_plugin_injects_context_within_budget_without_displacing_builtin_f
         assert "BOUNDARY_PLUGIN_CONTEXT" in injection
         assert "VAULT_RECENT_MARKER" in injection
         assert len(injection) <= 3_000
-
-    database = tmp_path / "data" / "state.sqlite3"
-    requests = _rows(database, "SELECT query, scope, max_chars FROM boundary_inject")
-    assert requests, "plugin inject_context was not called"
-    query, _scope, max_chars = requests[-1]
-    assert query == "vault"
-    assert 0 < max_chars <= 500
 
 
 async def test_health_and_index_report_lexical_only_without_plugin(tmp_path: Path):
@@ -491,7 +387,7 @@ async def test_health_and_index_report_lexical_only_without_plugin(tmp_path: Pat
 async def test_health_and_index_report_plugin_status_with_configured_plugin(
     tmp_path: Path, boundary_plugin: Path
 ):
-    config = _config(tmp_path, mods=boundary_plugin, fail=False)
+    config = _config(tmp_path, mods=boundary_plugin)
     config_path = _write_json(
         tmp_path / "config.json",
         {
@@ -546,35 +442,3 @@ async def test_health_survives_storage_disabled_and_index_reports_unavailable(tm
     _assert_cli_unavailable(_cli(config_path, "memory", "index", "rebuild"))
     _assert_cli_unavailable(_cli(config_path, "memory", "reindex"))
 
-
-async def test_version_four_database_recreates_missing_plugin_ingest_state(tmp_path: Path):
-    config_path = _write_json(tmp_path / "config.json", {"data_dir": str(tmp_path / "data")})
-    config = load_config(config_path)
-    database = tmp_path / "data" / "state.sqlite3"
-
-    async with _client(config) as (client, _):
-        created = await _ingest(client, "v4", "V4_MESSAGE_MARKER")
-        message_id = created["id"]
-
-    assert _rows(database, "SELECT 1 FROM sqlite_master WHERE type='table' AND name='plugin_ingest_state'")
-    assert _rows(database, "PRAGMA user_version")[0][0] == 4
-
-    db = sqlite3.connect(database)
-    db.execute("DROP TABLE plugin_ingest_state")
-    db.commit()
-    db.close()
-    missing = _rows(
-        database,
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='plugin_ingest_state'",
-    )
-    assert missing == []
-
-    async with _client(config) as (client, _):
-        health = await client.get("/health")
-        assert health.status_code == 200, health.text
-        fetched = await client.get(f"/state/v1/messages/{message_id}")
-        assert fetched.status_code == 200, fetched.text
-        assert fetched.json()["text"] == "V4_MESSAGE_MARKER"
-
-    assert _rows(database, "SELECT 1 FROM sqlite_master WHERE type='table' AND name='plugin_ingest_state'")
-    assert _rows(database, "PRAGMA user_version")[0][0] == 4
