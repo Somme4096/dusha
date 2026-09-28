@@ -9,6 +9,7 @@ from typing import Any
 
 from . import emotions as _emotions
 from . import prompts as _prompts
+from .affect_semantic import SemanticAppraisal
 from .config import AffectConfig
 from .database import Database
 from .serialization import compact_json
@@ -16,6 +17,86 @@ from .timeutil import isoformat, parse_time, utc_now
 
 Decider = Callable[..., "str | None"]
 PhraseMatcher = Callable[[str], dict[str, float] | None]
+
+SEMANTIC_LABEL_DIMENSIONS: dict[str, dict[str, float]] = {
+    "affectionate": {
+        "intimacy": 0.20,
+        "contentment": 0.15,
+        "anxiety": -0.18,
+        "lust": 0.12,
+        "longing": -0.10,
+        "fear": -0.08,
+    },
+    "playful": {
+        "play": 0.20,
+        "elation": 0.18,
+        "contentment": 0.12,
+        "seeking": 0.10,
+        "irritability": -0.10,
+        "lust": 0.10,
+    },
+    "vulnerable": {"intimacy": 0.25, "protectiveness": 0.20, "anxiety": 0.12, "dejection": 0.08},
+    "reassuring": {
+        "anxiety": -0.25,
+        "jealousy": -0.20,
+        "contentment": 0.15,
+        "intimacy": 0.15,
+        "fear": -0.15,
+    },
+    "cold": {"anxiety": 0.15, "dejection": 0.12, "longing": 0.10, "intimacy": -0.10},
+    "conflict": {
+        "anxiety": 0.20,
+        "irritability": 0.15,
+        "dejection": 0.15,
+        "possessiveness": 0.18,
+        "intimacy": -0.15,
+        "contentment": -0.15,
+    },
+    "distant": {"anxiety": 0.12, "dejection": 0.10, "longing": 0.12, "intimacy": -0.08},
+    "struggling": {
+        "protectiveness": 0.30,
+        "anxiety": 0.12,
+        "dejection": 0.12,
+        "contentment": -0.08,
+        "fatigue": 0.12,
+    },
+    "intimate_reference": {"lust": 0.18, "intimacy": 0.10},
+    "intimate_event": {"lust": 0.25, "intimacy": 0.18},
+    "neutral": {"anxiety": -0.05, "longing": -0.04, "contentment": 0.03},
+    "hostile": {
+        "dejection": 0.22,
+        "anxiety": 0.18,
+        "irritability": 0.12,
+        "intimacy": -0.22,
+        "contentment": -0.18,
+    },
+    "fear_separation": {
+        "fear": 0.20,
+        "longing": 0.15,
+        "possessiveness": 0.12,
+        "anxiety": 0.15,
+        "protectiveness": 0.10,
+        "dejection": 0.10,
+        "irritability": 0.08,
+    },
+    "fear_death": {
+        "fear": 0.35,
+        "anxiety": 0.30,
+        "irritability": 0.20,
+        "contentment": -0.12,
+        "play": -0.15,
+        "elation": -0.10,
+    },
+    "fear_concern": {
+        "fear": 0.28,
+        "longing": 0.12,
+        "possessiveness": 0.15,
+        "anxiety": 0.20,
+        "protectiveness": 0.25,
+        "contentment": -0.10,
+    },
+    "fear_general": {"fear": 0.20, "anxiety": 0.10},
+}
 
 
 class AffectEngine:
@@ -25,9 +106,11 @@ class AffectEngine:
         config: AffectConfig,
         prompts: dict[str, Any] | None = None,
         decision_increment: float = 0.1,
+        appraisal: SemanticAppraisal | None = None,
     ):
         self.database = database
         self.config = config
+        self.appraisal = appraisal
         self._lock = threading.RLock()
         self.emotions = _emotions.resolve_emotions(config)
         self.emotions_version = str(self.emotions["emotion_version"])
@@ -91,6 +174,24 @@ class AffectEngine:
         state["base"][emotion] = self._clamp(
             current + self.decision_increment, spec["floor"]
         )
+
+    def _semantic_emotion(self, message: str) -> str | None:
+        try:
+            weights = self.appraisal.weights(message)
+        except Exception:
+            return None
+        if not isinstance(weights, dict) or not weights:
+            return None
+        blended: dict[str, float] = {}
+        for label, weight in weights.items():
+            if isinstance(weight, bool) or not isinstance(weight, (int, float)):
+                continue
+            for dimension, delta in SEMANTIC_LABEL_DIMENSIONS.get(label, {}).items():
+                blended[dimension] = blended.get(dimension, 0.0) + float(weight) * delta
+        positive = {name: value for name, value in blended.items() if value > 0 and name in self.spec}
+        if not positive:
+            return None
+        return max(positive, key=positive.get)
 
     def _advance_values(self, state: dict[str, Any], hours: float) -> None:
         if hours <= 0:
@@ -198,6 +299,9 @@ class AffectEngine:
                 emotion = None
             if not isinstance(emotion, str) or emotion not in self.spec:
                 emotion = None
+
+        if emotion is None and self.appraisal is not None:
+            emotion = self._semantic_emotion(message)
 
         decision_id = None
         public = snapshot

@@ -37,7 +37,7 @@ def config(tmp_path: Path) -> AppConfig:
         proactive=ProactiveConfig(
             enabled=True,
             poll_interval_seconds=60,
-            minimum_silence_minutes=60,
+            min_silence_minutes=60,
             longing_threshold=0.31,
             fear_threshold=0.55,
             cooldown_minutes=360,
@@ -46,7 +46,7 @@ def config(tmp_path: Path) -> AppConfig:
             quiet_start_hour=0,
             quiet_end_hour=0,
             lease_seconds=120,
-            failed_retry_minutes=15,
+            retry_delay_minutes=15,
         ),
     )
 

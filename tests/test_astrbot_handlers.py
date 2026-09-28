@@ -65,7 +65,8 @@ def _load_main():
         return sys.modules[main_name]
     if "astrbot" not in sys.modules:
         names = ("astrbot", "astrbot.api", "astrbot.api.star", "astrbot.api.event", "astrbot.api.provider",
-                 "astrbot.core", "astrbot.core.config", "astrbot.core.config.astrbot_config")
+                 "astrbot.core", "astrbot.core.config", "astrbot.core.config.astrbot_config",
+                 "astrbot.core.utils", "astrbot.core.utils.astrbot_path")
         modules = {name: types.ModuleType(name) for name in names}
         modules["astrbot.api.star"].Star, modules["astrbot.api.star"].Context = Star, Context
         modules["astrbot.api"].logger = logger
@@ -75,6 +76,7 @@ def _load_main():
         modules["astrbot.api.provider"].LLMResponse = LLMResponse
         modules["astrbot.api.provider"].ProviderRequest = ProviderRequest
         modules["astrbot.core.config.astrbot_config"].AstrBotConfig = AstrBotConfig
+        modules["astrbot.core.utils.astrbot_path"].get_astrbot_config_path = lambda: "/nonexistent"
         sys.modules.update(modules)
     package_module = types.ModuleType(package)
     package_module.__path__ = [str(_INTEGRATION_DIR)]

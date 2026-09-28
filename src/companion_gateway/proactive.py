@@ -57,7 +57,7 @@ class ProactiveEngine:
             return None
         last_user = parse_time(state["last_user_message_at"])
         silence_minutes = (current - last_user).total_seconds() / 60
-        if silence_minutes < self.rules.minimum_silence_minutes:
+        if silence_minutes < self.rules.min_silence_minutes:
             return None
         if state["unanswered_proactive"] >= self.rules.max_unanswered:
             return None
@@ -209,7 +209,7 @@ class ProactiveEngine:
                 )
             else:
                 available = current + timedelta(
-                    minutes=self.rules.failed_retry_minutes if outcome == "failed" else 0
+                    minutes=self.rules.retry_delay_minutes if outcome == "failed" else 0
                 )
                 db.execute(
                     """UPDATE proactive_events SET status='pending', consumer=NULL, lease_until=NULL,

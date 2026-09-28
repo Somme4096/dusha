@@ -157,7 +157,7 @@ Each payload holds `id`, `target` (`harness`, `conversation_id`, `route`), `reas
 }
 ```
 
-`outcome` accepts `sent`, `failed`, or `release`. `sent` archives the text as an assistant message and records the send. `failed` returns the event to pending after `failed_retry_minutes`. `release` returns it at once. The same consumer must hold the lease; any other consumer gets `409`, and an unknown `event_id` gets `404`.
+`outcome` accepts `sent`, `failed`, or `release`. `sent` archives the text as an assistant message and records the send. `failed` returns the event to pending after `retry_delay_minutes`. `release` returns it at once. The same consumer must hold the lease; any other consumer gets `409`, and an unknown `event_id` gets `404`.
 
 The engine gates each pass on silence, quiet hours, cooldown, the daily limit, the unanswered limit, and the current drives. It keys duplicate silence events on the last user message, the local date, and the day's send count, and keys follow-up events on the source affect event. A user reply cancels unsent events and resets the unanswered count.
 

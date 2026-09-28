@@ -24,12 +24,11 @@
     "context_messages": 1,
     "injection_max_chars": 12000,
     "retrieval_mode": "lexical",
-    "child_chars": 800,
-    "child_overlap_chars": 120,
+    "chunk_max_chars": 800,
+    "chunk_overlap_chars": 120,
     "lexical_candidates": 24,
     "semantic_candidates": 24,
     "rrf_k": 60,
-    "semantic_min_similarity": 0.3,
     "plugin_context_max_chars": 3000,
     "embedding": {
       "base_url": "",
@@ -41,6 +40,16 @@
       "backfill_interval_seconds": 10,
       "failure_cooldown_seconds": 60
     }
+  },
+  "embedding": {
+    "base_url": "",
+    "api_key_env": "EMBEDDING_API_KEY",
+    "model": "",
+    "dimensions": null,
+    "timeout_seconds": 10.0,
+    "batch_size": 32,
+    "backfill_interval_seconds": 10,
+    "failure_cooldown_seconds": 60
   },
   "evergreen": {
     "enabled": true,
@@ -68,13 +77,13 @@
   "proactive": {
     "enabled": true,
     "poll_interval_seconds": 60,
-    "minimum_silence_minutes": 180,
+    "min_silence_minutes": 180,
     "cooldown_minutes": 360,
     "max_per_day": 2,
     "max_unanswered": 2,
     "quiet_start_hour": 1,
     "quiet_end_hour": 8,
     "lease_seconds": 120,
-    "failed_retry_minutes": 15
+    "retry_delay_minutes": 15
   }
 }

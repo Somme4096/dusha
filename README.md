@@ -3,7 +3,7 @@
 
 `companion-gateway` is a Python API reference implementation that combines memory, personality, and affect for LLM companions.
 
-The built-in SQLite store owns messages and evergreen facts, and core retrieval runs on lexical SQLite FTS5. A memory plugin can inject extra context and consume gateway-pushed message batches. 
+The built-in SQLite store owns messages and evergreen facts, and core retrieval runs on lexical SQLite FTS5. A memory plugin can inject extra context and consume gateway-pushed message batches. A shared embedding endpoint adds semantic affect appraisal when configured.
 
 Every prompt, emotional vector, and threshold is configurable through JSON. 
 
@@ -17,7 +17,7 @@ Requires Python 3.11 or newer and uv.
 
 The install links the CLI to this checkout on uv's tool bin path. If `companion-gateway` is not on your `PATH`, run `uv tool update-shell`.
 
-The service reads `config.json` from `~/.config/companion-gateway/` first, then a `config.json` in the working directory as a legacy fallback. Pass `--config PATH` to override. To run it in the background, use [deploy/companion-gateway.service](deploy/companion-gateway.service) with the [service setup steps](docs/guide.md#run-a-durable-single-instance-service).
+The service reads `config.json` from `$XDG_CONFIG_HOME/companion-gateway/` or `~/.config/companion-gateway/`, then a `config.json` in the working directory as a legacy fallback. Pass `--config PATH` to override. To run it in the background, use [deploy/companion-gateway.service](deploy/companion-gateway.service) with the [service setup steps](docs/guide.md#run-a-durable-single-instance-service).
 
 Check it is running:
 

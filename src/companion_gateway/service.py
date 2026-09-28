@@ -8,10 +8,12 @@ from typing import Any
 from . import identity as _identity
 from . import prompts as _prompts
 from .affect import AffectEngine
+from .affect_semantic import SemanticAppraisal
 from .config import AppConfig
 from .context import ContextComposer
 from .database import Database
 from .decision import DecisionProvider
+from .embedding import OpenAIEmbeddingClient
 from .evergreen import EvergreenStore
 from .memory import MemoryStore
 from .memory_plugin import (
@@ -57,11 +59,17 @@ class CompanionService:
         )
         self.identity_configured = bool(config.identity_prompt.path)
         self.decision = DecisionProvider(config)
+        appraisal = (
+            SemanticAppraisal(OpenAIEmbeddingClient(config.embedding))
+            if config.embedding.base_url and config.embedding.model
+            else None
+        )
         self.affect = AffectEngine(
             self.database,
             config.affect,
             prompts=self.prompts,
             decision_increment=config.decision.increment,
+            appraisal=appraisal,
         )
         self.phrase_matcher = (
             self._phrase_matcher if (self.memory.enabled and self.storage_enabled) else None
@@ -457,3 +465,5 @@ class CompanionService:
 
     def close(self) -> None:
         self.memory.close()
+        if self.affect.appraisal is not None:
+            self.affect.appraisal.client.close()

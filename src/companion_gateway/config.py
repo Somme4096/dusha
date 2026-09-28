@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import math
 import os
+import stat
+import tempfile
 import types as _types
 import typing
 from dataclasses import dataclass, field
@@ -18,7 +20,7 @@ _EMOTIONS = _emotions.default_emotions()
 _UPSTREAM = _DEFAULTS["upstream"]
 _API_OPENAI = _DEFAULTS["api_openai"]
 _MEMORY = _DEFAULTS["memory"]
-_EMBEDDING = _MEMORY["embedding"]
+_EMBEDDING = _DEFAULTS.get("embedding", _MEMORY["embedding"])
 _EVERGREEN = _DEFAULTS["evergreen"]
 _DECISION = _DEFAULTS["decision"]
 _STORAGE = _DEFAULTS["storage"]
@@ -38,7 +40,8 @@ _PROMPTS = _DEFAULTS["prompts"]
 
 
 def default_config_dir() -> Path:
-    return Path.home() / ".config" / "companion-gateway"
+    base = os.getenv("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(base) / "companion-gateway"
 
 _UNSET: Any = _emotions.UNSET
 
@@ -85,14 +88,21 @@ class MemoryConfig:
     context_messages: int = _MEMORY["context_messages"]
     injection_max_chars: int = _MEMORY["injection_max_chars"]
     retrieval_mode: str = _MEMORY["retrieval_mode"]
-    child_chars: int = _MEMORY["child_chars"]
-    child_overlap_chars: int = _MEMORY["child_overlap_chars"]
+    chunk_max_chars: int = _MEMORY["chunk_max_chars"]
+    chunk_overlap_chars: int = _MEMORY["chunk_overlap_chars"]
     lexical_candidates: int = _MEMORY["lexical_candidates"]
     semantic_candidates: int = _MEMORY["semantic_candidates"]
     rrf_k: int = _MEMORY["rrf_k"]
-    semantic_min_similarity: float = _MEMORY["semantic_min_similarity"]
     plugin_context_max_chars: int = _MEMORY["plugin_context_max_chars"]
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
+
+    @property
+    def child_chars(self) -> int:
+        return self.chunk_max_chars
+
+    @property
+    def child_overlap_chars(self) -> int:
+        return self.chunk_overlap_chars
 
 
 @dataclass(slots=True)
@@ -178,7 +188,7 @@ class MemoryPluginConfig:
 class ProactiveConfig:
     enabled: bool = _PROACTIVE["enabled"]
     poll_interval_seconds: int = _PROACTIVE["poll_interval_seconds"]
-    minimum_silence_minutes: int = _PROACTIVE["minimum_silence_minutes"]
+    min_silence_minutes: int = _PROACTIVE["min_silence_minutes"]
     longing_threshold: float = _UNSET
     fear_threshold: float = _UNSET
     cooldown_minutes: int = _PROACTIVE["cooldown_minutes"]
@@ -187,13 +197,21 @@ class ProactiveConfig:
     quiet_start_hour: int = _PROACTIVE["quiet_start_hour"]
     quiet_end_hour: int = _PROACTIVE["quiet_end_hour"]
     lease_seconds: int = _PROACTIVE["lease_seconds"]
-    failed_retry_minutes: int = _PROACTIVE["failed_retry_minutes"]
+    retry_delay_minutes: int = _PROACTIVE["retry_delay_minutes"]
     explicit_emotional: frozenset[str] = field(
         default=frozenset(), init=False, repr=False, compare=False
     )
 
     def __post_init__(self) -> None:
         _fill_unset(self, _PROACTIVE_EMOTIONAL, "explicit_emotional")
+
+    @property
+    def minimum_silence_minutes(self) -> int:
+        return self.min_silence_minutes
+
+    @property
+    def failed_retry_minutes(self) -> int:
+        return self.retry_delay_minutes
 
 
 @dataclass(slots=True)
@@ -219,6 +237,7 @@ class AppConfig:
     )
     prompts: PromptsConfig = field(default_factory=lambda: PromptsConfig())
     upstream: UpstreamConfig = field(default_factory=UpstreamConfig)
+    embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     evergreen: EvergreenConfig = field(default_factory=EvergreenConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
@@ -307,6 +326,58 @@ def _memory_section(raw: Any) -> MemoryConfig:
     return MemoryConfig(**kwargs)
 
 
+def _migrate_config(raw: dict[str, Any]) -> bool:
+    changed = False
+    memory = raw.get("memory")
+    if isinstance(memory, dict):
+        for old, new in (
+            ("child_chars", "chunk_max_chars"),
+            ("child_overlap_chars", "chunk_overlap_chars"),
+        ):
+            if old in memory:
+                memory.setdefault(new, memory.pop(old))
+                changed = True
+        if "embedding" in memory:
+            raw.setdefault("embedding", memory.pop("embedding"))
+            changed = True
+        for key in ("semantic_enabled", "semantic_min_similarity"):
+            if key in memory:
+                del memory[key]
+                changed = True
+    proactive = raw.get("proactive")
+    if isinstance(proactive, dict):
+        for old, new in (
+            ("minimum_silence_minutes", "min_silence_minutes"),
+            ("failed_retry_minutes", "retry_delay_minutes"),
+        ):
+            if old in proactive:
+                proactive.setdefault(new, proactive.pop(old))
+                changed = True
+    affect = raw.get("affect")
+    if isinstance(affect, dict):
+        for key in ("semantic_enabled", "semantic_min_similarity"):
+            if key in affect:
+                del affect[key]
+                changed = True
+    return changed
+
+
+def _save_migrated_config(path: Path, raw: dict[str, Any]) -> None:
+    path = path.resolve()
+    mode = stat.S_IMODE(path.stat().st_mode)
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            os.fchmod(stream.fileno(), mode)
+            json.dump(raw, stream, indent=2, ensure_ascii=False)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
 def _read_config_file(path: Path) -> dict:
     text = path.read_text(encoding="utf-8")
     return loads_strict(text, source=str(path))
@@ -375,13 +446,18 @@ def _app_config_from_raw(raw: dict[str, Any], source_dir: Path) -> AppConfig:
             data_dir = source_dir / data_dir
         kwargs["data_dir"] = data_dir
 
+    embedding = _strict_section(EmbeddingConfig, raw.get("embedding"), "embedding")
+    memory = _memory_section(raw.get("memory"))
+    memory.embedding = embedding
+
     return AppConfig(
         **kwargs,
         identity_prompt=identity_prompt,
         prompts=prompts,
         upstream=_strict_section(UpstreamConfig, raw.get("upstream"), "upstream"),
+        embedding=embedding,
         api_openai=_strict_section(ApiOpenAIConfig, raw.get("api_openai"), "api_openai"),
-        memory=_memory_section(raw.get("memory")),
+        memory=memory,
         evergreen=_strict_section(EvergreenConfig, raw.get("evergreen"), "evergreen"),
         storage=_strict_section(StorageConfig, raw.get("storage"), "storage"),
         affect=affect,
@@ -393,7 +469,7 @@ def _app_config_from_raw(raw: dict[str, Any], source_dir: Path) -> AppConfig:
 
 def _resolve_config_path(explicit: str | Path | None) -> Path | None:
     if explicit is not None:
-        path = Path(explicit)
+        path = Path(os.path.expandvars(os.path.expanduser(str(explicit))))
         if path.suffix.lower() != ".json":
             raise ValueError(f"unsupported configuration format: {path}. Use a JSON file")
         if not path.exists():
@@ -401,7 +477,7 @@ def _resolve_config_path(explicit: str | Path | None) -> Path | None:
         return path
     env = os.getenv("COMPANION_GATEWAY_CONFIG")
     if env:
-        path = Path(env)
+        path = Path(os.path.expandvars(os.path.expanduser(env)))
         if path.suffix.lower() != ".json":
             raise ValueError(f"unsupported configuration format: {path}. Use a JSON file")
         if not path.exists():
@@ -427,7 +503,10 @@ def load_config(path: str | Path | None = None) -> AppConfig:
     if config_path.suffix.lower() != ".json":
         raise ValueError(f"unsupported configuration format: {config_path}. Use a JSON file")
     raw = _read_config_file(config_path)
+    migrated = _migrate_config(raw)
     cfg = _app_config_from_raw(raw, config_path.parent)
+    if migrated:
+        _save_migrated_config(config_path, raw)
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
     return cfg
 
@@ -437,6 +516,9 @@ def _validate_packaged_defaults() -> None:
     for key in ("data_dir", "host", "port", "timezone", "api_token_env"):
         _validate_value(f"packaged defaults {key}", _DEFAULTS[key], hints[key])
     _strict_section(UpstreamConfig, _DEFAULTS["upstream"], "packaged defaults upstream")
+    _strict_section(
+        EmbeddingConfig, _DEFAULTS.get("embedding", _EMBEDDING), "packaged defaults embedding"
+    )
     _strict_section(ApiOpenAIConfig, _DEFAULTS["api_openai"], "packaged defaults api_openai")
     _memory_section(_DEFAULTS["memory"])
     _strict_section(EvergreenConfig, _DEFAULTS["evergreen"], "packaged defaults evergreen")

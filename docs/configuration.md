@@ -16,13 +16,15 @@ Config lookup order:
 
 1. `--config PATH`. A missing explicit file is an error.
 2. `COMPANION_GATEWAY_CONFIG`. A missing file is an error.
-3. `config.json` in the default config directory `~/.config/companion-gateway/`.
+3. `config.json` in `$XDG_CONFIG_HOME/companion-gateway/`, or `~/.config/companion-gateway/config.json` when `XDG_CONFIG_HOME` is unset.
 4. `config.json` in the current directory (fallback).
 5. Packaged defaults. A missing implicit file is valid.
 
 The loader never merges configuration files.
 
 Parsing is strict. Duplicate keys, unknown fields, `NaN`, `Infinity`, JSONC comments, and wrong types raise an actionable error.
+
+Startup migrates legacy keys once and rewrites the file as canonical JSON. The renames are `memory.child_chars` to `memory.chunk_max_chars`, `memory.child_overlap_chars` to `memory.chunk_overlap_chars`, `proactive.minimum_silence_minutes` to `proactive.min_silence_minutes`, and `proactive.failed_retry_minutes` to `proactive.retry_delay_minutes`. A `memory.embedding` block moves to the top-level `embedding`. The loader drops `semantic_enabled` and `semantic_min_similarity`. A canonical value wins when both names appear. Later starts leave the migrated file untouched.
 
 Path rules:
 
@@ -164,9 +166,26 @@ The default `decision_instruction` asks the plugin to choose the companion's own
 
 ## Retrieval and the memory index
 
-Core retrieval is lexical. The gateway searches the built-in message store with SQLite FTS5. It sends no embedding requests and loads no vector extension. `memory.recent_messages`, `memory.search_hits`, and `memory.context_messages` tune how much history and adjacent context the injection carries.
+Core retrieval is lexical. The gateway searches the built-in message store with SQLite FTS5. It loads no vector extension. `memory.recent_messages`, `memory.search_hits`, and `memory.context_messages` tune how much history and adjacent context the injection carries.
 
-These fields remain valid in the config for backward compatibility, and core ignores them: `memory.retrieval_mode`, `child_chars`, `child_overlap_chars`, `lexical_candidates`, `semantic_candidates`, `rrf_k`, `semantic_min_similarity`, and the `memory.embedding` fields. One field still matters. `memory.embedding.backfill_interval_seconds` sets the interval for the plugin index backfill loop, which runs only when a memory plugin is configured.
+These fields stay valid on read for backward compatibility, and core ignores them: `memory.retrieval_mode`, `child_chars`, `child_overlap_chars`, `lexical_candidates`, `semantic_candidates`, `rrf_k`, and `semantic_min_similarity`. The loader rewrites them to canonical names on first load. One field still matters. `embedding.backfill_interval_seconds` sets the interval for the plugin index backfill loop, which runs only when a memory plugin is configured.
+
+## Shared embedding and semantic affect
+
+The top-level `embedding` block configures one OpenAI-compatible embedding endpoint. The gateway appends `/embeddings` to `base_url` and reads the key from `api_key_env`.
+
+```json
+{
+  "embedding": {
+    "base_url": "http://127.0.0.1:11434/v1",
+    "api_key_env": "EMBEDDING_API_KEY",
+    "model": "your-embedding-model",
+    "dimensions": null
+  }
+}
+```
+
+A legacy `memory.embedding` block moves here on first load. When `base_url` and `model` are both set, affect appraisal compares each new unlabeled user message against short emotional prototypes with cosine similarity, and the strongest matching emotion dimension adjusts the affect state. When either is unset, appraisal is off and the decision plugin alone selects the emotion. A failed embedding request uses a short cooldown and the engine makes no semantic adjustment. Retrieval stays lexical either way.
 
 A memory plugin contributes context through `inject_context`, capped by `memory.plugin_context_max_chars`. The gateway truncates that text to the budget and counts it against the injection total. A missing or failed plugin returns no plugin context, and the injection keeps the stored recent and evergreen content.
 
@@ -184,7 +203,7 @@ With no plugin these commands report lexical status. With a plugin they call the
 
 ## Proactive scheduling
 
-`proactive.enabled` turns evaluation on. The scheduler runs every `proactive.poll_interval_seconds`. A message needs `proactive.minimum_silence_minutes` of silence. After a send, `cooldown_minutes` applies, `max_per_day` caps daily sends, and `max_unanswered` caps ignored messages. `quiet_start_hour` and `quiet_end_hour` block local quiet hours. The emotional gates `longing_threshold` and `fear_threshold` come from `emotions.json`. The service stores each decision before delivery, so restarts keep the limits and dedupe events.
+`proactive.enabled` turns evaluation on. The scheduler runs every `proactive.poll_interval_seconds`. A message needs `proactive.min_silence_minutes` of silence. After a send, `cooldown_minutes` applies, `max_per_day` caps daily sends, and `max_unanswered` caps ignored messages. `quiet_start_hour` and `quiet_end_hour` block local quiet hours. The emotional gates `longing_threshold` and `fear_threshold` come from `emotions.json`. The service stores each decision before delivery, so restarts keep the limits and dedupe events.
 
 ## Related documentation
 
