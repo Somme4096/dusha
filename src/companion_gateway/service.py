@@ -12,6 +12,8 @@ from .config import AppConfig
 from .context import ContextComposer
 from .database import Database
 from .decision import DecisionProvider
+from .evergreen import EvergreenStore
+from .memory import MemoryStore
 from .memory_plugin import (
     BackfillIndexRequest,
     IngestMessagesRequest,
@@ -19,8 +21,6 @@ from .memory_plugin import (
     MatchPhraseRequest,
 )
 from .memory_provider import MemoryProvider
-from .memory import MemoryStore
-from .evergreen import EvergreenStore
 from .serialization import compact_json
 from .timeutil import isoformat, parse_time, utc_now
 
@@ -46,7 +46,6 @@ class CompanionService:
         if self.storage_enabled:
             self._memory_fallback = MemoryStore(self.database)
             self._evergreen_fallback = EvergreenStore(self.database)
-        self.memory.fallback = self._memory_fallback
         self.evergreen = self._evergreen_fallback
         self._ingest_lock = threading.Lock()
         self._plugin_name = str(getattr(config.memory_plugin, "module", "") or "").strip()
@@ -448,11 +447,6 @@ class CompanionService:
                    ORDER BY updated_at DESC, id DESC LIMIT 1""",
             ).fetchone()
         return dict(row) if row else None
-
-    def _memory_call(self, method: str, request: Any, fallback: Any) -> Any:
-        if not self.memory.enabled:
-            return fallback()
-        return getattr(self.memory, method)(request)
 
     def _phrase_matcher(self, message: str) -> dict[str, float] | None:
         result = self.memory.match_phrase(MatchPhraseRequest(message=message))

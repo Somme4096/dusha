@@ -15,7 +15,6 @@ from fastapi.responses import Response, StreamingResponse
 from .config import AppConfig
 from .context import ContextBudgetError
 from .memory import text_from_content
-from .memory_plugin import GetMessageRequest
 from .serialization import canonical
 from .service import CompanionService
 
@@ -246,9 +245,7 @@ async def _ingest_transcript(
         )
         if message["role"] == "user":
             current_message_id = result["id"]
-            stored = (service._memory_fallback.get(current_message_id)
-                      if service._memory_fallback is not None
-                      else service.memory.get(GetMessageRequest(current_message_id)).message)
+            stored = service._memory_fallback.get(current_message_id)
             current_query = stored["text"]
     return transcript_key, current_message_id, current_query
 

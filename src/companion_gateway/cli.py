@@ -10,16 +10,6 @@ import uvicorn
 
 from .api import create_app
 from .config import load_config
-from .memory_plugin import (
-    FactHistoryRequest,
-    ForgetFactRequest,
-    GetMessageRequest,
-    ListFactsRequest,
-    RememberFactRequest,
-    ReviseFactRequest,
-    RecentMessagesRequest,
-    SearchRequest,
-)
 from .proactive import ProactiveEngine
 from .service import CompanionService
 
@@ -128,17 +118,11 @@ def _cmd_memory(service: CompanionService, proactive: ProactiveEngine, args: arg
 
 
 def _memory_search(service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace) -> None:
-    if service._memory_fallback is not None:
-        _print({"results": service._memory_fallback.search(args.query, args.limit)})
-    else:
-        _print({"results": service.memory.search(SearchRequest(args.query, args.limit)).results})
+    _print({"results": service._memory_fallback.search(args.query, args.limit)})
 
 
 def _memory_show(service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace) -> None:
-    if service._memory_fallback is not None:
-        result = service._memory_fallback.get(args.message_id)
-    else:
-        result = service.memory.get(GetMessageRequest(args.message_id)).message
+    result = service._memory_fallback.get(args.message_id)
     if result is None:
         print("message not found", file=sys.stderr)
         raise SystemExit(1)
@@ -146,10 +130,7 @@ def _memory_show(service: CompanionService, proactive: ProactiveEngine, args: ar
 
 
 def _memory_recent(service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace) -> None:
-    if service._memory_fallback is not None:
-        _print({"messages": service._memory_fallback.recent(limit=args.limit)})
-    else:
-        _print({"messages": service.memory.recent(RecentMessagesRequest("", "", args.limit)).messages})
+    _print({"messages": service._memory_fallback.recent(limit=args.limit)})
 
 
 def _memory_reindex(service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace) -> None:
@@ -192,15 +173,13 @@ def _cmd_evergreen(service: CompanionService, proactive: ProactiveEngine, args: 
 
 
 def _evergreen_list(service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace) -> None:
-    if service._evergreen_fallback is not None:
-        _print({"facts": service._evergreen_fallback.list_current(include_inactive=args.include_inactive, due_only=args.due_only, limit=args.limit)})
-        return
-    memory_provider = service.memory
     _print(
         {
-            "facts": memory_provider.list_current(
-                ListFactsRequest(args.include_inactive, args.due_only, args.limit)
-            ).facts
+            "facts": service._evergreen_fallback.list_current(
+                include_inactive=args.include_inactive,
+                due_only=args.due_only,
+                limit=args.limit,
+            )
         }
     )
 
@@ -208,22 +187,15 @@ def _evergreen_list(service: CompanionService, proactive: ProactiveEngine, args:
 def _evergreen_history(
     service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace
 ) -> None:
-    if service._evergreen_fallback is not None:
-        _print({"revisions": service._evergreen_fallback.history(args.fact_id)})
-        return
-    _print({"revisions": service.memory.history(FactHistoryRequest(args.fact_id)).revisions})
+    _print({"revisions": service._evergreen_fallback.history(args.fact_id)})
 
 
 def _evergreen_remember(
     service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace
 ) -> None:
-    if service._evergreen_fallback is not None:
-        _print({"fact": service._evergreen_fallback.remember(key=args.key, text=args.text, priority=args.priority, source_message_id=args.source_message_id, reason=args.reason, review_after=args.review_after, expires_at=args.expires_at, created_by="operator")})
-        return
-    memory_provider = service.memory
     _print(
         {
-            "fact": memory_provider.remember(RememberFactRequest(
+            "fact": service._evergreen_fallback.remember(
                 key=args.key,
                 text=args.text,
                 priority=args.priority,
@@ -232,7 +204,7 @@ def _evergreen_remember(
                 review_after=args.review_after,
                 expires_at=args.expires_at,
                 created_by="operator",
-            )).fact
+            )
         }
     )
 
@@ -257,28 +229,21 @@ def _evergreen_revise(
         revise_kwargs["expires_at"] = None
     elif args.expires_at is not None:
         revise_kwargs["expires_at"] = args.expires_at
-    if service._evergreen_fallback is not None:
-        _print({"fact": service._evergreen_fallback.revise(**revise_kwargs)})
-        return
-    _print({"fact": service.memory.revise(ReviseFactRequest(**revise_kwargs)).fact})
+    _print({"fact": service._evergreen_fallback.revise(**revise_kwargs)})
 
 
 def _evergreen_forget(
     service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace
 ) -> None:
-    if service._evergreen_fallback is not None:
-        _print({"fact": service._evergreen_fallback.forget(fact_id=args.fact_id, expected_revision=args.expected_revision, reason=args.reason, source_message_id=args.source_message_id, created_by="operator")})
-        return
-    memory_provider = service.memory
     _print(
         {
-            "fact": memory_provider.forget(ForgetFactRequest(
+            "fact": service._evergreen_fallback.forget(
                 fact_id=args.fact_id,
                 expected_revision=args.expected_revision,
                 reason=args.reason,
                 source_message_id=args.source_message_id,
                 created_by="operator",
-            )).fact
+            )
         }
     )
 

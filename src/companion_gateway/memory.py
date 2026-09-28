@@ -5,14 +5,11 @@ import json
 import re
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from .database import Database
 from .serialization import compact_json
 from .timeutil import isoformat, parse_time, utc_now
-
-if TYPE_CHECKING:
-    from .semantic import SemanticIndex
 
 
 def text_from_content(content: Any) -> str:
@@ -45,9 +42,8 @@ class StoredMessage:
 
 class MemoryStore:
 
-    def __init__(self, database: Database, semantic: SemanticIndex | None = None):
+    def __init__(self, database: Database):
         self.database = database
-        self.semantic = semantic
 
     def ensure_conversation(
         self,
@@ -191,35 +187,13 @@ class MemoryStore:
         exclude_ids: set[int] | None = None,
     ) -> list[dict[str, Any]]:
         exclude_ids = exclude_ids or set()
-        candidate_limit = limit
-        if self.semantic and self.semantic.enabled:
-            candidate_limit = max(limit, self.semantic.config.lexical_candidates)
-        rows = self._lexical_candidates(
-            query,
-            candidate_limit + len(exclude_ids) + 8,
-        )
-        rows = [row for row in rows if int(row["id"]) not in exclude_ids][:candidate_limit]
-        semantic_rows = (
-            self.semantic.semantic_candidates(
-                query,
-                max(limit, self.semantic.config.semantic_candidates),
-                exclude_ids,
-            )
-            if self.semantic and self.semantic.enabled
-            else []
-        )
-        if semantic_rows:
-            candidates = self._fuse_candidates(rows, semantic_rows, self.semantic.config.rrf_k)
-        else:
-            candidates = [
-                {"id": int(row["id"]), "rank": float(row["rank"]), "retrieval": "lexical"}
-                for row in rows
-            ]
+        rows = self._lexical_candidates(query, limit + len(exclude_ids) + 8)
+        rows = [row for row in rows if int(row["id"]) not in exclude_ids][:limit]
 
         results: list[dict[str, Any]] = []
         seen: set[int] = set()
-        for candidate in candidates:
-            hit_id = int(candidate["id"])
+        for row in rows:
+            hit_id = int(row["id"])
             if hit_id in exclude_ids or hit_id in seen:
                 continue
             hit = self.get(hit_id)
@@ -228,20 +202,13 @@ class MemoryStore:
             context = self._surrounding(hit["conversation_id"], hit_id, context_messages)
             for item in context:
                 seen.add(item["id"])
-            result = {
-                "hit_id": hit_id,
-                "rank": float(candidate["rank"]),
-                "messages": context,
-            }
-            if candidate.get("fusion_score") is not None:
-                result["retrieval"] = {
-                    "method": "hybrid",
-                    "fusion_score": candidate["fusion_score"],
-                    "lexical_rank": candidate.get("lexical_rank"),
-                    "semantic_rank": candidate.get("semantic_rank"),
-                    "semantic_similarity": candidate.get("semantic_similarity"),
+            results.append(
+                {
+                    "hit_id": hit_id,
+                    "rank": float(row["rank"]),
+                    "messages": context,
                 }
-            results.append(result)
+            )
             if len(results) >= limit:
                 break
         return results
@@ -267,41 +234,6 @@ class MemoryStore:
                     (f"%{token}%", limit),
                 ).fetchall()
         return list(rows)
-
-    @staticmethod
-    def _fuse_candidates(
-        lexical_rows: list[Any], semantic_rows: list[dict[str, Any]], rrf_k: int
-    ) -> list[dict[str, Any]]:
-        candidates: dict[int, dict[str, Any]] = {}
-        for position, row in enumerate(lexical_rows, start=1):
-            message_id = int(row["id"])
-            item = candidates.setdefault(
-                message_id,
-                {"id": message_id, "fusion_score": 0.0, "rank": float(row["rank"])},
-            )
-            item["fusion_score"] += 1.0 / (rrf_k + position)
-            item["lexical_rank"] = position
-        for position, row in enumerate(semantic_rows, start=1):
-            message_id = int(row["message_id"])
-            item = candidates.setdefault(
-                message_id,
-                {"id": message_id, "fusion_score": 0.0, "rank": 0.0},
-            )
-            item["fusion_score"] += 1.0 / (rrf_k + position)
-            item["semantic_rank"] = position
-            item["semantic_similarity"] = float(row["similarity"])
-        ordered = sorted(
-            candidates.values(),
-            key=lambda item: (
-                -float(item["fusion_score"]),
-                int(item.get("lexical_rank", 1_000_000)),
-                int(item.get("semantic_rank", 1_000_000)),
-                int(item["id"]),
-            ),
-        )
-        for item in ordered:
-            item["rank"] = -float(item["fusion_score"])
-        return ordered
 
     def _surrounding(self, conversation_id: int, hit_id: int, radius: int) -> list[dict[str, Any]]:
         radius = max(0, radius)

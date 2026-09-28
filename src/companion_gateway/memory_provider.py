@@ -9,36 +9,22 @@ import re
 import signal
 import subprocess
 import threading
+from collections.abc import Callable
+from dataclasses import asdict, is_dataclass
 from datetime import date, datetime
-from dataclasses import asdict, fields, is_dataclass
 from pathlib import Path
-from typing import Any, Callable, Type
+from typing import Any
 
 from .config import default_config_dir
 from .memory_plugin import (
-    _KEEP,
     BackfillIndexResult,
-    ConversationIdResult,
-    EnsureMessageChunksResult,
-    FactHistoryResult,
-    ForgetFactResult,
-    GetMessageResult,
     IndexStatusResult,
-    IngestMessageResult,
     IngestMessagesResult,
     InjectContextResult,
-    ListFactsResult,
     MatchPhraseResult,
-    MemoryContextResult,
+    MemoryPluginError,
     RebuildIndexResult,
     RebuildMemoryIndexResult,
-    RecallResult,
-    RememberFactResult,
-    RenderFactsResult,
-    ReviseFactResult,
-    SearchResult,
-    RecentMessagesResult,
-    MemoryPluginError,
 )
 
 logger = logging.getLogger("companion_gateway")
@@ -124,7 +110,7 @@ def _python_path(suite: Path) -> Path:
     return path
 
 
-def _load(config: Any) -> "_SuiteMemory":
+def _load(config: Any) -> _SuiteMemory:
     plugin = getattr(config, "memory_plugin", None)
     module = str(getattr(plugin, "module", "") or "").strip()
     if not module:
@@ -144,15 +130,11 @@ def _terminate(proc: subprocess.Popen[bytes]) -> None:
         proc.kill()
 
 
-_RESULTS: dict[str, Type[Any]] = {
-    "ingest": IngestMessageResult, "get": GetMessageResult, "conversation_id": ConversationIdResult,
-    "search": SearchResult, "context": MemoryContextResult, "recent": RecentMessagesResult,
-    "rebuild_index": RebuildMemoryIndexResult, "recall": RecallResult, "remember": RememberFactResult,
-    "list_current": ListFactsResult, "history": FactHistoryResult, "revise": ReviseFactResult,
-    "forget": ForgetFactResult, "render_facts": RenderFactsResult, "status": IndexStatusResult,
-    "backfill_once": BackfillIndexResult, "ensure_message_chunks": EnsureMessageChunksResult,
-    "rebuild_chunks": RebuildIndexResult, "match_phrase": MatchPhraseResult,
+_RESULTS: dict[str, type[Any]] = {
     "ingest_messages": IngestMessagesResult, "inject_context": InjectContextResult,
+    "status": IndexStatusResult, "backfill_once": BackfillIndexResult,
+    "rebuild_index": RebuildMemoryIndexResult, "rebuild_chunks": RebuildIndexResult,
+    "match_phrase": MatchPhraseResult,
 }
 
 
@@ -204,8 +186,6 @@ class _SuiteMemory:
             ident = self.next_id
             self.next_id += 1
             params = asdict(request) if is_dataclass(request) else {}
-            if method == "revise":
-                params = {k: v for k, v in params.items() if not (k in ("review_after", "expires_at") and v in (_KEEP, "_KEEP"))}
             payload = {"id": ident, "method": method, "params": _json_value({"request": params, "options": copy.deepcopy(self.options)})}
             try:
                 assert self.proc.stdin is not None
@@ -265,7 +245,6 @@ class MemoryProvider:
     def __init__(self, config: Any):
         self.config = config
         self.plugin: _SuiteMemory | None = None
-        self.fallback: Any = None
         try:
             self.plugin = _load(config)
         except Exception:
@@ -280,25 +259,6 @@ class MemoryProvider:
             raise AttributeError(name)
         def operation(request: Any = None, *args: Any, **kwargs: Any) -> Any:
             if self.plugin is None:
-                if self.fallback is not None:
-                    if args:
-                        return getattr(self.fallback, name)(request, *args, **kwargs)
-                    if kwargs:
-                        if request is not None:
-                            return getattr(self.fallback, name)(request, **kwargs)
-                        return getattr(self.fallback, name)(**kwargs)
-                    if name == "get":
-                        if isinstance(request, int):
-                            return self.fallback.get(request)
-                        return GetMessageResult(self.fallback.get(request))
-                    if name == "recent":
-                        if request is None:
-                            return self.fallback.recent()
-                        return RecentMessagesResult(self.fallback.recent(
-                            conversation_id=None, limit=request.limit,
-                            exclude_ids=set(request.exclude_ids)))
-                    if name == "search" and isinstance(request, str):
-                        return self.fallback.search(request)
                 return None
             return self.plugin.call(name, request)
         return operation
