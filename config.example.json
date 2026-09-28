@@ -47,7 +47,7 @@
     }
   },
   "memory_plugin": {
-    "module": "sqlite_memory",
+    "module": "",
     "mods_dir": "",
     "timeout_seconds": 15,
     "ingest_batch_size": 50,

@@ -1,6 +1,6 @@
 # Companion State Gateway API and integration
 
-The gateway stores raw conversation memory, persistent affect, evergreen facts, and proactive delivery decisions in one SQLite file. It does not own the persona or the model. You send it messages, ask for a context injection, then call your provider yourself or let the optional proxy call it for you.
+The gateway stores raw conversation memory, persistent affect, evergreen facts, and proactive delivery decisions in one SQLite file. It does not own the persona or the model. You send it messages, ask for a context injection, then call your provider yourself or let the optional proxy call it for you. Setting `storage.enabled` to `false` keeps the file but closes the message, memory, context, and evergreen routes.
 
 Base URL: `http://127.0.0.1:8765`. FastAPI serves the live schema at `/docs` and `/openapi.json` when auth is disabled; with `api_token_env` set, both are disabled.
 
@@ -15,7 +15,7 @@ The state API lives under `/state/v1/*`. The optional OpenAI-compatible proxy li
 | GET | `/state/v1/messages/{message_id}` | Read one stored message | 200, 401, 404 |
 | POST | `/state/v1/memory/search` | Search the archive with adjacent context | 200, 401 |
 | GET | `/state/v1/memory/{message_id}` | Read a message plus neighbors | 200, 401, 404 |
-| GET | `/state/v1/memory/index` | Report the derived semantic index | 200, 401 |
+| GET | `/state/v1/memory/index` | Report the message count and memory plugin index status | 200, 401 |
 | POST | `/state/v1/context` | Build the provider-neutral injection | 200, 401, 422 |
 | GET | `/state/v1/affect` | Read affect state and advance decay | 200, 401 |
 | POST | `/state/v1/evergreen/facts` | Remember a fact | 200, 401, 409, 422 |
@@ -28,6 +28,8 @@ The state API lives under `/state/v1/*`. The optional OpenAI-compatible proxy li
 | POST | `/state/v1/proactive/events/{event_id}/ack` | Acknowledge a leased event | 200, 401, 404, 409 |
 | GET | `/v1/models` | Proxy a model list to `upstream.base_url` | 503, upstream |
 | POST | `/v1/chat/completions` | Proxy chat completions and ingest the transcript | 503, 422, upstream |
+
+When `storage.enabled` is `false`, every message, memory, context, and evergreen route in the table returns `503 {"detail":"built-in message storage is disabled"}`. Affect, proactive, and health routes stay available. Re-enabling storage restores the routes and the stored rows remain on disk.
 
 `/docs` and `/openapi.json` carry request models, response schemas, and error shapes. Treat this page as the integration guide and the OpenAPI document as the field reference. JSON blocks below parse as written.
 

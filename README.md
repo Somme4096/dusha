@@ -1,11 +1,11 @@
 # Companion State Gateway
 
 
-`companion-gateway` is a Python API reference implementation of a combined memory, personality, and affect for LLM companions.
+`companion-gateway` is a Python API reference implementation that combines memory, personality, and affect for LLM companions.
 
-Essentially, it's a small FastAPI application with a completely configurable emotional system and a generic FTS5-Embedding hybrid memory structure combined. 
+The built-in SQLite store owns messages and evergreen facts, and core retrieval runs on lexical SQLite FTS5. A memory plugin can inject extra context and consume gateway-pushed message batches. 
 
-Every prompt, emotional vectors and their thresholds is completely customizable through JSON. 
+Every prompt, emotional vector, and threshold is configurable through JSON. 
 
 ## Quickstart
 
@@ -29,7 +29,7 @@ Success reports `"status": "ok"` and a passing `database` integrity check. If st
 
 ## How it works
 
-A user message reaches the gateway, which builds context from memory, personality, and affect state and returns it to your harness or model. The harness gets the reply through the gateway. A trusted decision plugin can select one emotion dimension to adjust per new user message. See [docs/configuration.md](docs/configuration.md#decision-plugins).
+A user message reaches the gateway, which builds context from memory, personality, and affect state and returns it to your harness or model. The harness gets the reply through the gateway. The built-in SQLite store owns messages and facts unless you set `storage.enabled` to false. A trusted memory plugin can inject extra context and receive message batches. A trusted decision plugin can select one emotion dimension to adjust per new user message. See [docs/configuration.md](docs/configuration.md).
 
 Build your harness plugin with the [API and integration guide](docs/api.md).
 

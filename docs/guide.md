@@ -43,7 +43,7 @@ Environment=COMPANION_GATEWAY_CONFIG=%h/.config/companion-gateway/config.json
 
 The drop-in loads after the unit, so its `Environment=` assignment wins and the service reads `config.json`.
 
-4. Prepare the optional secrets file. Skip this step when you use no upstream key, no embedding key, and no companion token. The `touch` command keeps an existing file's contents.
+4. Prepare the optional secrets file. Skip this step when you use no upstream key and no companion token. The `touch` command keeps an existing file's contents.
 
 ```sh
 touch ~/.config/companion-gateway/environment
@@ -55,7 +55,6 @@ The file holds only the keys you need. Config stores variable names, never value
 
 ```ini
 UPSTREAM_API_KEY=replace-me
-EMBEDDING_API_KEY=replace-me
 COMPANION_TOKEN=replace-with-a-long-random-value
 ```
 
@@ -112,7 +111,7 @@ The proxy uses a server-owned key when `upstream.api_key_env` is nonempty. It se
 
 ## Backup, restore, and troubleshoot
 
-Back up every user-authored file: the config file, the identity Markdown, custom prompts and emotions files, decision plugin directories under the mods directory, and the database.
+Back up every user-authored file: the config file, the identity Markdown, custom prompts and emotions files, plugin directories under the mods directory, and the database.
 
 Create a consistent live backup:
 
@@ -134,17 +133,18 @@ Common problems:
 
 - Startup fails with a missing config file: `--config` and `COMPANION_GATEWAY_CONFIG` treat a missing file as an error. Fix the path or drop the explicit setting.
 - Startup fails with a missing identity file: the configured `identity_prompt.path` does not exist or is not valid UTF-8. Correct the file or clear the path.
-- Hybrid search returns lexical results: the embedding endpoint is unreachable or misconfigured. Check `memory.embedding.base_url`, the model, and the key variable. `memory index status` reports `cooling_down` and `last_error`.
+- A memory plugin adds no context: the plugin is missing, failed to load, or returned an empty `inject_context`. Check the plugin log for `memory plugin context injection failed` or `failed to initialize memory plugin`, then confirm `memory_plugin.module` and the mods directory. Core recent and evergreen memory still works.
+- Message and fact routes return `503`: `storage.enabled` is `false`. Set it back to `true` and restart. The stored rows were never deleted.
 - Auth fails at startup or on request: `api_token_env` names an unset or empty variable (startup error), or a data or model request lacks a matching `X-Companion-Token` header (401). Export the variable, or clear `api_token_env` only when you intend to disable auth.
 - A second process causes races or duplicate events: two processes share one `state.sqlite3`. Run one process per database.
 
 ## Deployment limits
 
-The supported model is a single local process with one SQLite file on a persistent volume. FTS5 and the sqlite-vec extension run in-process. No hosted runtime has been tested, and cloud portability is unverified. Serverless workers and ephemeral container disks lose SQLite state on sleep or restart. Treat a persistent-volume host as the baseline.
+The supported model is a single local process with one SQLite file on a persistent volume, with SQLite FTS5 running in-process. A memory plugin runs as a child process with its own `uv` environment. No hosted runtime has been tested, and cloud portability is unverified. Serverless workers and ephemeral container disks lose SQLite state on sleep or restart. Treat a persistent-volume host as the baseline.
 
 ## Related documentation
 
-- [configuration.md](configuration.md): config file, identity and emotion files, retrieval, embeddings, proactive scheduling.
+- [configuration.md](configuration.md): config file, identity and emotion files, storage, retrieval, and proactive scheduling.
 - [api.md](api.md): HTTP endpoints and schemas.
 - [README.md](../README.md): project overview and quickstart.
 - [third-party-notices.md](../third-party-notices.md): license terms.

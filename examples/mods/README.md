@@ -12,22 +12,20 @@ must not assume credentials exist in inherited environment variables.
 
 ## Memory plugins
 
-Memory plugins use `memory_plugin.module` and `memory_plugin.mods_dir`. Every
-exported operation has the Python contract `fn(request, options)`. See the
+Memory plugins use `memory_plugin.module` and `memory_plugin.mods_dir`. `module`
+defaults to empty, which disables the plugin. Every exported operation has the
+Python contract `fn(request, options)`. The gateway stores messages and
+evergreen facts itself, pushes committed message batches to the plugin with
+scheduled catch-up, and calls the plugin for context injection. See the
 [project README](https://github.com/Somme4096/sophia) for the public API.
 
-The SQLite example is available in
-[`sqlite-memory`](sqlite-memory/README.md). Install it by copying the plugin
+The [EverOS plugin](everos-memory/README.md) is the shipped memory plugin. It
+owns the EverOS sidecar delivery path, the outbox, and episodic extraction, and
+it writes only `everos_*` extension tables alongside the core database. It
+mirrors `user` and `assistant` messages and never creates or migrates core
+message, fact, affect, or proactive tables. Install it by copying the plugin
 directory into the configured mods directory. The gateway creates its isolated
 `uv` environment from the plugin's `pyproject.toml` and `uv.lock`.
-
-The EverOS archival mirror is available in
-[`everos-memory`](everos-memory/README.md). It stores the authoritative archive
-in local SQLite, keeps Sophia search local, and queues delivery when the local
-EverOS server is unavailable. Only `user`, `assistant`, and `tool` messages are
-mirrored. Both stores contain plaintext and need separate backups. See the
-[Sophia project README](https://github.com/Somme4096/sophia) for public API
-descriptions.
 
 ## `laya`
 
