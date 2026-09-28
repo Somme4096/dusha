@@ -30,7 +30,10 @@ _ERROR_DOCS = {
     404: {"model": _schema.ErrorDetail, "description": "https://github.com/Somme4096/sophia"},
     409: {"model": _schema.ErrorDetail, "description": "https://github.com/Somme4096/sophia"},
     422: {"model": _schema.ErrorDetail, "description": "https://github.com/Somme4096/sophia"},
+    503: {"model": _schema.ErrorDetail, "description": "https://github.com/Somme4096/sophia"},
 }
+
+_STORAGE_DISABLED = "built-in message storage is disabled"
 
 def _raise_http(
     error: Exception,
@@ -133,12 +136,17 @@ def create_state_router(service: CompanionService, proactive: ProactiveEngine, a
     evergreen_store: EvergreenStore | None = service._evergreen_fallback
     semantic_index: SemanticIndex | None = service._semantic_fallback
 
+    async def require_storage() -> None:
+        if not service.storage_enabled:
+            raise HTTPException(status_code=503, detail=_STORAGE_DISABLED)
+
     @router.get(
         "/state/v1/memory/index",
         tags=["state"],
-        dependencies=[Depends(authorized)],
+        dependencies=[Depends(authorized), Depends(require_storage)],
         responses={
             401: _ERROR_DOCS[401],
+            503: _ERROR_DOCS[503],
             200: {"model": _schema.MemoryIndexStatus, "description": "https://github.com/Somme4096/sophia"},
         },
     )
@@ -153,8 +161,8 @@ def create_state_router(service: CompanionService, proactive: ProactiveEngine, a
         tags=["state"],
         response_model=_schema.IngestResponse,
         summary="Ingest one message",
-        dependencies=[Depends(authorized)],
-        responses={401: _ERROR_DOCS[401], 422: _ERROR_DOCS[422]},
+        dependencies=[Depends(authorized), Depends(require_storage)],
+        responses={401: _ERROR_DOCS[401], 422: _ERROR_DOCS[422], 503: _ERROR_DOCS[503]},
     )
     async def ingest_message(body: MessageInput) -> dict[str, Any]:
         return await _service_call(
@@ -172,10 +180,11 @@ def create_state_router(service: CompanionService, proactive: ProactiveEngine, a
     @router.get(
         "/state/v1/messages/{message_id}",
         tags=["state"],
-        dependencies=[Depends(authorized)],
+        dependencies=[Depends(authorized), Depends(require_storage)],
         responses={
             401: _ERROR_DOCS[401],
             404: _ERROR_DOCS[404],
+            503: _ERROR_DOCS[503],
             200: {"model": _schema.MessageResponse, "description": "https://github.com/Somme4096/sophia"},
         },
     )
@@ -194,8 +203,8 @@ def create_state_router(service: CompanionService, proactive: ProactiveEngine, a
         tags=["state"],
         response_model=_schema.SearchResponse,
         summary="Search archived memory",
-        dependencies=[Depends(authorized)],
-        responses={401: _ERROR_DOCS[401]},
+        dependencies=[Depends(authorized), Depends(require_storage)],
+        responses={401: _ERROR_DOCS[401], 503: _ERROR_DOCS[503]},
     )
     async def search_memory(body: SearchInput) -> dict[str, Any]:
         if memory_store is not None:
@@ -215,8 +224,8 @@ def create_state_router(service: CompanionService, proactive: ProactiveEngine, a
         "/state/v1/memory/{message_id}",
         tags=["state"],
         response_model=_schema.MemoryContextResponse,
-        dependencies=[Depends(authorized)],
-        responses={401: _ERROR_DOCS[401], 404: _ERROR_DOCS[404]},
+        dependencies=[Depends(authorized), Depends(require_storage)],
+        responses={401: _ERROR_DOCS[401], 404: _ERROR_DOCS[404], 503: _ERROR_DOCS[503]},
     )
     async def memory_context(
         message_id: int,
@@ -238,8 +247,8 @@ def create_state_router(service: CompanionService, proactive: ProactiveEngine, a
         tags=["state"],
         response_model=_schema.FactEnvelope,
         summary="Remember an evergreen fact",
-        dependencies=[Depends(authorized)],
-        responses={401: _ERROR_DOCS[401], 409: _ERROR_DOCS[409], 422: _ERROR_DOCS[422]},
+        dependencies=[Depends(authorized), Depends(require_storage)],
+        responses={401: _ERROR_DOCS[401], 409: _ERROR_DOCS[409], 422: _ERROR_DOCS[422], 503: _ERROR_DOCS[503]},
     )
     async def remember_fact(body: RememberFactInput) -> dict[str, Any]:
         function = (lambda request: evergreen_store.remember(**request)) if evergreen_store is not None else memory_provider.remember
@@ -264,8 +273,8 @@ def create_state_router(service: CompanionService, proactive: ProactiveEngine, a
         "/state/v1/evergreen/facts",
         tags=["state"],
         response_model=_schema.FactsEnvelope,
-        dependencies=[Depends(authorized)],
-        responses={401: _ERROR_DOCS[401]},
+        dependencies=[Depends(authorized), Depends(require_storage)],
+        responses={401: _ERROR_DOCS[401], 503: _ERROR_DOCS[503]},
     )
     async def list_facts(
         include_inactive: bool = False,
@@ -282,8 +291,8 @@ def create_state_router(service: CompanionService, proactive: ProactiveEngine, a
         "/state/v1/evergreen/facts/{fact_id}/history",
         tags=["state"],
         response_model=_schema.RevisionsEnvelope,
-        dependencies=[Depends(authorized)],
-        responses={401: _ERROR_DOCS[401], 404: _ERROR_DOCS[404]},
+        dependencies=[Depends(authorized), Depends(require_storage)],
+        responses={401: _ERROR_DOCS[401], 404: _ERROR_DOCS[404], 503: _ERROR_DOCS[503]},
     )
     async def fact_history(fact_id: str) -> dict[str, Any]:
         function = evergreen_store.history if evergreen_store is not None else memory_provider.history
@@ -301,12 +310,13 @@ def create_state_router(service: CompanionService, proactive: ProactiveEngine, a
         tags=["state"],
         response_model=_schema.FactEnvelope,
         summary="Revise an evergreen fact",
-        dependencies=[Depends(authorized)],
+        dependencies=[Depends(authorized), Depends(require_storage)],
         responses={
             401: _ERROR_DOCS[401],
             404: _ERROR_DOCS[404],
             409: _ERROR_DOCS[409],
             422: _ERROR_DOCS[422],
+            503: _ERROR_DOCS[503],
         },
     )
     async def revise_fact(fact_id: str, body: ReviseFactInput) -> dict[str, Any]:
@@ -338,12 +348,13 @@ def create_state_router(service: CompanionService, proactive: ProactiveEngine, a
         "/state/v1/evergreen/facts/{fact_id}/forget",
         tags=["state"],
         response_model=_schema.FactEnvelope,
-        dependencies=[Depends(authorized)],
+        dependencies=[Depends(authorized), Depends(require_storage)],
         responses={
             401: _ERROR_DOCS[401],
             404: _ERROR_DOCS[404],
             409: _ERROR_DOCS[409],
             422: _ERROR_DOCS[422],
+            503: _ERROR_DOCS[503],
         },
     )
     async def forget_fact(fact_id: str, body: ForgetFactInput) -> dict[str, Any]:
@@ -367,8 +378,8 @@ def create_state_router(service: CompanionService, proactive: ProactiveEngine, a
         tags=["state"],
         response_model=_schema.ContextResponse,
         summary="Build provider-neutral context",
-        dependencies=[Depends(authorized)],
-        responses={401: _ERROR_DOCS[401], 422: _ERROR_DOCS[422]},
+        dependencies=[Depends(authorized), Depends(require_storage)],
+        responses={401: _ERROR_DOCS[401], 422: _ERROR_DOCS[422], 503: _ERROR_DOCS[503]},
     )
     async def context(body: ContextInput) -> dict[str, Any]:
         return await _service_call(

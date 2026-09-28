@@ -34,6 +34,7 @@
     "semantic_candidates": 24,
     "rrf_k": 60,
     "semantic_min_similarity": 0.3,
+    "plugin_context_max_chars": 3000,
     "embedding": {
       "base_url": "",
       "api_key_env": "EMBEDDING_API_KEY",
@@ -49,7 +50,12 @@
     "module": "sqlite_memory",
     "mods_dir": "",
     "timeout_seconds": 15,
+    "ingest_batch_size": 50,
+    "ingest_backfill_interval_seconds": 30,
     "options": {}
+  },
+  "storage": {
+    "enabled": true
   },
   "evergreen": {
     "enabled": true,

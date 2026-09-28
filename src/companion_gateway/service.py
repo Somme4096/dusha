@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import threading
 from datetime import datetime
 from typing import Any
 
@@ -11,43 +13,50 @@ from .context import ContextComposer
 from .database import Database
 from .decision import DecisionProvider
 from .memory_plugin import (
-    ConversationIdRequest,
     EnsureMessageChunksRequest,
-    GetMessageRequest,
-    IngestMessageRequest,
+    IngestMessagesRequest,
+    InjectContextRequest,
     MatchPhraseRequest,
-    RecentMessagesRequest,
-    RenderFactsRequest,
-    SearchRequest,
-    GetMessageResult,
-    ConversationIdResult,
-    RecentMessagesResult,
-    SearchResult,
-    RenderFactsResult,
 )
 from .memory_provider import MemoryProvider
 from .memory import MemoryStore
 from .semantic import SemanticIndex
 from .evergreen import EvergreenStore
-from .timeutil import parse_time
+from .serialization import compact_json
+from .timeutil import isoformat, parse_time, utc_now
+
+logger = logging.getLogger("companion_gateway")
+
+_PLUGIN_BATCH_MAX_BYTES = 512 * 1024
+_PLUGIN_CONTEXT_MAX_RECORDS = 50
+_PLUGIN_CATCH_UP_BATCHES = 20
+
+
+class StorageUnavailableError(RuntimeError):
+    pass
 
 
 class CompanionService:
     def __init__(self, config: AppConfig):
         self.config = config
+        self.storage_enabled = bool(config.storage.enabled)
         self.database = Database(config.database_path)
         self.memory = MemoryProvider(config)
         self.semantic = None
         self._memory_fallback = None
         self._evergreen_fallback = None
         self._semantic_fallback = None
-        if not self.memory.enabled:
-            self.semantic = SemanticIndex(self.database, config.memory)
-            self._semantic_fallback = self.semantic
-            self._memory_fallback = MemoryStore(self.database, self.semantic)
+        if self.storage_enabled:
+            if not self.memory.enabled:
+                self.semantic = SemanticIndex(self.database, config.memory)
+                self._semantic_fallback = self.semantic
+            self._memory_fallback = MemoryStore(self.database, self._semantic_fallback)
             self._evergreen_fallback = EvergreenStore(self.database)
         self.memory.fallback = self._memory_fallback
         self.evergreen = self._evergreen_fallback
+        self._ingest_lock = threading.Lock()
+        self._plugin_name = str(getattr(config.memory_plugin, "module", "") or "").strip()
+        self._plugin_batch_size = max(1, min(int(config.memory_plugin.ingest_batch_size), 500))
         self.prompts = _prompts.resolve_prompts(config.prompts)
         self.prompts_fingerprint = _prompts.fingerprint(self.prompts)
         self.identity_text, self.identity_revision = _identity.load_identity(
@@ -61,7 +70,9 @@ class CompanionService:
             prompts=self.prompts,
             decision_increment=config.decision.increment,
         )
-        self.phrase_matcher = self._phrase_matcher if self.memory.enabled else None
+        self.phrase_matcher = (
+            self._phrase_matcher if (self.memory.enabled and self.storage_enabled) else None
+        )
         self.composer = ContextComposer(
             prompts=self.prompts,
             budget=config.memory.injection_max_chars,
@@ -70,7 +81,12 @@ class CompanionService:
             identity_revision=self.identity_revision,
             emotions_fingerprint=self.affect.emotions_fingerprint,
             prompts_fingerprint=self.prompts_fingerprint,
+            plugin_context_max_chars=config.memory.plugin_context_max_chars,
         )
+
+    def _require_storage(self) -> None:
+        if not self.storage_enabled:
+            raise StorageUnavailableError("built-in message storage is disabled")
 
     def ingest_message(
         self,
@@ -84,70 +100,43 @@ class CompanionService:
         occurred_at: str | datetime | None = None,
         source_payload: Any | None = None,
     ) -> dict[str, Any]:
-        request = IngestMessageRequest(
-                harness=harness,
-                conversation_id=conversation_id,
-                role=role,
-                content=content,
-                route=route,
-                external_id=external_id,
-                occurred_at=occurred_at,
-                source_payload=source_payload,
-            )
-        message = self._memory_call(
-            "ingest", request,
-            lambda: self._memory_fallback.ingest(
-                harness=request.harness, conversation_id=request.conversation_id, role=request.role,
-                content=request.content, route=request.route, external_id=request.external_id,
-                occurred_at=request.occurred_at, source_payload=request.source_payload,
-            ),
+        self._require_storage()
+        message = self._memory_fallback.ingest(
+            harness=harness,
+            conversation_id=conversation_id,
+            role=role,
+            content=content,
+            route=route,
+            external_id=external_id,
+            occurred_at=occurred_at,
+            source_payload=source_payload,
         )
-        if message is not None and not message.duplicate:
+        if not message.duplicate:
             if self.memory.enabled:
                 self._memory_call(
                     "ensure_message_chunks", EnsureMessageChunksRequest(message.id),
-                    lambda: self._semantic_fallback.ensure_message_chunks(message.id),
+                    lambda: (
+                        self._semantic_fallback.ensure_message_chunks(message.id)
+                        if self._semantic_fallback is not None else None
+                    ),
                 )
-            else:
+            elif self._semantic_fallback is not None:
                 self._semantic_fallback.ensure_message_chunks(message.id)
-        if not self.memory.enabled:
-            stored_message = self._memory_fallback.get(message.id)
-            affect = None
-            if role == "user" and stored_message is not None and not message.duplicate:
-                message_time = parse_time(stored_message["occurred_at"])
-                affect = self.affect.record_user_message(
-                    message=stored_message["text"], source_message_id=message.id,
-                    decider=self.decision.evaluate if self.decision.enabled else None,
-                    instruction=str(self.prompts["decision_instruction"]), now=message_time,
-                    phrase_matcher=self.phrase_matcher,
-                )
-            return {"id": message.id, "duplicate": message.duplicate,
-                    "conversation_id": message.conversation_id, "sha256": message.sha256,
-                    "affect": affect}
         affect = None
         if role == "user" and not message.duplicate:
-            stored_result = self._memory_call(
-                "get", GetMessageRequest(message.id),
-                lambda: GetMessageResult(self._memory_fallback.get(message.id)),
-            )
-            stored_message = stored_result.message
-            if stored_message is None:
-                return {
-                    "id": message.id,
-                    "duplicate": message.duplicate,
-                    "conversation_id": message.conversation_id,
-                    "sha256": message.sha256,
-                    "affect": None,
-                }
-            message_time = parse_time(stored_message["occurred_at"])
-            affect = self.affect.record_user_message(
-                message=stored_message["text"],
-                source_message_id=message.id,
-                decider=self.decision.evaluate if self.decision.enabled else None,
-                instruction=str(self.prompts["decision_instruction"]),
-                now=message_time,
-                phrase_matcher=self.phrase_matcher,
-            )
+            stored_message = self._memory_fallback.get(message.id)
+            if stored_message is not None:
+                message_time = parse_time(stored_message["occurred_at"])
+                affect = self.affect.record_user_message(
+                    message=stored_message["text"],
+                    source_message_id=message.id,
+                    decider=self.decision.evaluate if self.decision.enabled else None,
+                    instruction=str(self.prompts["decision_instruction"]),
+                    now=message_time,
+                    phrase_matcher=self.phrase_matcher,
+                )
+        if not message.duplicate:
+            self._push_plugin_batch()
         return {
             "id": message.id,
             "duplicate": message.duplicate,
@@ -165,47 +154,25 @@ class CompanionService:
         exclude_message_ids: set[int] | None = None,
         include_recent: bool = True,
     ) -> dict[str, Any]:
+        self._require_storage()
         excluded = exclude_message_ids or set()
         internal_conversation = None
         if harness and conversation_id:
-            conversation_result = self._memory_call(
-                "conversation_id", ConversationIdRequest(harness, conversation_id),
-                lambda: ConversationIdResult(self._memory_fallback.conversation_id(harness, conversation_id)),
-            )
-            internal_conversation = conversation_result.conversation_id
+            internal_conversation = self._memory_fallback.conversation_id(harness, conversation_id)
 
-        if not self.memory.enabled:
-            recent = self._memory_fallback.recent(
-                conversation_id=internal_conversation, limit=self.config.memory.recent_messages,
-                exclude_ids=excluded,
-            )
-            hits = self._memory_fallback.search(
-                query, self.config.memory.search_hits, self.config.memory.context_messages, excluded | {item["id"] for item in recent}
-            ) if query.strip() else []
-        else:
-            recent_result = self._memory_call("recent", RecentMessagesRequest(
-                harness=harness,
-                conversation_id=conversation_id,
-                limit=self.config.memory.recent_messages,
-                exclude_ids=tuple(excluded),
-            ), lambda: RecentMessagesResult(self._memory_fallback.recent(
-                conversation_id=internal_conversation, limit=self.config.memory.recent_messages,
-                exclude_ids=excluded,
-            )))
-            recent = recent_result.messages
+        recent = self._memory_fallback.recent(
+            conversation_id=internal_conversation,
+            limit=self.config.memory.recent_messages,
+            exclude_ids=excluded,
+        )
         recent_ids = {item["id"] for item in recent}
-        hits = hits if not self.memory.enabled else (
-            self._memory_call(
-                "search", SearchRequest(
-                    query=query,
-                    limit=self.config.memory.search_hits,
-                    context_messages=self.config.memory.context_messages,
-                    exclude_ids=tuple(excluded | recent_ids),
-                ), lambda: SearchResult(self._memory_fallback.search(
-                    query, self.config.memory.search_hits, self.config.memory.context_messages,
-                    excluded | recent_ids,
-                ))
-            ).results
+        hits = (
+            self._memory_fallback.search(
+                query,
+                self.config.memory.search_hits,
+                self.config.memory.context_messages,
+                excluded | recent_ids,
+            )
             if query.strip()
             else []
         )
@@ -230,32 +197,19 @@ class CompanionService:
         evergreen_facts: list[dict[str, Any]] = []
         if self.config.evergreen.enabled:
             evergreen = self.prompts["evergreen"]
-            if not self.memory.enabled:
-                _, evergreen_facts = self._evergreen_fallback.render(
-                    self.config.evergreen.max_items, self.config.evergreen.max_chars,
-                    open_delimiter=evergreen["open_delimiter"], close_delimiter=evergreen["close_delimiter"],
-                )
-            else:
-                evergreen_facts = self._memory_call(
-                    "render_facts",
-                RenderFactsRequest(
-                    max_items=self.config.evergreen.max_items,
-                    max_chars=self.config.evergreen.max_chars,
-                    open_delimiter=evergreen["open_delimiter"],
-                    close_delimiter=evergreen["close_delimiter"],
-                ), lambda: RenderFactsResult(
-                    *self._evergreen_fallback.render(
-                        self.config.evergreen.max_items, self.config.evergreen.max_chars,
-                        open_delimiter=evergreen["open_delimiter"],
-                        close_delimiter=evergreen["close_delimiter"],
-                    )
-                )
-                ).facts
+            _, evergreen_facts = self._evergreen_fallback.render(
+                self.config.evergreen.max_items,
+                self.config.evergreen.max_chars,
+                open_delimiter=evergreen["open_delimiter"],
+                close_delimiter=evergreen["close_delimiter"],
+            )
+        plugin_context = self._plugin_context(query, harness, conversation_id)
         composed = self.composer.compose(
             affect_snapshot=affect_snapshot,
             affect_text=affect_text,
             evergreen_facts=evergreen_facts,
             session_records=records,
+            plugin_context=plugin_context,
         )
         return {
             "injection": composed["injection"],
@@ -264,6 +218,143 @@ class CompanionService:
             "records": composed["records"],
             "search_hits": hits,
             "context": composed["context"],
+        }
+
+    def _plugin_context(
+        self, query: str, harness: str, conversation_id: str
+    ) -> dict[str, Any] | None:
+        if not (self.storage_enabled and self.memory.enabled):
+            return None
+        cap = int(self.config.memory.plugin_context_max_chars)
+        if cap <= 0:
+            return None
+        try:
+            result = self.memory.inject_context(
+                InjectContextRequest(query=query, scope=conversation_id or harness or "", max_chars=cap)
+            )
+        except Exception:
+            logger.warning("memory plugin context injection failed")
+            return None
+        if result is None:
+            return None
+        return self._normalize_plugin_context(result, cap)
+
+    @staticmethod
+    def _normalize_plugin_context(result: Any, cap: int) -> dict[str, Any] | None:
+        text = result.text if isinstance(getattr(result, "text", None), str) else ""
+        if len(text) > cap:
+            text = text[:cap]
+        records: list[dict[str, Any]] = []
+        remaining = max(0, cap - len(text))
+        for item in list(getattr(result, "records", None) or [])[:_PLUGIN_CONTEXT_MAX_RECORDS]:
+            if not isinstance(item, dict):
+                continue
+            source = item.get("source")
+            body = item.get("text")
+            if not isinstance(source, str) or not isinstance(body, str):
+                continue
+            body = body[:remaining]
+            if not body:
+                break
+            records.append({"source": source[:200], "text": body})
+            remaining -= len(body)
+        if not text and not records:
+            return None
+        return {"source": "memory_plugin", "text": text, "records": records}
+
+    def _plugin_cursor(self, db: Any) -> int:
+        row = db.execute(
+            "SELECT last_acknowledged_id FROM plugin_ingest_state WHERE plugin=?",
+            (self._plugin_name,),
+        ).fetchone()
+        return int(row["last_acknowledged_id"]) if row else 0
+
+    def _plugin_batch(self, cursor: int) -> list[dict[str, Any]]:
+        with self.database.connect() as db:
+            rows = db.execute(
+                """SELECT m.id, m.conversation_id, m.role, m.text, m.occurred_at,
+                          m.ingested_at, m.sha256, c.harness,
+                          c.external_id AS external_conversation_id
+                   FROM messages m JOIN conversations c ON c.id=m.conversation_id
+                   WHERE m.id > ? AND m.role IN ('user','assistant')
+                     AND m.occurred_at > '1970-01-01T00:00:00+00:00'
+                   ORDER BY m.id ASC LIMIT ?""",
+                (cursor, self._plugin_batch_size),
+            ).fetchall()
+        payload: list[dict[str, Any]] = []
+        for row in rows:
+            candidate = payload + [dict(row)]
+            if payload and len(compact_json(candidate)) > _PLUGIN_BATCH_MAX_BYTES:
+                break
+            payload.append(dict(row))
+        return payload
+
+    def _push_plugin_batch_locked(self) -> dict[str, Any]:
+        if not (self.storage_enabled and self.memory.enabled and self._plugin_name):
+            return {"skipped": True}
+        with self.database.connect() as db:
+            cursor = self._plugin_cursor(db)
+        batch = self._plugin_batch(cursor)
+        if not batch:
+            return {"cursor": cursor, "pushed": 0, "acknowledged": False}
+        try:
+            result = self.memory.ingest_messages(IngestMessagesRequest(messages=tuple(batch)))
+        except Exception:
+            logger.warning("memory plugin message ingestion failed")
+            return {"cursor": cursor, "pushed": len(batch), "acknowledged": False}
+        highest = getattr(result, "highest_id", None)
+        ids = {int(item["id"]) for item in batch}
+        if (
+            isinstance(highest, bool)
+            or not isinstance(highest, int)
+            or highest not in ids
+            or highest <= cursor
+        ):
+            logger.warning("memory plugin returned an invalid ingestion acknowledgement")
+            return {"cursor": cursor, "pushed": len(batch), "acknowledged": False}
+        with self.database.connect() as db:
+            db.execute(
+                """INSERT INTO plugin_ingest_state(plugin, last_acknowledged_id, updated_at)
+                   VALUES(?,?,?)
+                   ON CONFLICT(plugin) DO UPDATE SET
+                     last_acknowledged_id=excluded.last_acknowledged_id,
+                     updated_at=excluded.updated_at""",
+                (self._plugin_name, int(highest), isoformat(utc_now())),
+            )
+        return {"cursor": int(highest), "pushed": len(batch), "acknowledged": True}
+
+    def _push_plugin_batch(self) -> dict[str, Any] | None:
+        if not (self.storage_enabled and self.memory.enabled and self._plugin_name):
+            return None
+        with self._ingest_lock:
+            return self._push_plugin_batch_locked()
+
+    def catch_up_plugin(self) -> dict[str, Any]:
+        if not (self.storage_enabled and self.memory.enabled and self._plugin_name):
+            return {"skipped": True}
+        pushed = 0
+        cursor = 0
+        acknowledged = False
+        pending = False
+        with self._ingest_lock:
+            for _ in range(_PLUGIN_CATCH_UP_BATCHES):
+                result = self._push_plugin_batch_locked()
+                cursor = int(result.get("cursor", cursor))
+                if result.get("acknowledged"):
+                    pushed += int(result.get("pushed", 0))
+                    acknowledged = True
+                    continue
+                pending = bool(result.get("pushed"))
+                break
+        if acknowledged:
+            logger.info("memory plugin ingestion acknowledged through id %s", cursor)
+        elif pending:
+            logger.warning("memory plugin ingestion backlog pending")
+        return {
+            "cursor": cursor,
+            "pushed": pushed,
+            "acknowledged": acknowledged,
+            "pending": pending,
         }
 
     @staticmethod

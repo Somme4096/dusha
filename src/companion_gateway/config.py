@@ -21,11 +21,14 @@ _MEMORY = _DEFAULTS["memory"]
 _EMBEDDING = _MEMORY["embedding"]
 _EVERGREEN = _DEFAULTS["evergreen"]
 _DECISION = _DEFAULTS["decision"]
+_STORAGE = _DEFAULTS["storage"]
 _MEMORY_PLUGIN = _DEFAULTS.get("memory_plugin", {
     "module": "",
     "options": {},
     "mods_dir": "",
     "timeout_seconds": 15.0,
+    "ingest_batch_size": 50,
+    "ingest_backfill_interval_seconds": 30,
 })
 _AFFECT_KNOBS = _EMOTIONS["affect"]
 _PROACTIVE_EMOTIONAL = _EMOTIONS["proactive"]
@@ -88,6 +91,7 @@ class MemoryConfig:
     semantic_candidates: int = _MEMORY["semantic_candidates"]
     rrf_k: int = _MEMORY["rrf_k"]
     semantic_min_similarity: float = _MEMORY["semantic_min_similarity"]
+    plugin_context_max_chars: int = _MEMORY["plugin_context_max_chars"]
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
 
 
@@ -96,6 +100,11 @@ class EvergreenConfig:
     enabled: bool = _EVERGREEN["enabled"]
     max_items: int = _EVERGREEN["max_items"]
     max_chars: int = _EVERGREEN["max_chars"]
+
+
+@dataclass(slots=True)
+class StorageConfig:
+    enabled: bool = _STORAGE["enabled"]
 
 
 @dataclass(slots=True)
@@ -146,6 +155,8 @@ class MemoryPluginConfig:
     options: dict[str, Any] = field(default_factory=lambda: dict(_MEMORY_PLUGIN["options"]))
     mods_dir: str = _MEMORY_PLUGIN["mods_dir"]
     timeout_seconds: float = _MEMORY_PLUGIN["timeout_seconds"]
+    ingest_batch_size: int = _MEMORY_PLUGIN["ingest_batch_size"]
+    ingest_backfill_interval_seconds: int = _MEMORY_PLUGIN["ingest_backfill_interval_seconds"]
 
     def __post_init__(self) -> None:
         value = self.timeout_seconds
@@ -155,6 +166,12 @@ class MemoryPluginConfig:
         if not math.isfinite(number) or number <= 0:
             raise ValueError("memory_plugin.timeout_seconds must be a finite positive number")
         self.timeout_seconds = number
+        batch = self.ingest_batch_size
+        if isinstance(batch, bool) or not isinstance(batch, int) or not 1 <= batch <= 500:
+            raise ValueError("memory_plugin.ingest_batch_size must be an integer between 1 and 500")
+        interval = self.ingest_backfill_interval_seconds
+        if isinstance(interval, bool) or not isinstance(interval, int) or interval < 1:
+            raise ValueError("memory_plugin.ingest_backfill_interval_seconds must be a positive integer")
 
 
 @dataclass(slots=True)
@@ -204,10 +221,15 @@ class AppConfig:
     upstream: UpstreamConfig = field(default_factory=UpstreamConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     evergreen: EvergreenConfig = field(default_factory=EvergreenConfig)
+    storage: StorageConfig = field(default_factory=StorageConfig)
     affect: AffectConfig = field(default_factory=lambda: AffectConfig())
     proactive: ProactiveConfig = field(default_factory=lambda: ProactiveConfig())
     decision: DecisionConfig = field(default_factory=lambda: DecisionConfig())
     memory_plugin: MemoryPluginConfig = field(default_factory=lambda: MemoryPluginConfig())
+
+    def __post_init__(self) -> None:
+        if self.memory_plugin.module and not self.storage.enabled:
+            raise ValueError("memory_plugin.module requires storage.enabled")
 
     @property
     def database_path(self) -> Path:
@@ -361,6 +383,7 @@ def _app_config_from_raw(raw: dict[str, Any], source_dir: Path) -> AppConfig:
         api_openai=_strict_section(ApiOpenAIConfig, raw.get("api_openai"), "api_openai"),
         memory=_memory_section(raw.get("memory")),
         evergreen=_strict_section(EvergreenConfig, raw.get("evergreen"), "evergreen"),
+        storage=_strict_section(StorageConfig, raw.get("storage"), "storage"),
         affect=affect,
         proactive=_strict_section(ProactiveConfig, raw.get("proactive"), "proactive"),
         decision=decision,
@@ -417,6 +440,7 @@ def _validate_packaged_defaults() -> None:
     _strict_section(ApiOpenAIConfig, _DEFAULTS["api_openai"], "packaged defaults api_openai")
     _memory_section(_DEFAULTS["memory"])
     _strict_section(EvergreenConfig, _DEFAULTS["evergreen"], "packaged defaults evergreen")
+    _strict_section(StorageConfig, _DEFAULTS["storage"], "packaged defaults storage")
     _strict_section(ProactiveConfig, _DEFAULTS["proactive"], "packaged defaults proactive")
     _strict_section(DecisionConfig, _DEFAULTS["decision"], "packaged defaults decision")
     _strict_section(

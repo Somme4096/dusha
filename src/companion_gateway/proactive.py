@@ -50,6 +50,8 @@ class ProactiveEngine:
         current = now or utc_now()
         if not self.rules.enabled or self._quiet(current):
             return None
+        if not self.config.storage.enabled:
+            return None
         state = self.service.affect.status(current)
         if not state["last_user_message_at"]:
             return None

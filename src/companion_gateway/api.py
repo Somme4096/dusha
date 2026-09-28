@@ -45,6 +45,16 @@ async def _scheduler(proactive: ProactiveEngine, interval: int) -> None:
             logger.exception("proactive evaluation failed")
         await asyncio.sleep(max(5, interval))
 
+async def _ingest_scheduler(service: CompanionService, interval: int) -> None:
+    while True:
+        try:
+            await asyncio.to_thread(service.catch_up_plugin)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("memory plugin ingestion catch-up failed")
+        await asyncio.sleep(max(1, interval))
+
 async def _semantic_scheduler(service: CompanionService, interval: int) -> None:
     while True:
         try:
@@ -77,6 +87,15 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                 name="proactive-evaluator",
             )
         ]
+        if service.memory.enabled and cfg.storage.enabled:
+            tasks.append(
+                asyncio.create_task(
+                    _ingest_scheduler(
+                        service, cfg.memory_plugin.ingest_backfill_interval_seconds
+                    ),
+                    name="memory-plugin-ingest",
+                )
+            )
         if service.memory.enabled or (
             service.semantic is not None and service.semantic.enabled
         ):

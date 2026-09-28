@@ -144,6 +144,12 @@ CREATE TABLE IF NOT EXISTS proactive_events (
 CREATE INDEX IF NOT EXISTS proactive_events_poll
 ON proactive_events(status, available_at, created_at);
 
+CREATE TABLE IF NOT EXISTS plugin_ingest_state (
+    plugin TEXT PRIMARY KEY,
+    last_acknowledged_id INTEGER NOT NULL DEFAULT 0 CHECK(last_acknowledged_id >= 0),
+    updated_at TEXT NOT NULL
+);
+
 PRAGMA user_version = 4;
 """
 

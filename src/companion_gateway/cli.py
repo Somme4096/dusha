@@ -369,6 +369,10 @@ def main() -> None:
         return
 
     service = CompanionService(cfg)
+    if args.command in {"memory", "evergreen"} and not service.storage_enabled:
+        print("built-in message storage is disabled", file=sys.stderr)
+        service.close()
+        raise SystemExit(1)
     proactive = ProactiveEngine(service, cfg)
     _COMMANDS[args.command](service, proactive, args)
     service.close()

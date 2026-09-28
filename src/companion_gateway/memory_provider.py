@@ -25,6 +25,8 @@ from .memory_plugin import (
     GetMessageResult,
     IndexStatusResult,
     IngestMessageResult,
+    IngestMessagesResult,
+    InjectContextResult,
     ListFactsResult,
     MatchPhraseResult,
     MemoryContextResult,
@@ -150,6 +152,7 @@ _RESULTS: dict[str, Type[Any]] = {
     "forget": ForgetFactResult, "render_facts": RenderFactsResult, "status": IndexStatusResult,
     "backfill_once": BackfillIndexResult, "ensure_message_chunks": EnsureMessageChunksResult,
     "rebuild_chunks": RebuildIndexResult, "match_phrase": MatchPhraseResult,
+    "ingest_messages": IngestMessagesResult, "inject_context": InjectContextResult,
 }
 
 
