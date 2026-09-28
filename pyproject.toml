@@ -12,8 +12,6 @@ license = { text = "Apache-2.0" }
 dependencies = [
   "fastapi>=0.115,<1",
   "httpx>=0.27,<1",
-  "PyYAML>=6,<7",
-  "sqlite-vec==0.1.9",
   "uvicorn>=0.30,<1",
 ]
 
@@ -25,6 +23,7 @@ companion-gateway = "companion_gateway.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/companion_gateway"]
+artifacts = ["src/companion_gateway/resources/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

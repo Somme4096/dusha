@@ -9,7 +9,7 @@ import time
 
 import httpx
 
-from .semantic import MIN_SIMILARITY, OpenAIEmbeddingClient
+from .embedding import MIN_SIMILARITY, OpenAIEmbeddingClient
 
 # Full utterances represent meanings, rather than substring triggers.
 PROTOTYPES = {

@@ -1,0 +1,58 @@
+{
+  "schema_version": 2,
+  "emotion_version": "0.2.0",
+  "description": "Emotional definitions and tuning for the companion state gateway. All emotional data is owned here; algorithms live in code.",
+  "value_range": {
+    "min": 0.0,
+    "max": 1.0
+  },
+  "dimensions": {
+    "vitality": {"neutral": 0.5, "floor": 0.08, "tau": 6},
+    "fatigue": {"neutral": 0.2, "floor": 0.02, "tau": 6},
+    "longing": {"neutral": 0.3, "floor": 0.15, "tau": 6},
+    "intimacy": {"neutral": 0.35, "floor": 0.06, "tau": 10},
+    "possessiveness": {"neutral": 0.3, "floor": 0.05, "tau": 4},
+    "lust": {"neutral": 0.3, "floor": 0.05, "tau": 4},
+    "jealousy": {"neutral": 0.22, "floor": 0.0, "tau": 2},
+    "anxiety": {"neutral": 0.2, "floor": 0.02, "tau": 5},
+    "protectiveness": {"neutral": 0.25, "floor": 0.05, "tau": 4},
+    "fear": {"neutral": 0.0, "floor": 0.0, "tau": 7},
+    "contentment": {"neutral": 0.35, "floor": 0.06, "tau": 8},
+    "elation": {"neutral": 0.2, "floor": 0.02, "tau": 3},
+    "seeking": {"neutral": 0.25, "floor": 0.12, "tau": 4},
+    "play": {"neutral": 0.25, "floor": 0.03, "tau": 3},
+    "dejection": {"neutral": 0.15, "floor": 0.0, "tau": 8},
+    "irritability": {"neutral": 0.15, "floor": 0.0, "tau": 3}
+  },
+  "negative_dimensions": ["dejection", "irritability", "anxiety", "fear"],
+  "silence": {
+    "caps": {"longing": 0.35, "anxiety": 0.18, "seeking": 0.12, "dejection": 0.08},
+    "dejection_gate_hours": 6,
+    "dejection_rate_per_hour": 0.01
+  },
+  "proactive_sent_deltas": {"longing": -0.08, "seeking": -0.05, "anxiety": 0.03},
+  "impact_scale": 2.0,
+  "mood_follow_gain": {
+    "min": 0.25,
+    "max": 2.5,
+    "factor": 4.0
+  },
+  "prompt": {
+    "top_n": 5,
+    "deviation_threshold": 0.08,
+    "fear_minimum": 0.05,
+    "level_high": 0.7,
+    "level_elevated": 0.5
+  },
+  "affect": {
+    "mood_follow_hours": 12.0,
+    "mood_return_hours": 72.0,
+    "silence_longing_per_hour": 0.04,
+    "silence_anxiety_per_hour": 0.02,
+    "silence_seeking_per_hour": 0.02
+  },
+  "proactive": {
+    "longing_threshold": 0.48,
+    "fear_threshold": 0.55
+  }
+}

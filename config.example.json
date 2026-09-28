@@ -1,0 +1,91 @@
+{
+  "emotions": {
+    "path": "",
+    "expected_version": "0.2.0"
+  },
+  "data_dir": "~/.local/share/companion-gateway",
+  "host": "127.0.0.1",
+  "port": 8765,
+  "timezone": "Asia/Taipei",
+  "api_token_env": "",
+  "api_openai": {
+    "enabled": true
+  },
+  "identity_prompt": {
+    "path": ""
+  },
+  "prompts": {
+    "path": ""
+  },
+  "upstream": {
+    "base_url": "https://api.openai.com/v1",
+    "api_key_env": "UPSTREAM_API_KEY",
+    "timeout_seconds": 120
+  },
+  "embedding": {
+    "base_url": "",
+    "api_key_env": "EMBEDDING_API_KEY",
+    "model": "",
+    "dimensions": null,
+    "timeout_seconds": 10,
+    "batch_size": 32,
+    "backfill_interval_seconds": 10,
+    "failure_cooldown_seconds": 60
+  },
+  "memory": {
+    "recent_messages": 8,
+    "search_hits": 4,
+    "context_messages": 1,
+    "injection_max_chars": 12000,
+    "retrieval_mode": "lexical",
+    "chunk_max_chars": 800,
+    "chunk_overlap_chars": 120,
+    "lexical_candidates": 24,
+    "semantic_candidates": 24,
+    "rrf_k": 60,
+    "plugin_context_max_chars": 3000
+  },
+  "memory_plugin": {
+    "module": "",
+    "mods_dir": "",
+    "timeout_seconds": 15,
+    "ingest_batch_size": 50,
+    "ingest_backfill_interval_seconds": 30,
+    "options": {}
+  },
+  "storage": {
+    "enabled": true
+  },
+  "evergreen": {
+    "enabled": true,
+    "max_items": 32,
+    "max_chars": 4000
+  },
+  "affect": {
+    "mood_follow_hours": 12,
+    "mood_return_hours": 72,
+    "silence_longing_per_hour": 0.04,
+    "silence_anxiety_per_hour": 0.02,
+    "silence_seeking_per_hour": 0.02
+  },
+  "proactive": {
+    "enabled": true,
+    "poll_interval_seconds": 60,
+    "min_silence_minutes": 180,
+    "longing_threshold": 0.48,
+    "fear_threshold": 0.55,
+    "cooldown_minutes": 360,
+    "max_per_day": 2,
+    "max_unanswered": 2,
+    "quiet_start_hour": 1,
+    "quiet_end_hour": 8,
+    "lease_seconds": 120,
+    "retry_delay_minutes": 15
+  },
+  "decision": {
+    "module": "",
+    "options": {},
+    "increment": 0.1,
+    "mods_dir": ""
+  }
+}

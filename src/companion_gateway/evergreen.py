@@ -1,16 +1,18 @@
 from __future__ import annotations
 
-import json
 import re
 import uuid
 from datetime import datetime
 from typing import Any
 
+from . import prompts as _prompts
 from .database import Database
+from .serialization import safe_json
 from .timeutil import isoformat, parse_time, utc_now
 
 _KEY_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,119}$")
 _KEEP = object()
+_DEFAULT_EVERGREEN = _prompts.default_prompts()["evergreen"]
 
 
 class EvergreenConflict(ValueError):
@@ -18,7 +20,6 @@ class EvergreenConflict(ValueError):
 
 
 class EvergreenStore:
-    """Append-only revisions for facts selected and maintained by the agent."""
 
     def __init__(self, database: Database):
         self.database = database
@@ -55,28 +56,24 @@ class EvergreenStore:
                 )
             self._validate_source(db, source_message_id)
             fact_id = str(uuid.uuid4())
-            cursor = db.execute(
-                """INSERT INTO evergreen_fact_revisions
-                   (fact_id, revision, fact_key, text, state, priority,
-                    source_message_id, reason, review_after, expires_at, created_at, created_by)
-                   VALUES(?,?,?,?,'active',?,?,?,?,?,?,?)""",
-                (
-                    fact_id,
-                    1,
-                    key,
-                    text,
-                    priority,
-                    source_message_id,
-                    reason,
-                    review,
-                    expiry,
-                    timestamp,
-                    actor,
-                ),
+            row_id = self._insert_revision(
+                db,
+                fact_id=fact_id,
+                revision=1,
+                fact_key=key,
+                text=text,
+                state="active",
+                priority=priority,
+                source_message_id=source_message_id,
+                reason=reason,
+                review_after=review,
+                expires_at=expiry,
+                created_at=timestamp,
+                created_by=actor,
             )
             row = db.execute(
                 "SELECT * FROM evergreen_fact_revisions WHERE revision_id=?",
-                (cursor.lastrowid,),
+                (row_id,),
             ).fetchone()
         return self._row(row, timestamp)
 
@@ -121,28 +118,24 @@ class EvergreenStore:
             )
             review = current["review_after"] if review_after is _KEEP else self._optional_time(review_after)
             expiry = current["expires_at"] if expires_at is _KEEP else self._optional_time(expires_at)
-            cursor = db.execute(
-                """INSERT INTO evergreen_fact_revisions
-                   (fact_id, revision, fact_key, text, state, priority,
-                    source_message_id, reason, review_after, expires_at, created_at, created_by)
-                   VALUES(?,?,?,?,'active',?,?,?,?,?,?,?)""",
-                (
-                    fact_id,
-                    expected_revision + 1,
-                    current["fact_key"],
-                    text,
-                    next_priority,
-                    source_message_id,
-                    reason,
-                    review,
-                    expiry,
-                    timestamp,
-                    actor,
-                ),
+            row_id = self._insert_revision(
+                db,
+                fact_id=fact_id,
+                revision=expected_revision + 1,
+                fact_key=current["fact_key"],
+                text=text,
+                state="active",
+                priority=next_priority,
+                source_message_id=source_message_id,
+                reason=reason,
+                review_after=review,
+                expires_at=expiry,
+                created_at=timestamp,
+                created_by=actor,
             )
             row = db.execute(
                 "SELECT * FROM evergreen_fact_revisions WHERE revision_id=?",
-                (cursor.lastrowid,),
+                (row_id,),
             ).fetchone()
         return self._row(row, timestamp)
 
@@ -176,28 +169,24 @@ class EvergreenStore:
             if current["state"] == "forgotten":
                 raise EvergreenConflict("fact is already forgotten")
             self._validate_source(db, source_message_id)
-            cursor = db.execute(
-                """INSERT INTO evergreen_fact_revisions
-                   (fact_id, revision, fact_key, text, state, priority,
-                    source_message_id, reason, review_after, expires_at, created_at, created_by)
-                   VALUES(?,?,?,?,'forgotten',?,?,?,?,?,?,?)""",
-                (
-                    fact_id,
-                    expected_revision + 1,
-                    current["fact_key"],
-                    current["text"],
-                    current["priority"],
-                    source_message_id,
-                    reason,
-                    current["review_after"],
-                    current["expires_at"],
-                    timestamp,
-                    actor,
-                ),
+            row_id = self._insert_revision(
+                db,
+                fact_id=fact_id,
+                revision=expected_revision + 1,
+                fact_key=current["fact_key"],
+                text=current["text"],
+                state="forgotten",
+                priority=current["priority"],
+                source_message_id=source_message_id,
+                reason=reason,
+                review_after=current["review_after"],
+                expires_at=current["expires_at"],
+                created_at=timestamp,
+                created_by=actor,
             )
             row = db.execute(
                 "SELECT * FROM evergreen_fact_revisions WHERE revision_id=?",
-                (cursor.lastrowid,),
+                (row_id,),
             ).fetchone()
         return self._row(row, timestamp)
 
@@ -246,13 +235,20 @@ class EvergreenStore:
             raise KeyError(fact_id)
         return [self._row(row, timestamp) for row in rows]
 
-    def render(self, max_items: int, max_chars: int) -> tuple[str, list[dict[str, Any]]]:
+    def render(
+        self,
+        max_items: int,
+        max_chars: int,
+        *,
+        open_delimiter: str | None = None,
+        close_delimiter: str | None = None,
+    ) -> tuple[str, list[dict[str, Any]]]:
         if max_items <= 0 or max_chars <= 0:
             return "", []
+        opening = open_delimiter or _DEFAULT_EVERGREEN["open_delimiter"]
+        closing = close_delimiter or _DEFAULT_EVERGREEN["close_delimiter"]
         candidates = self.list_current(limit=500)
         selected: list[dict[str, Any]] = []
-        opening = "<evergreen_facts>\n"
-        closing = "\n</evergreen_facts>\n"
         for fact in candidates:
             item = {
                 "id": fact["fact_id"],
@@ -263,14 +259,14 @@ class EvergreenStore:
             if fact["review_due"]:
                 item["review_due"] = True
             trial = selected + [item]
-            rendered = opening + self._safe_json(trial) + closing
+            rendered = opening + safe_json(trial) + closing
             if len(rendered) <= max_chars:
                 selected = trial
             if len(selected) >= max_items:
                 break
         if not selected:
             return "", []
-        return opening + self._safe_json(selected) + closing, selected
+        return opening + safe_json(selected) + closing, selected
 
     @staticmethod
     def _current_row(db: Any, fact_id: str) -> Any:
@@ -362,10 +358,40 @@ class EvergreenStore:
         return item
 
     @staticmethod
-    def _safe_json(value: Any) -> str:
-        return (
-            json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-            .replace("&", "\\u0026")
-            .replace("<", "\\u003c")
-            .replace(">", "\\u003e")
+    def _insert_revision(
+        db: Any,
+        *,
+        fact_id: str,
+        revision: int,
+        fact_key: str,
+        text: str,
+        state: str,
+        priority: int,
+        source_message_id: int | None,
+        reason: str,
+        review_after: str | None,
+        expires_at: str | None,
+        created_at: str,
+        created_by: str,
+    ) -> int:
+        cursor = db.execute(
+            """INSERT INTO evergreen_fact_revisions
+               (fact_id, revision, fact_key, text, state, priority,
+                source_message_id, reason, review_after, expires_at, created_at, created_by)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                fact_id,
+                revision,
+                fact_key,
+                text,
+                state,
+                priority,
+                source_message_id,
+                reason,
+                review_after,
+                expires_at,
+                created_at,
+                created_by,
+            ),
         )
+        return cursor.lastrowid

@@ -1,0 +1,250 @@
+# Companion State Gateway API and integration
+
+The gateway stores raw conversation memory, persistent affect, evergreen facts, and proactive delivery decisions in one SQLite file. It does not own the persona or the model. You send it messages, ask for a context injection, then call your provider yourself or let the optional proxy call it for you. Setting `storage.enabled` to `false` keeps the file but closes the message, memory, context, and evergreen routes.
+
+Base URL: `http://127.0.0.1:8765`. FastAPI serves the live schema at `/docs` and `/openapi.json` when auth is disabled; with `api_token_env` set, both are disabled.
+
+The state API lives under `/state/v1/*`. The optional OpenAI-compatible proxy lives under `/v1/*`. `/health` reports process and index status.
+
+## Endpoints at a glance
+
+| Method | Path | Purpose | Statuses |
+| --- | --- | --- | --- |
+| GET | `/health` | Process, database, and index status | 200 |
+| POST | `/state/v1/messages` | Store one message, invoke the decision plugin | 200, 401, 422 |
+| GET | `/state/v1/messages/{message_id}` | Read one stored message | 200, 401, 404 |
+| POST | `/state/v1/memory/search` | Search the archive with adjacent context | 200, 401 |
+| GET | `/state/v1/memory/{message_id}` | Read a message plus neighbors | 200, 401, 404 |
+| GET | `/state/v1/memory/index` | Report the message count and memory plugin index status | 200, 401 |
+| POST | `/state/v1/context` | Build the provider-neutral injection | 200, 401, 422 |
+| GET | `/state/v1/affect` | Read affect state and advance decay | 200, 401 |
+| POST | `/state/v1/evergreen/facts` | Remember a fact | 200, 401, 409, 422 |
+| GET | `/state/v1/evergreen/facts` | List current facts | 200, 401 |
+| GET | `/state/v1/evergreen/facts/{fact_id}/history` | List every revision | 200, 401, 404 |
+| POST | `/state/v1/evergreen/facts/{fact_id}/revisions` | Revise with `expected_revision` | 200, 401, 404, 409, 422 |
+| POST | `/state/v1/evergreen/facts/{fact_id}/forget` | Forget with `expected_revision` | 200, 401, 404, 409, 422 |
+| POST | `/state/v1/proactive/evaluate` | Run one evaluation pass | 200, 401 |
+| GET | `/state/v1/proactive/events` | Poll and lease pending events | 200, 401 |
+| POST | `/state/v1/proactive/events/{event_id}/ack` | Acknowledge a leased event | 200, 401, 404, 409 |
+| GET | `/v1/models` | Proxy a model list to `upstream.base_url` | 503, upstream |
+| POST | `/v1/chat/completions` | Proxy chat completions and ingest the transcript | 503, 422, upstream |
+
+When `storage.enabled` is `false`, every message, memory, context, and evergreen route in the table returns `503 {"detail":"built-in message storage is disabled"}`. Affect, proactive, and health routes stay available. Re-enabling storage restores the routes and the stored rows remain on disk.
+
+`/docs` and `/openapi.json` carry request models, response schemas, and error shapes. Treat this page as the integration guide and the OpenAPI document as the field reference. JSON blocks below parse as written.
+
+## Auth and boundaries
+
+Set `api_token_env` to an environment variable name to protect the data and model routes: every `/state/v1/*` request plus `/v1/models` and `/v1/chat/completions` needs the variable's value in `X-Companion-Token`. A missing or wrong token returns `401 {"detail":"invalid companion token"}`. An empty `api_token_env` leaves the API open, which suits a trusted network. The variable is read once at startup; changing it requires a restart.
+
+Auth covers `/state/v1/*`, `/v1/models`, and `/v1/chat/completions`. `/health` stays public. When auth is enabled, `/docs`, `/redoc`, and `/openapi.json` are disabled to keep the public surface minimal; when it is disabled they are served as usual.
+
+The proxy picks its upstream credential per request. A nonempty value in the environment variable named by `upstream.api_key_env` makes the proxy send `Bearer <value>` and ignore the caller `Authorization` header. Otherwise the proxy forwards the caller `Authorization` header. The configured key wins.
+
+## Client flow
+
+A full exchange runs four steps. The proxy performs all four when you point a client at `/v1/chat/completions` with the routing headers.
+
+### 1. Ingest the user message
+
+`POST /state/v1/messages` stores one canonical message. `content` accepts a plain string or OpenAI-style structured content. A new user message marks user contact and, when a decision plugin is configured, invokes it to select at most one emotion dimension for a bounded increase. Assistant and tool messages store as usual.
+
+```json
+{
+  "harness": "my-harness",
+  "conversation_id": "stable-conversation-id",
+  "role": "user",
+  "content": "Remember the amber window.",
+  "route": "opaque-return-address",
+  "external_id": "msg-42",
+  "occurred_at": null
+}
+```
+
+The response returns the stored `id`, a `duplicate` flag, the internal `conversation_id`, the message `sha256`, and `affect` for a new user message. `affect` is `null` when no plugin is configured or the plugin abstained or failed. Otherwise it holds `emotion`, `increment`, `decision_id`, and the updated `state`. A supplied `affect_label` is rejected with `422`; labels are gone.
+
+Replaying the same `external_id` inside the same `(harness, conversation_id)` stores one message and returns `duplicate: true` with the original `id`, without invoking the plugin again. That scope is the deduplication the API performs. No global idempotency layer exists.
+
+### 2. Build context
+
+`POST /state/v1/context` returns the injection string plus structured metadata. It performs no ingestion and no provider call, so it works without upstream credentials.
+
+```json
+{
+  "harness": "my-harness",
+  "conversation_id": "stable-conversation-id",
+  "query": "Remember the amber window.",
+  "exclude_message_ids": [1],
+  "include_recent": false
+}
+```
+
+Pass `include_recent: true` when the gateway should add recent messages to the injection. Pass `false` when your provider conversation holds recent history and you want recalled records alone. `exclude_message_ids` removes messages you have sent.
+
+The response carries `injection`, `affect`, `evergreen_facts`, `records`, `search_hits`, and `context`. `injection` concatenates the raw identity text (when configured), the evergreen block, and one JSON block wrapped in `<companion_state>` and `</companion_state>`. Stored text cannot break the delimiters because the serializer escapes `&`, `<`, and `>`.
+
+`context` mirrors the same data as fields: `version`, `identity`, `instructions`, `memory`, and `emotion`. A harness that wants fields reads `context`. A harness that wants one string prepends `injection` to its system prompt.
+
+The whole injection must fit `memory.injection_max_chars`. The gateway does not truncate the identity or the mandatory companion state. If those two exceed the budget, the endpoint returns `422` with a detail naming the required size. Evergreen facts and session records fill the remaining space when they fit.
+
+### 3. Call the provider
+
+Send the provider request with routing headers so conversations stay separate and proactive delivery stays routable:
+
+```text
+X-Conversation-Id: stable-conversation-id
+X-Harness: my-harness
+X-Companion-Route: opaque-return-address
+```
+
+`X-Companion-Route` is the return address the gateway uses for a proactive message.
+
+### 4. Archive the assistant reply
+
+Call `POST /state/v1/messages` with `role: "assistant"`. The gateway stores the reply and leaves affect untouched. Only a new user message invokes the decision plugin.
+
+## Affect
+
+`GET /state/v1/affect` returns `base` and `mood` for all 16 dimensions, timestamps, and `unanswered_proactive`. This read advances decay and silence effects to the current time, then persists the result. Reading affect changes state.
+
+There are no labels. The gateway has no keyword rules, no staging, and no agent labeling endpoints. On a new user message the service calls the configured decision plugin (see [configuration.md](configuration.md#decision-plugins)). The plugin returns at most one dimension name from the resolved `emotions.json`; the engine increases that dimension by the configured bounded `decision.increment` and clamps it. A missing, failed, or invalid decision changes nothing. Every applied decision is recorded in the `affect_decisions` table.
+
+## Evergreen facts
+
+Evergreen facts are append-only revisions. Every change increments the fact `revision`. Revise and forget use an optimistic `expected_revision` check, so a stale value returns `409` with the current revision. The check applies to one fact at a time; the API has no global compare-and-swap layer.
+
+Lifecycle:
+
+1. `POST /state/v1/evergreen/facts` remembers a fact under a stable `key`. A duplicate active key returns `409`.
+2. `GET /state/v1/evergreen/facts` lists current revisions ordered by priority. Query `include_inactive`, `due_only`, and `limit`.
+3. `GET /state/v1/evergreen/facts/{fact_id}/history` lists every revision. A missing fact returns `404`.
+4. `POST /state/v1/evergreen/facts/{fact_id}/revisions` writes a new revision and preserves history.
+5. `POST /state/v1/evergreen/facts/{fact_id}/forget` marks the fact forgotten and keeps its history.
+
+Remember request:
+
+```json
+{
+  "key": "user.preference.editor",
+  "text": "The user prefers Helix.",
+  "priority": 50,
+  "source_message_id": null,
+  "reason": "The user stated this preference.",
+  "review_after": null,
+  "expires_at": null
+}
+```
+
+The fact object carries `fact_id`, `revision`, `state`, `effective_state`, `priority`, `review_due`, and timestamps. `state` holds `active` or `forgotten`. `effective_state` accounts for the clock, so an expired fact reads `expired`. The gateway injects active, unexpired facts. It does not extract facts from conversation, merge claims, or call a model to manage them.
+
+## Proactive delivery
+
+Proactive delivery stores a decision before sending, so a restart does not reset the daily and unanswered limits.
+
+`POST /state/v1/proactive/evaluate` runs one pass and stores an event when one is due. It returns `{"event": null}` when nothing is due, or the stored payload.
+
+`GET /state/v1/proactive/events?consumer=my-harness&harness=my-harness&limit=1` leases pending events for that consumer. The gateway stamps each leased event with `lease_until`. A lease that expires returns the event to pending on the next poll, so a consumer that never acknowledges sees the event again. Delivery is at-least-once.
+
+Each payload holds `id`, `target` (`harness`, `conversation_id`, `route`), `reason`, `generation_instruction`, `context`, `created_at`, and `lease_until`. Send the message to the target route, then acknowledge:
+
+```json
+{
+  "consumer": "my-harness",
+  "outcome": "sent",
+  "text": "the exact sent message",
+  "external_id": "",
+  "error": ""
+}
+```
+
+`outcome` accepts `sent`, `failed`, or `release`. `sent` archives the text as an assistant message and records the send. `failed` returns the event to pending after `retry_delay_minutes`. `release` returns it at once. The same consumer must hold the lease; any other consumer gets `409`, and an unknown `event_id` gets `404`.
+
+The engine gates each pass on silence, quiet hours, cooldown, the daily limit, the unanswered limit, and the current drives. It keys duplicate silence events on the last user message, the local date, and the day's send count, and keys follow-up events on the source affect event. A user reply cancels unsent events and resets the unanswered count.
+
+## AstrBot plugin
+
+The plugin in `integrations/astrbot_companion_gateway` connects AstrBot to the gateway as a state service. It requires AstrBot 4.8 or later and supports Discord.
+
+### Install
+
+Run the gateway first. Copy the source directory into AstrBot's plugin directory:
+
+```sh
+cp -a integrations/astrbot_companion_gateway \
+  /path/to/AstrBot/data/plugins/astrbot_companion_gateway
+```
+
+Restart AstrBot or reload the plugin from its manager. AstrBot reads `metadata.yaml` and installs the dependency from `requirements.txt` (`httpx`). Keep AstrBot's chat provider pointed at your model provider. Do not set the gateway as AstrBot's chat provider while the plugin runs.
+
+### Settings
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `gateway_url` | `http://127.0.0.1:8765` | Gateway address reachable from AstrBot |
+| `platform_id` | `""` | Exact AstrBot platform ID allowed to use the gateway |
+| `api_token` | `""` | Value for `X-Companion-Token` when the gateway requires one |
+| `poll_seconds` | `30` | Seconds between proactive polls; values below 5 clamp to 5 |
+| `enable_proactive` | `true` | Poll and deliver proactive events |
+
+An empty `platform_id` disables routing and proactive polling. Run `/sid` through the Discord bot that should own this companion and copy its `Bot ID` into `platform_id`. The plugin ignores other adapters in the same AstrBot process and strips its memory tools from their LLM requests.
+
+### Tools
+
+The plugin registers six LLM tools when the provider supports tools:
+
+| Tool | Arguments | Calls |
+| --- | --- | --- |
+| `search_conversation_memory` | `query`, `limit` | `POST /state/v1/memory/search` |
+| `get_conversation_record` | `memory_id`, `context_messages` | `GET /state/v1/memory/{id}` |
+| `remember_evergreen_fact` | `key`, `text`, `priority`, `review_after`, `expires_at`, `reason` | `POST /state/v1/evergreen/facts` |
+| `revise_evergreen_fact` | `fact_id`, `expected_revision`, `text`, `priority`, `review_after`, `expires_at`, `reason` | `POST /state/v1/evergreen/facts/{id}/revisions` |
+| `forget_evergreen_fact` | `fact_id`, `expected_revision`, `reason` | `POST /state/v1/evergreen/facts/{id}/forget` |
+| `review_evergreen_facts` | `due_only`, `include_inactive`, `limit` | `GET /state/v1/evergreen/facts` |
+
+The six tools read or manage memory and facts. Tools return JSON with `ok: true` on success, or `ok: false` plus `error` and, for HTTP failures, `status`. Affect is no longer exposed as a tool; the gateway's configured decision plugin owns it.
+
+### Behavior
+
+For each exchange the plugin stores the user message, builds context with `exclude_message_ids` set to that message and `include_recent: false`, then injects the result into AstrBot's current request. It leaves the active persona and recent history untouched. After the model responds, it archives the assistant text. User-message ingest itself invokes the configured decision plugin; the AstrBot plugin only adds memory and fact tools.
+
+The plugin polls with `consumer=astrbot` and `harness=astrbot`. On delivery it checks the route platform, loads the route persona, generates one message from `generation_instruction` and the event context, sends through `Context.send_message`, and acknowledges `sent`. On failure it acknowledges `failed`.
+
+### Troubleshooting
+
+Check the AstrBot log for lines beginning with `[companion-gateway]`. Confirm the gateway answers before you change plugin settings:
+
+```sh
+curl http://127.0.0.1:8765/health
+```
+
+With `api_token_env` set on the gateway, put the same value in the plugin's `api_token` field.
+
+## Optional OpenAI proxy
+
+`GET /v1/models` and `POST /v1/chat/completions` forward to `upstream.base_url` and append the path. The proxy targets OpenAI-shaped bodies.
+
+- It inserts the context system message after any leading system messages, or at the front when none exist.
+- It preserves unknown request fields and per-message fields.
+- It archives the transcript's user, assistant, and tool turns before the call, and the assistant reply after a successful call.
+- It forwards non-streaming responses byte for byte, including upstream errors and status codes.
+- It forwards streaming responses as the raw SSE byte stream.
+
+`/v1/models` returns `503` when `upstream.base_url` is empty. `/v1/chat/completions` returns `503` in the same case and `422` when `messages` is not a list or the injection budget cannot fit. The proxy injects context and archives turns, so it needs a working gateway database. It requires the companion token when `api_token_env` is set.
+
+The proxy forwards OpenAI chat shapes. It passes one authorization header plus content-type and rewrites nothing else. OAuth flows and OpenAI Responses-style endpoints stay out of scope. Point AstrBot at the state API through this plugin. AstrBot cannot place its changing session ID in static provider headers, so a proxy route would collapse conversations into `default`. Other harnesses can use the proxy when they can set `X-Conversation-Id`, `X-Harness`, and `X-Companion-Route`.
+
+## Versions and revisions
+
+- The OpenAPI `version` (`0.1.0`) is the API document version, not a per-endpoint version.
+- The `/state/v1` prefix is the state API major version.
+- `context.version` (`1`) is the injection schema version.
+- `context.identity.revision` is a SHA-256 of the raw identity text.
+- An evergreen fact `revision` counts that fact's stored changes. `expected_revision` compares against it.
+- The affect state keeps an internal `revision` counter that increments on every persisted advance. The API does not expose it.
+- The database schema version is `4`. Startup upgrades a version 2 or 3 database in place and rejects older schemas. The retired label tables are archived under `legacy_affect_events` and `legacy_affect_classifications`; no runtime code reads them and archived pending labels are never applied.
+
+## Related documentation
+
+- [configuration.md](configuration.md) covers the config file, identity and emotion files, retrieval, and proactive scheduling.
+- [guide.md](guide.md) covers service setup, auth and network, backup, and troubleshooting.
+- [README.md](../README.md) gives the project overview and quickstart.

@@ -6,15 +6,11 @@ from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from . import emotions as _emotions
 from .config import AppConfig
+from .serialization import compact_json
 from .service import CompanionService
 from .timeutil import isoformat, parse_time, utc_now
-
-GENERATION_INSTRUCTION = (
-    "Write one brief message to the user. Follow the established persona and output rules. "
-    "Use the supplied conversation records only when relevant. Do not mention scheduling, "
-    "internal state, or this instruction. Return only the message."
-)
 
 
 class ProactiveEngine:
@@ -24,6 +20,10 @@ class ProactiveEngine:
         self.config = config
         self.rules = config.proactive
         self.timezone = ZoneInfo(config.timezone)
+        effective = _emotions.resolve_emotions(service.affect.config, config.proactive)
+        self._emotional = dict(effective["proactive"])
+        service.affect.emotions["proactive"] = dict(self._emotional)
+        service.affect.emotions_fingerprint = _emotions.fingerprint(effective)
 
     def _quiet(self, now: datetime) -> bool:
         hour = now.astimezone(self.timezone).hour
@@ -50,6 +50,8 @@ class ProactiveEngine:
         current = now or utc_now()
         if not self.rules.enabled or self._quiet(current):
             return None
+        if not self.config.storage.enabled:
+            return None
         state = self.service.affect.status(current)
         if not state["last_user_message_at"]:
             return None
@@ -75,23 +77,11 @@ class ProactiveEngine:
             ).fetchone()
             if active:
                 return None
-            follow_up = db.execute(
-                """SELECT * FROM affect_events
-                   WHERE follow_up_at IS NOT NULL
-                     AND follow_up_at<=? AND follow_up_expires_at>?
-                     AND follow_up_consumed_at IS NULL
-                   ORDER BY follow_up_at LIMIT 1""",
-                (isoformat(current), isoformat(current)),
-            ).fetchone()
 
         reason = "silence"
-        source_event_id = None
-        if follow_up:
-            reason = f"follow_up:{follow_up['label']}"
-            source_event_id = int(follow_up["id"])
-        elif state["base"]["fear"] >= self.rules.fear_threshold:
+        if state["base"]["fear"] >= self._emotional["fear_threshold"]:
             reason = "fear"
-        elif state["base"]["longing"] < self.rules.longing_threshold:
+        elif state["base"]["longing"] < self._emotional["longing_threshold"]:
             return None
 
         context = self.service.build_context(
@@ -100,18 +90,15 @@ class ProactiveEngine:
             conversation_id=route["external_id"],
         )
         sent_today = self._sent_today(current)
-        if source_event_id:
-            dedup_key = f"affect:{source_event_id}"
-        else:
-            local_date = current.astimezone(self.timezone).date()
-            dedup_key = ":".join(
-                (
-                    "silence",
-                    str(state["last_user_message_at"]),
-                    str(local_date),
-                    str(sent_today),
-                )
+        local_date = current.astimezone(self.timezone).date()
+        dedup_key = ":".join(
+            (
+                "silence",
+                str(state["last_user_message_at"]),
+                str(local_date),
+                str(sent_today),
             )
+        )
         event_id = str(uuid.uuid4())
         payload = {
             "id": event_id,
@@ -121,7 +108,7 @@ class ProactiveEngine:
                 "route": route["route"],
             },
             "reason": reason,
-            "generation_instruction": GENERATION_INSTRUCTION,
+            "generation_instruction": self.service.prompts["proactive_generation_instruction"],
             "context": context,
             "created_at": isoformat(current),
         }
@@ -138,17 +125,12 @@ class ProactiveEngine:
                         route["route"],
                         reason,
                         dedup_key,
-                        json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+                        compact_json(payload),
                         isoformat(current),
                         isoformat(current),
                         isoformat(current),
                     ),
                 )
-                if source_event_id:
-                    db.execute(
-                        "UPDATE affect_events SET follow_up_consumed_at=? WHERE id=?",
-                        (isoformat(current), source_event_id),
-                    )
         except Exception as error:
             if "UNIQUE constraint failed" in str(error):
                 return None
