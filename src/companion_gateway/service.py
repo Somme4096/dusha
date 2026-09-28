@@ -14,7 +14,6 @@ from .database import Database
 from .decision import DecisionProvider
 from .memory_plugin import (
     BackfillIndexRequest,
-    EnsureMessageChunksRequest,
     IngestMessagesRequest,
     InjectContextRequest,
     MatchPhraseRequest,
@@ -106,12 +105,6 @@ class CompanionService:
             occurred_at=occurred_at,
             source_payload=source_payload,
         )
-        if not message.duplicate:
-            self._memory_call(
-                "ensure_message_chunks",
-                EnsureMessageChunksRequest(message.id),
-                lambda: None,
-            )
         affect = None
         if role == "user" and not message.duplicate:
             stored_message = self._memory_fallback.get(message.id)
@@ -220,7 +213,13 @@ class CompanionService:
             return None
         try:
             result = self.memory.inject_context(
-                InjectContextRequest(query=query, scope=conversation_id or harness or "", max_chars=cap)
+                InjectContextRequest(
+                    query=query,
+                    scope=conversation_id or harness or "",
+                    max_chars=cap,
+                    harness=harness,
+                    conversation_id=conversation_id,
+                )
             )
         except Exception:
             logger.warning("memory plugin context injection failed")
@@ -293,11 +292,11 @@ class CompanionService:
             logger.warning("memory plugin message ingestion failed")
             return {"cursor": cursor, "pushed": len(batch), "acknowledged": False}
         highest = getattr(result, "highest_id", None)
-        ids = {int(item["id"]) for item in batch}
+        expected = int(batch[-1]["id"])
         if (
             isinstance(highest, bool)
             or not isinstance(highest, int)
-            or highest not in ids
+            or highest != expected
             or highest <= cursor
         ):
             logger.warning("memory plugin returned an invalid ingestion acknowledgement")

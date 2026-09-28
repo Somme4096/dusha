@@ -248,6 +248,8 @@ class InjectContextRequest:
     query: str = ""
     scope: str = ""
     max_chars: int = 0
+    harness: str = ""
+    conversation_id: str = ""
 
 
 @dataclass(frozen=True)
