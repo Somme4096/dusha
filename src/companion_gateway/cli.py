@@ -11,7 +11,6 @@ import uvicorn
 from .api import create_app
 from .config import load_config
 from .memory_plugin import (
-    BackfillIndexRequest,
     FactHistoryRequest,
     ForgetFactRequest,
     GetMessageRequest,
@@ -154,11 +153,7 @@ def _memory_recent(service: CompanionService, proactive: ProactiveEngine, args: 
 
 
 def _memory_reindex(service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace) -> None:
-    if service._memory_fallback is not None:
-        service._semantic_fallback.rebuild_chunks()
-    else:
-        service.memory.rebuild_index()
-    _print({"status": "rebuilt"})
+    _print(service.memory_reindex())
 
 
 def _memory_index(service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace) -> None:
@@ -166,24 +161,15 @@ def _memory_index(service: CompanionService, proactive: ProactiveEngine, args: a
 
 
 def _index_status(service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace) -> None:
-    if service._semantic_fallback is not None:
-        _print(service._semantic_fallback.status())
-    else:
-        _print(service.memory.status().status)
+    _print(service.memory_index_status())
 
 
 def _index_backfill(service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace) -> None:
-    if service._semantic_fallback is not None:
-        _print(service._semantic_fallback.backfill_once(args.limit or 100, args.force))
-    else:
-        _print(service.memory.backfill_once(BackfillIndexRequest(args.limit or 100, args.force)).status)
+    _print(service.memory_index_backfill(args.limit or 100, args.force))
 
 
 def _index_rebuild(service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace) -> None:
-    if service._semantic_fallback is not None:
-        _print(service._semantic_fallback.rebuild_chunks())
-    else:
-        _print(service.memory.rebuild_chunks().status)
+    _print(service.memory_index_rebuild())
 
 
 _MEMORY_INDEX_HANDLERS: dict[str, Handler] = {

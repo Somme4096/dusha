@@ -11,7 +11,6 @@ from .context import ContextBudgetError
 from .evergreen import EvergreenConflict
 from .evergreen import EvergreenStore
 from .memory import MemoryStore
-from .semantic import SemanticIndex
 from .memory_plugin import (
     FactHistoryRequest,
     ForgetFactRequest,
@@ -134,7 +133,6 @@ def create_state_router(service: CompanionService, proactive: ProactiveEngine, a
     memory_provider = service.memory
     memory_store: MemoryStore | None = service._memory_fallback
     evergreen_store: EvergreenStore | None = service._evergreen_fallback
-    semantic_index: SemanticIndex | None = service._semantic_fallback
 
     async def require_storage() -> None:
         if not service.storage_enabled:
@@ -151,10 +149,7 @@ def create_state_router(service: CompanionService, proactive: ProactiveEngine, a
         },
     )
     async def memory_index_status() -> dict[str, Any]:
-        if semantic_index is not None:
-            return await asyncio.to_thread(semantic_index.status)
-        result = await asyncio.to_thread(memory_provider.status)
-        return result.status
+        return await asyncio.to_thread(service.memory_index_status)
 
     @router.post(
         "/state/v1/messages",

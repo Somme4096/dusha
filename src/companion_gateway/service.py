@@ -13,6 +13,7 @@ from .context import ContextComposer
 from .database import Database
 from .decision import DecisionProvider
 from .memory_plugin import (
+    BackfillIndexRequest,
     EnsureMessageChunksRequest,
     IngestMessagesRequest,
     InjectContextRequest,
@@ -20,7 +21,6 @@ from .memory_plugin import (
 )
 from .memory_provider import MemoryProvider
 from .memory import MemoryStore
-from .semantic import SemanticIndex
 from .evergreen import EvergreenStore
 from .serialization import compact_json
 from .timeutil import isoformat, parse_time, utc_now
@@ -42,15 +42,10 @@ class CompanionService:
         self.storage_enabled = bool(config.storage.enabled)
         self.database = Database(config.database_path)
         self.memory = MemoryProvider(config)
-        self.semantic = None
         self._memory_fallback = None
         self._evergreen_fallback = None
-        self._semantic_fallback = None
         if self.storage_enabled:
-            if not self.memory.enabled:
-                self.semantic = SemanticIndex(self.database, config.memory)
-                self._semantic_fallback = self.semantic
-            self._memory_fallback = MemoryStore(self.database, self._semantic_fallback)
+            self._memory_fallback = MemoryStore(self.database)
             self._evergreen_fallback = EvergreenStore(self.database)
         self.memory.fallback = self._memory_fallback
         self.evergreen = self._evergreen_fallback
@@ -112,16 +107,11 @@ class CompanionService:
             source_payload=source_payload,
         )
         if not message.duplicate:
-            if self.memory.enabled:
-                self._memory_call(
-                    "ensure_message_chunks", EnsureMessageChunksRequest(message.id),
-                    lambda: (
-                        self._semantic_fallback.ensure_message_chunks(message.id)
-                        if self._semantic_fallback is not None else None
-                    ),
-                )
-            elif self._semantic_fallback is not None:
-                self._semantic_fallback.ensure_message_chunks(message.id)
+            self._memory_call(
+                "ensure_message_chunks",
+                EnsureMessageChunksRequest(message.id),
+                lambda: None,
+            )
         affect = None
         if role == "user" and not message.duplicate:
             stored_message = self._memory_fallback.get(message.id)
@@ -357,6 +347,89 @@ class CompanionService:
             "pending": pending,
         }
 
+    def memory_index_status(self) -> dict[str, Any]:
+        if self.memory.enabled:
+            try:
+                result = self.memory.status()
+                if result is not None and isinstance(result.status, dict):
+                    return result.status
+            except Exception:
+                logger.warning("memory plugin status unavailable")
+        return self._core_index_status()
+
+    def _core_index_status(self) -> dict[str, Any]:
+        if not self.storage_enabled:
+            return {
+                "mode": "disabled",
+                "enabled": False,
+                "configured": False,
+                "chunker_key": "",
+                "embedding_key": "",
+                "messages": 0,
+                "chunked_messages": 0,
+                "chunks": 0,
+                "embedded_chunks": 0,
+                "dimensions": [],
+                "cooling_down": False,
+                "last_error": "",
+                "retrieval": "lexical",
+                "storage_enabled": False,
+                "plugin_configured": False,
+                "plugin_enabled": False,
+            }
+        with self.database.connect() as db:
+            messages = int(db.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
+        return {
+            "mode": "lexical",
+            "enabled": False,
+            "configured": False,
+            "chunker_key": "",
+            "embedding_key": "",
+            "messages": messages,
+            "chunked_messages": 0,
+            "chunks": 0,
+            "embedded_chunks": 0,
+            "dimensions": [],
+            "cooling_down": False,
+            "last_error": "",
+            "retrieval": "lexical",
+            "storage_enabled": True,
+            "plugin_configured": bool(self._plugin_name),
+            "plugin_enabled": self.memory.enabled,
+        }
+
+    def memory_index_backfill(self, limit: int | None = None, force: bool = False) -> dict[str, Any]:
+        if self.memory.enabled:
+            try:
+                result = self.memory.backfill_once(BackfillIndexRequest(limit or 100, force))
+                if result is not None and isinstance(result.status, dict):
+                    return result.status
+            except Exception:
+                logger.warning("memory plugin backfill unavailable")
+        return {"retrieval": "lexical", "enabled": False, "embedded": 0, "chunks_created": 0}
+
+    def memory_index_rebuild(self) -> dict[str, Any]:
+        if self.memory.enabled:
+            try:
+                result = self.memory.rebuild_chunks()
+                if result is not None and isinstance(result.status, dict):
+                    return result.status
+            except Exception:
+                logger.warning("memory plugin rebuild unavailable")
+        if self._memory_fallback is not None:
+            self._memory_fallback.rebuild_index()
+        return {"status": "rebuilt", "retrieval": "lexical"}
+
+    def memory_reindex(self) -> dict[str, Any]:
+        if self.memory.enabled:
+            try:
+                self.memory.rebuild_index()
+            except Exception:
+                logger.warning("memory plugin reindex unavailable")
+        if self._memory_fallback is not None:
+            self._memory_fallback.rebuild_index()
+        return {"status": "rebuilt"}
+
     @staticmethod
     def _record(message: dict[str, Any], source: str) -> dict[str, Any]:
         return {
@@ -391,5 +464,3 @@ class CompanionService:
 
     def close(self) -> None:
         self.memory.close()
-        if self.semantic is not None:
-            self.semantic.close()

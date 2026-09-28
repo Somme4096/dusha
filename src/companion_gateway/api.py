@@ -16,7 +16,6 @@ from .api_state import create_state_router
 from .config import AppConfig, load_config
 from .proactive import ProactiveEngine
 from .service import CompanionService
-from .memory_plugin import BackfillIndexRequest
 
 logger = logging.getLogger("companion_gateway")
 
@@ -58,18 +57,13 @@ async def _ingest_scheduler(service: CompanionService, interval: int) -> None:
 async def _semantic_scheduler(service: CompanionService, interval: int) -> None:
     while True:
         try:
-            if service.memory.enabled:
-                result = (await asyncio.to_thread(
-                    service.memory.backfill_once, BackfillIndexRequest()
-                )).status
-            else:
-                result = await asyncio.to_thread(service._semantic_fallback.backfill_once)
+            result = await asyncio.to_thread(service.memory_index_backfill)
             if result.get("error") and not result.get("cooling_down"):
-                logger.warning("embedding backfill unavailable: %s", result["error"])
+                logger.warning("memory index backfill unavailable: %s", result["error"])
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.exception("embedding backfill failed")
+            logger.exception("memory index backfill failed")
         await asyncio.sleep(max(1, interval))
 
 def create_app(config: AppConfig | None = None) -> FastAPI:
@@ -96,13 +90,11 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                     name="memory-plugin-ingest",
                 )
             )
-        if service.memory.enabled or (
-            service.semantic is not None and service.semantic.enabled
-        ):
+        if service.memory.enabled:
             tasks.append(
                 asyncio.create_task(
                     _semantic_scheduler(service, cfg.memory.embedding.backfill_interval_seconds),
-                    name="memory-embedding-backfill",
+                    name="memory-plugin-backfill",
                 )
             )
         try:
@@ -147,11 +139,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             "status": "ok",
             "database": service.database.integrity_check(),
             "upstream_configured": bool(cfg.upstream.base_url),
-            "memory_index": (
-                service.memory.status().status
-                if service.memory.enabled
-                else service.semantic.status()
-            ),
+            "memory_index": service.memory_index_status(),
         }
 
     app.include_router(create_state_router(service, proactive, authorized))
