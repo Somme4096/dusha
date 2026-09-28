@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 Environment=PATH=/home/linuxbrew/.linuxbrew/bin:%h/.local/bin:/usr/local/bin:/usr/bin
-Environment=COMPANION_GATEWAY_CONFIG=%h/.config/companion-gateway/config.yaml
+Environment=COMPANION_GATEWAY_CONFIG=%h/.config/companion-gateway/config.json
 EnvironmentFile=-%h/.config/companion-gateway/environment
 ExecStart=%h/.local/bin/companion-gateway serve
 Restart=on-failure
