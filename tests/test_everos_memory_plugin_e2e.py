@@ -16,7 +16,13 @@ import httpx
 import pytest
 
 from companion_gateway import api
-from companion_gateway.config import AppConfig, EvergreenConfig, MemoryConfig, MemoryPluginConfig
+from companion_gateway.config import (
+    AppConfig,
+    EmbeddingConfig,
+    EvergreenConfig,
+    MemoryConfig,
+    MemoryPluginConfig,
+)
 
 
 def _unused_port() -> int:
@@ -233,12 +239,20 @@ def _config(
 ) -> AppConfig:
     return AppConfig(
         data_dir=data_dir,
-        memory=MemoryConfig(recent_messages=8, search_hits=8, context_messages=1, injection_max_chars=20_000),
+        memory=MemoryConfig(
+            recent_messages=8,
+            search_hits=8,
+            context_messages=1,
+            injection_max_chars=20_000,
+            embedding=EmbeddingConfig(backfill_interval_seconds=1),
+        ),
         evergreen=EvergreenConfig(enabled=True, max_items=32, max_chars=4_000),
         memory_plugin=MemoryPluginConfig(
             module="everos_memory",
             mods_dir=str(mods_dir),
             timeout_seconds=gateway_timeout_seconds,
+            ingest_batch_size=2,
+            ingest_backfill_interval_seconds=1,
             options={
                 "everos": {
                     "url": sidecar_url,
@@ -309,13 +323,31 @@ async def _everos_search(url: str, session_id: str, query: str, user_id: str = "
         return response.json()
 
 
-async def _pending_status(client: httpx.AsyncClient, expected: int = 0) -> dict:
-    status = {}
-    for _ in range(30):
-        status = (await client.get("/state/v1/memory/index")).json()
-        if status["everos"]["pending"] == expected:
+async def _everos_status(client: httpx.AsyncClient) -> dict:
+    response = await client.get("/state/v1/memory/index")
+    assert response.status_code == 200, response.text
+    return response.json()["everos"]
+
+
+async def _wait_everos(client: httpx.AsyncClient, predicate) -> dict:
+    status = await _everos_status(client)
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        if predicate(status):
             return status
         await asyncio.sleep(0.1)
+        status = await _everos_status(client)
+    return status
+
+
+async def _pending_status(client: httpx.AsyncClient, expected: int = 0) -> dict:
+    status = await _everos_status(client)
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        if status.get("pending") == expected:
+            return status
+        await asyncio.sleep(0.1)
+        status = await _everos_status(client)
     return status
 
 
@@ -369,10 +401,9 @@ async def test_real_everos_projection_failure_retry_isolation_and_restart(tmp_pa
         assert history_context.status_code == 200
         history_text = [item["text"] for item in history_context.json()["records"]]
         assert history_text.index("Historical older event.") < history_text.index("Historical newer event.")
-        delivered = (await client.get("/state/v1/memory/index")).json()
-        assert delivered["everos"]["enabled"] is True
-        assert delivered["everos"]["pending"] == 0
-        assert isinstance(delivered["everos"], dict)
+        delivered = await _pending_status(client, expected=0)
+        assert delivered["enabled"] is True
+        assert delivered["pending"] == 0
 
     restart_everos()
     session_one = f"sophia-e2e-sophia-{first['conversation_id']}"
@@ -393,10 +424,12 @@ async def test_real_everos_projection_failure_retry_isolation_and_restart(tmp_pa
     async with _client(_config(data_dir, plugin_mods, sidecar_url)) as client:
         outage = await _ingest(client, "three", "Conversation three keeps the silver key.")
         assert outage["id"] > second["id"]
-        failed_status = (await client.get("/state/v1/memory/index")).json()
-        assert failed_status["everos"]["enabled"] is True
-        assert failed_status["everos"]["pending"] == 1
-        assert failed_status["everos"]["attempts"] >= 1
+        failed_status = await _wait_everos(
+            client, lambda value: value.get("pending") == 1 and value.get("attempts", 0) >= 1
+        )
+        assert failed_status["enabled"] is True
+        assert failed_status["pending"] == 1
+        assert failed_status["attempts"] >= 1
         local = await client.post("/state/v1/memory/search", json={"query": "amber lantern"})
         assert local.status_code == 200
         assert local.json()["results"]
@@ -405,9 +438,9 @@ async def test_real_everos_projection_failure_retry_isolation_and_restart(tmp_pa
     async with _client(_config(data_dir, plugin_mods, sidecar_url)) as client:
         retry = await _ingest(client, "one", "Conversation one adds a brass compass.")
         assert retry["id"] > outage["id"]
-        recovered = (await client.get("/state/v1/memory/index")).json()
-        assert recovered["everos"]["enabled"] is True
-        assert recovered["everos"]["pending"] == 0
+        recovered = await _pending_status(client, expected=0)
+        assert recovered["enabled"] is True
+        assert recovered["pending"] == 0
         persisted = await client.get(f"/state/v1/messages/{first['id']}")
         assert persisted.status_code == 200
         assert persisted.json()["text"] == "Conversation one keeps the amber lantern."
@@ -470,10 +503,12 @@ async def test_real_everos_instance_namespaces_and_backfill_without_ingest(tmp_p
         _config(first_data, plugin_mods, sidecar_url, instance_namespace="instance-a", user_sender_id="user-a", assistant_sender_id="assistant-a")
     ) as client:
         alpha_message = await _ingest(client, "shared", "Only instance alpha owns this record.")
+        await _pending_status(client, expected=0)
     async with _client(
         _config(second_data, plugin_mods, sidecar_url, instance_namespace="instance-b", user_sender_id="user-b", assistant_sender_id="assistant-b")
     ) as client:
         beta_message = await _ingest(client, "shared", "Only instance beta owns this record.")
+        await _pending_status(client, expected=0)
 
     restart_everos()
     alpha_session = f"instance-a-sophia-{alpha_message['conversation_id']}"
@@ -486,12 +521,12 @@ async def test_real_everos_instance_namespaces_and_backfill_without_ingest(tmp_p
     stop_everos()
     async with _client(_config(first_data, plugin_mods, sidecar_url, instance_namespace="instance-a", user_sender_id="user-a", assistant_sender_id="assistant-a")) as client:
         buffered_message = await _ingest(client, "shared", "Buffered alpha survives sidecar outage.")
-        pending = (await client.get("/state/v1/memory/index")).json()
-        assert pending["everos"]["pending"] == 1
+        pending = await _wait_everos(client, lambda value: value.get("pending") == 1)
+        assert pending["pending"] == 1
     restart_everos()
     async with _client(_config(first_data, plugin_mods, sidecar_url, instance_namespace="instance-a", user_sender_id="user-a", assistant_sender_id="assistant-a")) as client:
         recovered = await _pending_status(client)
-        assert recovered["everos"]["pending"] == 0
+        assert recovered["pending"] == 0
     buffered_session = f"instance-a-sophia-{buffered_message['conversation_id']}"
     buffered = await _everos_search(sidecar_url, buffered_session, "Buffered alpha", user_id="user-a")
     assert "Buffered alpha survives sidecar outage." in repr(buffered)
@@ -505,14 +540,16 @@ async def test_external_malformed_and_slow_sidecars_keep_worker_alive(tmp_path: 
 
     async with _client(_config(data_dir, plugin_mods, sidecar_url, timeout_seconds=0.2, gateway_timeout_seconds=2)) as client:
         malformed = await _ingest(client, "malformed", "Malformed sidecar response remains pending.")
-        status = (await client.get("/state/v1/memory/index")).json()
-        assert status["everos"]["pending"] == 1
-        assert status["everos"]["last_error"]
+        status = await _wait_everos(
+            client, lambda value: value.get("pending") == 1 and value.get("last_error")
+        )
+        assert status["pending"] == 1
+        assert status["last_error"]
         assert malformed["duplicate"] is False
         sidecar.mode = "slow"
         slow = await _ingest(client, "slow", "Slow sidecar does not kill the worker.")
-        status = (await client.get("/state/v1/memory/index")).json()
-        assert status["everos"]["pending"] == 2
+        status = await _wait_everos(client, lambda value: value.get("pending") == 2)
+        assert status["pending"] == 2
         assert slow["duplicate"] is False
         assert (await client.get(f"/state/v1/messages/{slow['id']}")).status_code == 200
 
@@ -521,11 +558,11 @@ async def test_external_malformed_and_slow_sidecars_keep_worker_alive(tmp_path: 
     for _ in range(3):
         async with _client(_config(data_dir, plugin_mods, sidecar_url, timeout_seconds=0.2, gateway_timeout_seconds=2)) as client:
             recovered = await _pending_status(client)
-        if recovered["everos"]["pending"] == 0:
+        if recovered["pending"] == 0:
             break
     assert recovered is not None
-    assert recovered["everos"]["pending"] == 0
-    assert recovered["everos"]["enabled"] is True
+    assert recovered["pending"] == 0
+    assert recovered["enabled"] is True
 
 
 @pytest.mark.asyncio
@@ -539,13 +576,13 @@ async def test_real_everos_rejection_does_not_block_later_delivery(tmp_path: Pat
     async with _client(config) as client:
         rejected = await _ingest(client, "rejected", "This message is permanently rejected.")
         later = await _ingest(client, "later", "This later message is delivered.")
-        status = (await client.get("/state/v1/memory/index")).json()
-        assert status["everos"]["pending"] == 1
-        assert status["everos"]["enabled"] is True
+        status = await _wait_everos(client, lambda value: value.get("pending") == 1)
+        assert status["pending"] == 1
+        assert status["enabled"] is True
 
     async with _client(config) as client:
         status = await _pending_status(client, expected=1)
-        assert status["everos"]["pending"] == 1
+        assert status["pending"] == 1
         assert (await client.get(f"/state/v1/messages/{later['id']}")).status_code == 200
 
     later_session = f"rejection-e2e-sophia-{later['conversation_id']}"
@@ -571,8 +608,8 @@ async def test_pre_epoch_message_is_local_but_not_projected(tmp_path: Path, ever
         persisted = await client.get(f"/state/v1/messages/{message['id']}")
         assert persisted.status_code == 200
         assert persisted.json()["text"] == "This pre-1970 record stays in Sophia."
-        status = (await client.get("/state/v1/memory/index")).json()
-        assert status["everos"]["pending"] == 0
+        status = await _pending_status(client, expected=0)
+        assert status["pending"] == 0
     search = await _everos_search(
         sidecar_url,
         f"sophia-e2e-sophia-{message['conversation_id']}",

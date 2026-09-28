@@ -191,6 +191,8 @@ def _config(data_dir: Path, mods_dir: Path, sidecar: str, *, enabled: bool) -> A
             module="everos_memory",
             mods_dir=str(mods_dir),
             timeout_seconds=10,
+            ingest_batch_size=2,
+            ingest_backfill_interval_seconds=1,
             options={"everos": {
                 "url": sidecar,
                 "app_id": "sophia-e2e",
@@ -297,7 +299,8 @@ async def test_flush_default_disabled_makes_no_llm_call(tmp_path: Path, everos_s
     sidecar, _, _, _ = everos_server
     async with _client(_config(tmp_path / "data", _mods(request, tmp_path), sidecar, enabled=False)) as client:
         await _add(client, "disabled", "Buffered cobalt-orchid must not invoke extraction.")
-        assert (await _status(client)).get("processed", 0) == 0
+        buffered = await _wait_status(client, lambda value: value.get("buffered", 0) >= 1)
+        assert buffered.get("processed", 0) == 0
     assert llm_stub[1].calls == []
 
 
@@ -351,7 +354,7 @@ async def test_enabling_flush_processes_existing_buffer(tmp_path: Path, everos_s
     data_dir = tmp_path / "data"
     async with _client(_config(data_dir, mods, sidecar, enabled=False)) as client:
         message = await _add(client, "transition", "A buffered cobalt-orchid enters extraction after enabling flush.")
-        buffered = await _status(client)
+        buffered = await _wait_status(client, lambda value: value.get("buffered", 0) == 1)
         assert buffered.get("processed", 0) == 0
         assert buffered.get("buffered", 0) == 1
     async with _client(_config(data_dir, mods, sidecar, enabled=True)) as client:
@@ -383,3 +386,44 @@ async def test_due_flush_and_pending_add_progress_together(tmp_path: Path, evero
     second_result = await _wait_search(sidecar, "flush-e2e-sophia-" + str(second["conversation_id"]))
     assert any("cobalt-orchid" in repr(episode) for episode in first_result.get("data", {}).get("episodes", []))
     assert any("cobalt-orchid" in repr(episode) for episode in second_result.get("data", {}).get("episodes", []))
+
+
+@pytest.mark.asyncio
+async def test_flush_context_projects_source_labeled_episode_and_falls_back(
+    tmp_path: Path, everos_server, request
+):
+    sidecar, _, stop, _ = everos_server
+    data_dir = tmp_path / "sophia-data"
+    async with _client(_config(data_dir, _mods(request, tmp_path), sidecar, enabled=True)) as client:
+        first = await _add(client, "context", "Remember cobalt-orchid from the context message.")
+        await _add(client, "context", "The assistant confirms the cobalt-orchid context.", role="assistant")
+        processed = await _wait_status(client, lambda value: value.get("processed", 0) >= 2)
+        assert processed.get("processed", 0) >= 2
+        await _wait_search(sidecar, "flush-e2e-sophia-" + str(first["conversation_id"]))
+
+        response = await client.post(
+            "/state/v1/context",
+            json={"harness": "everos-flush-e2e", "conversation_id": "context", "query": "cobalt-orchid"},
+        )
+        assert response.status_code == 200, response.text
+        plugin_context = response.json()["context"]["memory"].get("plugin_context")
+        assert plugin_context is not None, response.text
+        assert isinstance(plugin_context.get("source"), str) and plugin_context["source"]
+        records = plugin_context.get("records") or []
+        assert all(isinstance(item.get("source"), str) and item["source"] for item in records)
+        blob = json.dumps(plugin_context)
+        assert "keyword" in blob, blob
+        assert "memory_id" not in blob, blob
+
+        stop()
+        fallback = await client.post(
+            "/state/v1/context",
+            json={"harness": "everos-flush-e2e", "conversation_id": "context", "query": "cobalt-orchid"},
+        )
+        assert fallback.status_code == 200, fallback.text
+        fallback_body = fallback.json()
+        assert "Remember cobalt-orchid from the context message." in fallback_body["injection"]
+        assert any(
+            "Remember cobalt-orchid from the context message." in item["text"]
+            for item in fallback_body["records"]
+        )
