@@ -42,25 +42,49 @@ Set `memory_plugin.timeout_seconds` above `options.everos.timeout_seconds` with
 enough margin for the gateway to handle a timed-out sidecar request. The
 example uses 15 seconds for the plugin and 5 seconds for EverOS.
 
-This is a local SQLite-authoritative archival mirror. Sophia search remains
-local. Only `user` and `assistant` messages are mirrored. Tool messages are not
-mirrored. If the local EverOS server is unavailable, delivery is queued in
-SQLite. Messages with valid timestamps before the Unix epoch remain local and
-are intentionally not mirrored because EverOS requires positive millisecond
-timestamps. Each backfill makes one delivery attempt. The retry queue
-prioritizes rows with fewer attempts, so later rows can deliver while a
-permanently rejected row remains pending. Both stores contain plaintext and
-need separate backups.
+## What the plugin owns
 
+The gateway owns message and evergreen storage in its built-in SQLite store.
+The plugin owns only the EverOS sidecar delivery path and three extension
+tables in the same database file: `everos_sessions`, `everos_session_map`,
+`everos_outbox`, and `everos_flush_state`. It never creates or migrates core
+message, fact, affect, or proactive tables.
+
+The gateway calls `ingest_messages` with bounded batches of committed user and
+assistant messages. The plugin maps each `(harness, external conversation id)`
+pair to an EverOS session, inserts the eligible rows into `everos_outbox`, and
+returns the highest received message id. Insertion is idempotent through the
+unique `message_id` column, so a replay from zero deduplicates pending and
+delivered rows while old pending rows still drain. Messages keep their core
+ids. Only `user` and `assistant` messages with positive millisecond timestamps
+are queued, and two messages that share a timestamp get a bumped one.
+
+A sidecar outage never fails the plugin acknowledgement. The gateway acks the
+batch after the outbox commit, and the scheduler retries delivery later. Each
+backfill makes one delivery or flush attempt. The retry queue prioritizes rows
+with fewer attempts, so later rows can deliver while a permanently rejected row
+remains pending.
+
+## Context injection
+
+The gateway calls `inject_context` with a query, a scope, a character budget,
+and the harness plus external conversation id. The plugin resolves the exact
+`(harness, conversation id)` pair to an EverOS session, then searches
+`POST /api/v2/memory/search` with `method: "keyword"` and an exact session
+filter. It returns short source-labeled derived episodes with their episode id
+and timestamp when EverOS provides them. It ignores the unbounded
+`unprocessed_messages` list and never invents message ids. When the mapping,
+the sidecar, or the keyword results are absent, the plugin returns empty
+context and the gateway keeps its core recent and evergreen context.
+
+## Flush behavior
+
+`flush_after_ingest` defaults to `false`. Set it to `true` to send one deferred
+add during Sophia ingest, then let the scheduler flush it through EverOS.
+EverOS must run with a configured LLM for extraction. `buffered` acknowledges
+the deferred add. `processed` acknowledges the flush, not indexing completion.
 Use the [EverOS setup and public API documentation](https://github.com/EverMind-AI/EverOS)
-to configure the server. `flush_after_ingest` defaults to `false`. Set it to
-`true` to send one deferred add during Sophia ingest, then let the scheduler
-flush it through EverOS. EverOS must run with a configured LLM for extraction.
-`buffered` acknowledges the deferred add. `processed` acknowledges the flush,
-not indexing completion. Sophia search remains local because EverOS exposes no
-per-message provenance. Use EverOS keyword search through its [public API](https://github.com/EverMind-AI/EverOS)
-to inspect episodes. See the [Sophia README](https://github.com/Somme4096/sophia)
-for Sophia API descriptions.
+to configure the server and inspect episodes.
 
 ## Phrase patterns
 

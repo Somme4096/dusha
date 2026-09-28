@@ -3,136 +3,104 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from dataclasses import fields
 from pathlib import Path
 from typing import Any
 
+
 class Worker:
     def __init__(self, path: str | Path, options: dict[str, Any] | None = None):
-        from memory.config import MemoryConfig
         from memory.database import Database
-        from memory.evergreen import EvergreenStore
-        from memory.semantic import SemanticIndex
-        from memory.store import MemoryStore
         from memory.everos import EverOSMirror
 
         self.database = Database(path)
-        self.config = _memory_config(MemoryConfig, options or {})
-        self.semantic = SemanticIndex(self.database, self.config)
         self.everos = EverOSMirror(self.database, (options or {}).get("everos", {}))
-        self.store = MemoryStore(self.database, self.semantic, self.everos)
-        self.evergreen = EvergreenStore(self.database)
 
     def dispatch(self, method: str, params: dict[str, Any]) -> Any:
         options = params.get("options", {})
         params = params.get("request", params)
-        if method == "ingest":
-            result = self.store.ingest(**params)
-            self.everos.deliver_pending(1)
-            return _message(result)
-        if method == "get":
-            return {"message": self.store.get(int(params["message_id"]))}
-        if method == "conversation_id":
-            return {"conversation_id": self.store.conversation_id(params["harness"], params["conversation_id"])}
-        if method == "search":
-            return {"results": self.store.search(**params)}
-        if method == "context":
-            return {"messages": self.store.context(params["message_id"], params.get("context_messages", 1))}
-        if method == "recent":
-            internal_id = self.store.conversation_id(params["harness"], params["conversation_id"])
-            return {"messages": self.store.recent(
-                internal_id, params.get("limit", 5), params.get("exclude_ids", ()),
-            )}
-        if method == "rebuild_index":
-            return {"status": self.store.rebuild_index()}
-        if method == "recall":
-            return self._recall(params)
-        if method == "remember":
-            return {"fact": self.evergreen.remember(**params)}
-        if method == "list_current":
-            return {"facts": self.evergreen.list_current(**params)}
-        if method == "history":
-            return {"revisions": self.evergreen.history(params["fact_id"])}
-        if method == "revise":
-            return {"fact": self.evergreen.revise(**params)}
-        if method == "forget":
-            return {"fact": self.evergreen.forget(**params)}
-        if method == "render_facts":
-            rendered, facts = self.evergreen.render(**params)
-            return {"rendered": rendered, "facts": facts}
+        if method == "ingest_messages":
+            return self._ingest_messages(params)
+        if method == "inject_context":
+            return self._inject_context(params)
         if method == "status":
-            return {"status": {**self.semantic.status(), "everos": self.everos.status()}}
+            return {"status": self._status()}
         if method == "backfill_once":
-            status = self.semantic.backfill_once(**params)
-            status["everos"] = self.everos.backfill_once()
-            return {"status": status}
-        if method == "ensure_message_chunks":
-            return {"chunks": self.semantic.ensure_message_chunks(params["message_id"])}
+            return {"status": self._backfill_once()}
+        if method == "rebuild_index":
+            return {"status": self._rebuild_index()}
         if method == "rebuild_chunks":
-            return {"status": self.semantic.rebuild_chunks()}
+            return {"status": self._rebuild_chunks()}
+        if method == "ensure_message_chunks":
+            return {"chunks": 0}
+        if method == "match_phrase":
+            return self._match_phrase(options, params)
         if method == "close":
-            self.semantic.close()
             self.everos.close()
             return None
-        if method == "match_phrase":
-            message = str(params["message"]).casefold()
-            for phrase in options.get("phrase_patterns", []):
-                if str(phrase["pattern"]).casefold() in message:
-                    return {"deltas": phrase["deltas"]}
-            return {"deltas": None}
         raise ValueError(f"unknown memory method: {method}")
 
-    def _recall(self, params: dict[str, Any]) -> dict[str, Any]:
-        search_params = {
-            "query": params["query"],
-            "limit": params.get("search_hits", 10),
-            "context_messages": params.get("context_messages", 3),
-            "exclude_ids": params.get("exclude_ids", ()),
+    def _ingest_messages(self, params: dict[str, Any]) -> dict[str, Any]:
+        messages = params.get("messages") or ()
+        highest = 0
+        for item in messages:
+            if not isinstance(item, dict):
+                continue
+            try:
+                highest = max(highest, int(item["id"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+        self.everos.enqueue_messages(messages)
+        try:
+            self.everos.deliver_pending(1)
+        except Exception:
+            pass
+        return {"highest_id": highest}
+
+    def _inject_context(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self.everos.inject_context(
+            query=str(params.get("query", "")),
+            scope=str(params.get("scope", "")),
+            harness=str(params.get("harness", "")),
+            conversation_id=str(params.get("conversation_id", "")),
+            max_chars=int(params.get("max_chars", 0) or 0),
+        )
+
+    def _status(self) -> dict[str, Any]:
+        return {
+            "mode": "lexical",
+            "retrieval": "lexical",
+            "enabled": True,
+            "plugin": "everos",
+            "everos": self.everos.status(),
         }
-        search_hits = self.store.search(**search_params)
-        records: list[dict[str, Any]] = []
-        seen: set[int] = set()
-        if params.get("include_recent", True):
-            internal_id = self.store.conversation_id(params["harness"], params["conversation_id"])
-            recent = self.store.recent(
-                internal_id, params.get("recent_messages", 5), params.get("exclude_ids", ()),
-            )
-            for message in recent:
-                if message["id"] not in seen:
-                    records.append({**message, "source": "recent"})
-                    seen.add(message["id"])
-        for hit in search_hits:
-            for message in hit["messages"]:
-                if message["id"] not in seen and message["id"] not in params.get("exclude_ids", ()):
-                    records.append({**message, "source": "recalled"})
-                    seen.add(message["id"])
-        return {"records": records, "search_hits": search_hits}
 
+    def _backfill_once(self) -> dict[str, Any]:
+        return {
+            "retrieval": "lexical",
+            "enabled": True,
+            "plugin": "everos",
+            "everos": self.everos.backfill_once(),
+        }
 
-def _message(value: Any) -> Any:
-    return value.__dict__ if hasattr(value, "__dict__") else {
-        "id": value.id, "duplicate": value.duplicate,
-        "conversation_id": value.conversation_id, "sha256": value.sha256,
-    }
+    @staticmethod
+    def _rebuild_index() -> dict[str, Any]:
+        return {"status": "rebuilt", "scope": "everos", "rebuilt": True}
 
+    @staticmethod
+    def _rebuild_chunks() -> dict[str, Any]:
+        return {"status": "rebuilt", "scope": "everos", "chunks": 0}
 
-def _memory_config(memory_config_type: Any, options: dict[str, Any]) -> Any:
-    config_options = options.get("memory", options)
-    config = memory_config_type()
-    for item in fields(config):
-        if item.name == "embedding":
-            continue
-        if item.name in config_options:
-            setattr(config, item.name, config_options[item.name])
-    embedding_options = config_options.get("embedding", {})
-    for item in fields(config.embedding):
-        if item.name in embedding_options:
-            setattr(config.embedding, item.name, embedding_options[item.name])
-    return config
+    @staticmethod
+    def _match_phrase(options: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+        message = str(params["message"]).casefold()
+        for phrase in options.get("phrase_patterns", []):
+            if str(phrase["pattern"]).casefold() in message:
+                return {"deltas": phrase["deltas"]}
+        return {"deltas": None}
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="SQLite memory worker")
+    parser = argparse.ArgumentParser(description="EverOS memory plugin worker")
     parser.add_argument("database", nargs="?", default="memory.sqlite3")
     args = parser.parse_args()
     worker: Worker | None = None

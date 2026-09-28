@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-import re
 import math
 import os
-from datetime import datetime, timedelta, timezone
-from urllib.parse import urlsplit
+import re
+from datetime import UTC, datetime, timedelta
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
+from .timeutil import parse_time
 
 _SAFE = re.compile(r"^[a-zA-Z0-9_.@+-]+$")
 _OPTIONS = {
@@ -17,6 +18,8 @@ _OPTIONS = {
 }
 _RPC_TIMEOUT_ENV = "SOPHIA_MEMORY_RPC_TIMEOUT_SECONDS"
 _MIN_RPC_TIMEOUT = 0.5
+_SEARCH_TOP_K = 5
+_EPISODE_SKIP_KEYS = {"session_id", "app_id", "project_id", "user_id"}
 
 
 class EverOSMirror:
@@ -48,10 +51,14 @@ class EverOSMirror:
             raise ValueError("memory plugin RPC timeout is too low")
         timeout = options.get("timeout_seconds", 5)
         if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
-            raise ValueError("timeout_seconds must be finite, positive, and no more than 60 percent of RPC timeout")
+            raise ValueError(
+                "timeout_seconds must be finite, positive, and no more than 60 percent of RPC timeout"
+            )
         self.timeout = float(timeout)
         if not math.isfinite(self.timeout) or not 0 < self.timeout <= rpc_timeout * 0.6:
-            raise ValueError("timeout_seconds must be finite, positive, and no more than 60 percent of RPC timeout")
+            raise ValueError(
+                "timeout_seconds must be finite, positive, and no more than 60 percent of RPC timeout"
+            )
         self.client = httpx.Client(
             timeout=httpx.Timeout(self.timeout), follow_redirects=False, trust_env=False,
         )
@@ -80,24 +87,189 @@ class EverOSMirror:
             raise ValueError("EverOS URL must not include a path")
         return str(value).rstrip("/")
 
-    def ensure_session(self, db: Any, conversation_id: int) -> str:
+    def resolve_session(
+        self, db: Any, harness: str, external_id: str, conversation_id: int,
+    ) -> str:
         row = db.execute(
-            "SELECT session_id FROM everos_sessions WHERE conversation_id=?", (conversation_id,)
+            "SELECT session_id FROM everos_session_map WHERE harness=? AND external_conversation_id=?",
+            (harness, external_id),
         ).fetchone()
         if row:
-            return str(row[0])
-        session_id = f"{self.instance_namespace}-sophia-{conversation_id}"
-        if len(session_id) > 128:
-            raise ValueError("EverOS session identifier is too long")
+            return str(row["session_id"])
+        legacy = db.execute(
+            "SELECT session_id FROM everos_sessions WHERE conversation_id=?",
+            (conversation_id,),
+        ).fetchone()
+        if legacy:
+            session_id = str(legacy["session_id"])
+        else:
+            session_id = f"{self.instance_namespace}-sophia-{conversation_id}"
+            if len(session_id) > 128:
+                raise ValueError("EverOS session identifier is too long")
+            db.execute(
+                "INSERT INTO everos_sessions"
+                "(conversation_id, session_id, app_id, project_id) VALUES(?,?,?,?)",
+                (conversation_id, session_id, self.app_id, self.project_id),
+            )
         db.execute(
-            "INSERT INTO everos_sessions(conversation_id, session_id, app_id, project_id) VALUES(?,?,?,?)",
-            (conversation_id, session_id, self.app_id, self.project_id),
+            """INSERT INTO everos_session_map
+               (harness, external_conversation_id, session_id, app_id, project_id)
+               VALUES(?,?,?,?,?)
+               ON CONFLICT(harness, external_conversation_id) DO UPDATE SET
+                 session_id=excluded.session_id""",
+            (harness, external_id, session_id, self.app_id, self.project_id),
         )
         return session_id
 
+    def enqueue_messages(self, messages: Any) -> int:
+        inserted = 0
+        with self.database.connect() as db:
+            for record in messages or ():
+                if not isinstance(record, dict):
+                    continue
+                role = str(record.get("role", ""))
+                if role not in {"user", "assistant"}:
+                    continue
+                text = str(record.get("text", ""))
+                if not text.strip():
+                    continue
+                when = parse_time(record.get("occurred_at"))
+                timestamp = int(when.timestamp() * 1000)
+                if timestamp <= 0:
+                    continue
+                message_id = int(record["id"])
+                session_id = self.resolve_session(
+                    db,
+                    str(record.get("harness", "")),
+                    str(record.get("external_conversation_id", "")),
+                    int(record["conversation_id"]),
+                )
+                if db.execute(
+                    "SELECT 1 FROM everos_outbox WHERE message_id=?", (message_id,)
+                ).fetchone():
+                    continue
+                while db.execute(
+                    "SELECT 1 FROM everos_outbox WHERE session_id=? AND timestamp=?",
+                    (session_id, timestamp),
+                ).fetchone():
+                    timestamp += 1
+                sender_id = (
+                    self.user_sender_id if role == "user" else self.assistant_sender_id
+                )
+                db.execute(
+                    """INSERT INTO everos_outbox
+                       (message_id, session_id, app_id, project_id, sender_id, role, text, timestamp)
+                       VALUES(?,?,?,?,?,?,?,?)""",
+                    (message_id, session_id, self.app_id, self.project_id,
+                     sender_id, role, text, timestamp),
+                )
+                inserted += 1
+        return inserted
+
+    def inject_context(
+        self, *, query: str, scope: str, harness: str, conversation_id: str, max_chars: int,
+    ) -> dict[str, Any]:
+        empty: dict[str, Any] = {"text": "", "records": []}
+        if not query.strip() or max_chars <= 0:
+            return empty
+        session_id = self._session_for(harness, conversation_id, scope)
+        if not session_id:
+            return empty
+        try:
+            episodes = self.search_episodes(session_id, query)
+        except Exception:
+            return empty
+        records: list[dict[str, Any]] = []
+        used = 0
+        for episode in episodes:
+            body = self._episode_text(episode)
+            if not body:
+                continue
+            body = body[: max(0, max_chars - used)]
+            if not body:
+                break
+            records.append({"source": "everos_episode", "text": body})
+            used += len(body)
+            if used >= max_chars:
+                break
+        return {"text": "", "records": records}
+
+    def _session_for(self, harness: str, conversation_id: str, scope: str) -> str | None:
+        with self.database.connect() as db:
+            if harness and conversation_id:
+                row = db.execute(
+                    """SELECT session_id FROM everos_session_map
+                       WHERE harness=? AND external_conversation_id=?""",
+                    (harness, conversation_id),
+                ).fetchone()
+                return str(row["session_id"]) if row else None
+            token = conversation_id or scope
+            if not token:
+                return None
+            rows = db.execute(
+                """SELECT DISTINCT session_id FROM everos_session_map
+                   WHERE external_conversation_id=?""",
+                (token,),
+            ).fetchall()
+            return str(rows[0]["session_id"]) if len(rows) == 1 else None
+
+    def search_episodes(self, session_id: str, query: str) -> list[dict[str, Any]]:
+        payload = {
+            "user_id": self.user_sender_id,
+            "app_id": self.app_id,
+            "project_id": self.project_id,
+            "query": query,
+            "method": "keyword",
+            "top_k": _SEARCH_TOP_K,
+            "filters": {"session_id": session_id},
+        }
+        response = self.client.post(self.url + "/api/v2/memory/search", json=payload)
+        response.raise_for_status()
+        body = response.json()
+        data = body.get("data") if isinstance(body, dict) else None
+        episodes = data.get("episodes") if isinstance(data, dict) else None
+        if not isinstance(episodes, list):
+            return []
+        return [item for item in episodes if isinstance(item, dict)]
+
+    @classmethod
+    def _episode_text(cls, episode: dict[str, Any]) -> str:
+        parts: list[str] = []
+        for key, value in episode.items():
+            if key in _EPISODE_SKIP_KEYS or "message" in str(key).casefold():
+                continue
+            cls._collect_strings(value, parts)
+        content = " ".join(dict.fromkeys(part.strip() for part in parts if part.strip()))
+        if not content:
+            return ""
+        label: list[str] = []
+        identifier = episode.get("id") or episode.get("episode_id")
+        if identifier not in (None, ""):
+            label.append(f"episode {identifier}")
+        timestamp = (
+            episode.get("timestamp")
+            or episode.get("created_at")
+            or episode.get("occurred_at")
+        )
+        if timestamp not in (None, ""):
+            label.append(str(timestamp))
+        prefix = f"[{' '.join(label)}] " if label else ""
+        return prefix + content
+
+    @classmethod
+    def _collect_strings(cls, value: Any, parts: list[str]) -> None:
+        if isinstance(value, str):
+            parts.append(value)
+        elif isinstance(value, dict):
+            for nested in value.values():
+                cls._collect_strings(nested, parts)
+        elif isinstance(value, (list, tuple)):
+            for nested in value:
+                cls._collect_strings(nested, parts)
+
     @staticmethod
     def _now() -> datetime:
-        return datetime.now(timezone.utc)
+        return datetime.now(UTC)
 
     @staticmethod
     def _error(kind: str) -> str:
@@ -210,7 +382,8 @@ class EverOSMirror:
         with self.database.connect() as db:
             if error is not None:
                 state = db.execute(
-                    "SELECT attempts FROM everos_flush_state WHERE app_id=? AND project_id=? AND session_id=?",
+                    "SELECT attempts FROM everos_flush_state "
+                    "WHERE app_id=? AND project_id=? AND session_id=?",
                     (row["app_id"], row["project_id"], row["session_id"]),
                 ).fetchone()
                 attempts = int(state[0]) + 1
@@ -229,7 +402,10 @@ class EverOSMirror:
                    due_at=CASE WHEN requested_generation > ? THEN ? ELSE NULL END
                    WHERE app_id=? AND project_id=? AND session_id=?
                    AND processed_generation < ?""",
-                (captured, result, captured, now, row["app_id"], row["project_id"], row["session_id"], captured),
+                (
+                    captured, result, captured, now,
+                    row["app_id"], row["project_id"], row["session_id"], captured,
+                ),
             )
             db.execute(
                 """UPDATE everos_outbox SET processed_at=?
@@ -257,11 +433,20 @@ class EverOSMirror:
             flush = None
         if add is None and flush is None:
             return {"attempted": 0, "delivered": 0, "failed": 0, "flushed": 0, "flush_failed": 0}
-        if flush is None or (add is not None and (int(add["attempts"]), add["queued_at"]) <= (int(flush["attempts"]), flush["due_at"])):
+        if flush is None or (
+            add is not None
+            and (int(add["attempts"]), add["queued_at"]) <= (int(flush["attempts"]), flush["due_at"])
+        ):
             delivered = int(self._deliver_row(add))
-            return {"attempted": 1, "delivered": delivered, "failed": 1 - delivered, "flushed": 0, "flush_failed": 0}
+            return {
+                "attempted": 1, "delivered": delivered, "failed": 1 - delivered,
+                "flushed": 0, "flush_failed": 0,
+            }
         flushed = int(self._flush_row(flush))
-        return {"attempted": 1, "delivered": 0, "failed": 0, "flushed": flushed, "flush_failed": 1 - flushed}
+        return {
+            "attempted": 1, "delivered": 0, "failed": 0,
+            "flushed": flushed, "flush_failed": 1 - flushed,
+        }
 
     def status(self) -> dict[str, Any]:
         with self.database.connect() as db:
@@ -274,7 +459,9 @@ class EverOSMirror:
                    FROM everos_outbox"""
             ).fetchone()
             flush = db.execute(
-                "SELECT COALESCE(SUM(attempts), 0) AS attempts, MAX(last_error) AS last_error, MAX(last_result) AS last_result FROM everos_flush_state"
+                "SELECT COALESCE(SUM(attempts), 0) AS attempts, "
+                "MAX(last_error) AS last_error, MAX(last_result) AS last_result "
+                "FROM everos_flush_state"
             ).fetchone()
         return {
             "enabled": True,

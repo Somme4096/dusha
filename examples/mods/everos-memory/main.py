@@ -7,10 +7,9 @@ from typing import Any
 from worker import Worker
 
 __all__ = [
-    "ingest", "get", "conversation_id", "search", "context", "recent",
-    "rebuild_index", "recall", "remember", "list_current", "history", "revise",
-    "forget", "render_facts", "status", "backfill_once", "ensure_message_chunks",
-    "rebuild_chunks", "close", "match_phrase",
+    "ingest_messages", "inject_context", "status", "backfill_once",
+    "rebuild_index", "rebuild_chunks", "ensure_message_chunks",
+    "match_phrase", "close",
 ]
 
 _lock = Lock()
@@ -24,7 +23,11 @@ def _value(request: Any) -> dict[str, Any]:
         return dataclasses.asdict(request)
     if isinstance(request, dict):
         return dict(request)
-    return {name: getattr(request, name) for name in dir(request) if not name.startswith("_") and not callable(getattr(request, name))}
+    return {
+        name: getattr(request, name)
+        for name in dir(request)
+        if not name.startswith("_") and not callable(getattr(request, name))
+    }
 
 
 def _call(method: str, request: Any = None, options: dict[str, Any] | None = None) -> Any:
@@ -40,23 +43,12 @@ def _export(method: str):
     return lambda request=None, options=None: _call(method, request, options)
 
 
-ingest = _export("ingest")
-get = _export("get")
-conversation_id = _export("conversation_id")
-search = _export("search")
-context = _export("context")
-recent = _export("recent")
-rebuild_index = _export("rebuild_index")
-recall = _export("recall")
-remember = _export("remember")
-list_current = _export("list_current")
-history = _export("history")
-revise = _export("revise")
-forget = _export("forget")
-render_facts = _export("render_facts")
+ingest_messages = _export("ingest_messages")
+inject_context = _export("inject_context")
 status = _export("status")
 backfill_once = _export("backfill_once")
-ensure_message_chunks = _export("ensure_message_chunks")
+rebuild_index = _export("rebuild_index")
 rebuild_chunks = _export("rebuild_chunks")
-close = _export("close")
+ensure_message_chunks = _export("ensure_message_chunks")
 match_phrase = _export("match_phrase")
+close = _export("close")
