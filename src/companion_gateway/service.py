@@ -296,7 +296,7 @@ class CompanionService:
         try:
             result = self.memory.ingest_messages(IngestMessagesRequest(messages=tuple(batch)))
         except Exception:
-            logger.warning("memory plugin message ingestion failed")
+            logger.warning("memory plugin message ingestion failed", exc_info=True)
             return {"cursor": cursor, "pushed": len(batch), "acknowledged": False}
         highest = getattr(result, "highest_id", None)
         expected = int(batch[-1]["id"])
@@ -411,7 +411,7 @@ class CompanionService:
                 if result is not None and isinstance(result.status, dict):
                     return result.status
             except Exception:
-                logger.warning("memory plugin backfill unavailable")
+                logger.warning("memory plugin backfill unavailable", exc_info=True)
         return {"retrieval": "lexical", "enabled": False, "embedded": 0, "chunks_created": 0}
 
     def memory_index_rebuild(self) -> dict[str, Any]:

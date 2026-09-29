@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import os
 import re
+import threading
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlsplit
@@ -68,6 +69,8 @@ class EverOSMirror:
         self.flush_after_ingest = flush_after_ingest
         if self.flush_after_ingest:
             self._schedule_buffered()
+        self._flush_lock = threading.Lock()
+        self._flush_in_flight: set[tuple[str, str, str]] = set()
 
     @staticmethod
     def _id(value: Any) -> str:
@@ -362,10 +365,31 @@ class EverOSMirror:
         return {"attempted": len(rows), "delivered": delivered, "failed": len(rows) - delivered}
 
     def _flush_row(self, row: Any) -> bool:
+        key = (str(row["app_id"]), str(row["project_id"]), str(row["session_id"]))
+        snapshot = {
+            "app_id": key[0], "project_id": key[1], "session_id": key[2],
+            "requested_generation": int(row["requested_generation"]),
+        }
+        with self._flush_lock:
+            if key in self._flush_in_flight:
+                return False
+            self._flush_in_flight.add(key)
+        thread = threading.Thread(target=self._flush_in_background, args=(key, snapshot), daemon=True)
+        thread.start()
+        return True
+
+    def _flush_in_background(self, key: tuple[str, str, str], snapshot: dict[str, Any]) -> None:
+        try:
+            self._flush_snapshot(snapshot)
+        finally:
+            with self._flush_lock:
+                self._flush_in_flight.discard(key)
+
+    def _flush_snapshot(self, snapshot: dict[str, Any]) -> None:
         payload = {
-            "app_id": row["app_id"],
-            "project_id": row["project_id"],
-            "session_id": row["session_id"],
+            "app_id": snapshot["app_id"],
+            "project_id": snapshot["project_id"],
+            "session_id": snapshot["session_id"],
         }
         error = None
         result = None
@@ -384,17 +408,19 @@ class EverOSMirror:
                 state = db.execute(
                     "SELECT attempts FROM everos_flush_state "
                     "WHERE app_id=? AND project_id=? AND session_id=?",
-                    (row["app_id"], row["project_id"], row["session_id"]),
+                    (snapshot["app_id"], snapshot["project_id"], snapshot["session_id"]),
                 ).fetchone()
                 attempts = int(state[0]) + 1
-                due = (self._now() + timedelta(seconds=min(60, 2 ** min(attempts, 6)))).isoformat()
+                backoff = min(60, 2 ** min(attempts, 6))
+                due = (self._now() + timedelta(seconds=backoff)).isoformat()
+                scope = (snapshot["app_id"], snapshot["project_id"], snapshot["session_id"])
                 db.execute(
                     """UPDATE everos_flush_state SET attempts=?, last_error=?, due_at=?
                        WHERE app_id=? AND project_id=? AND session_id=?""",
-                    (attempts, error, due, row["app_id"], row["project_id"], row["session_id"]),
+                    (attempts, error, due, *scope),
                 )
-                return False
-            captured = int(row["requested_generation"])
+                return
+            captured = int(snapshot["requested_generation"])
             now = self._now().isoformat()
             db.execute(
                 """UPDATE everos_flush_state SET processed_generation=?, attempts=0,
@@ -404,16 +430,15 @@ class EverOSMirror:
                    AND processed_generation < ?""",
                 (
                     captured, result, captured, now,
-                    row["app_id"], row["project_id"], row["session_id"], captured,
+                    snapshot["app_id"], snapshot["project_id"], snapshot["session_id"], captured,
                 ),
             )
             db.execute(
                 """UPDATE everos_outbox SET processed_at=?
                    WHERE app_id=? AND project_id=? AND session_id=?
                    AND flush_generation > 0 AND flush_generation <= ? AND processed_at IS NULL""",
-                (now, row["app_id"], row["project_id"], row["session_id"], captured),
+                (now, snapshot["app_id"], snapshot["project_id"], snapshot["session_id"], captured),
             )
-            return True
 
     def backfill_once(self) -> dict[str, Any]:
         now = self._now().isoformat()
@@ -442,10 +467,10 @@ class EverOSMirror:
                 "attempted": 1, "delivered": delivered, "failed": 1 - delivered,
                 "flushed": 0, "flush_failed": 0,
             }
-        flushed = int(self._flush_row(flush))
+        self._flush_row(flush)
         return {
             "attempted": 1, "delivered": 0, "failed": 0,
-            "flushed": flushed, "flush_failed": 1 - flushed,
+            "flushed": 0, "flush_failed": 0,
         }
 
     def status(self) -> dict[str, Any]:

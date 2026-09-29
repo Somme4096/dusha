@@ -81,6 +81,9 @@ context and the gateway keeps its core recent and evergreen context.
 
 `flush_after_ingest` defaults to `false`. Set it to `true` to send one deferred
 add during Sophia ingest, then let the scheduler flush it through EverOS.
+The flush runs on a background thread so a slow sidecar never blocks the
+plugin RPC; completion lands in `everos_flush_state` and surfaces through
+`status`. At most one flush runs per session at a time.
 EverOS must run with a configured LLM for extraction. `buffered` acknowledges
 the deferred add. `processed` acknowledges the flush, not indexing completion.
 Use the [EverOS setup and public API documentation](https://github.com/EverMind-AI/EverOS)

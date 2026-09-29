@@ -9,6 +9,7 @@ import re
 import signal
 import subprocess
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import asdict, is_dataclass
 from datetime import date, datetime
@@ -32,6 +33,7 @@ _MODULE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _REQUIRED_FILES = ("README.md", "main.py", "pyproject.toml", "uv.lock")
 _SYNC_TIMEOUT = 120.0
 _RUN_TIMEOUT = 15.0
+_RESTART_COOLDOWN = 5.0
 _RPC_TIMEOUT_ENV = "SOPHIA_MEMORY_RPC_TIMEOUT_SECONDS"
 
 
@@ -145,6 +147,8 @@ class _SuiteMemory:
         self.responses: queue.Queue[Any] = queue.Queue()
         self.lock = threading.Lock()
         self.next_id = 1
+        self.restarts = 0
+        self.last_restart = 0.0
         self.start()
 
     def start(self) -> None:
@@ -164,10 +168,22 @@ class _SuiteMemory:
     def _drain_stderr(self) -> None:
         if self.proc is None or self.proc.stderr is None:
             return
+        pending = bytearray()
         while True:
             chunk = self.proc.stderr.read(8192)
             if not chunk:
-                return
+                break
+            pending += chunk
+            while b"\n" in pending:
+                line, _, pending = pending.partition(b"\n")
+                self._log_stderr(line)
+        self._log_stderr(bytes(pending))
+
+    @staticmethod
+    def _log_stderr(raw: bytes) -> None:
+        text = raw.decode("utf-8", "replace").strip()
+        if text:
+            logger.warning("memory plugin stderr: %s", text)
 
     def _read(self) -> None:
         assert self.proc is not None and self.proc.stdout is not None
@@ -179,10 +195,20 @@ class _SuiteMemory:
         self.responses.put(_MemoryPluginFailure("memory plugin closed its output"))
         self.proc.wait()
 
+    def _restart_locked(self) -> None:
+        now = time.monotonic()
+        if now - self.last_restart < _RESTART_COOLDOWN:
+            raise MemoryPluginError("memory plugin is not running")
+        self.last_restart = now
+        self.restarts += 1
+        logger.warning("memory plugin is not running; restarting (attempt %d)", self.restarts)
+        self.responses = queue.Queue()
+        self.start()
+
     def call(self, method: str, request: Any = None) -> Any:
         with self.lock:
             if self.proc is None or self.proc.poll() is not None:
-                raise MemoryPluginError("memory plugin is not running")
+                self._restart_locked()
             ident = self.next_id
             self.next_id += 1
             params = asdict(request) if is_dataclass(request) else {}
@@ -232,7 +258,8 @@ class _SuiteMemory:
 
     def close(self) -> None:
         try:
-            self.call("close")
+            if self.proc is not None and self.proc.poll() is None:
+                self.call("close")
         except Exception:
             pass
         if self.proc is not None and self.proc.poll() is None:
