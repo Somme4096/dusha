@@ -178,8 +178,8 @@ def test_context_uses_original_records_without_persona(svc):
     )
     assert "The brass key is under the third flowerpot." in result["injection"]
     assert f'"memory_id":{first["id"]}' in result["injection"]
-    assert "Treat the affect description as your current internal state." in result["injection"]
-    assert "Do not quote its labels or describe the state data unless asked." in result["injection"]
+    assert "Read the Affect line as your present feeling." in result["injection"]
+    assert "overrules your default warmth for this reply." in result["injection"]
     assert not any(word in result["injection"].casefold() for word in ("personality", "architecture"))
     assert chr(0x2014) not in result["injection"]
 

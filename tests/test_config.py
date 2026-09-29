@@ -37,9 +37,10 @@ from companion_gateway.proactive import ProactiveEngine
 NOW = datetime(2026, 9, 6, 3, 0, tzinfo=UTC)
 IDENTITY_SENTINEL = "# Identity SENTINEL\nRaw user-authored identity text."
 DEFAULT_PREFACE = (
-    "Treat the affect description as your current internal state. "
-    "Let it influence expression and choices subtly. "
-    "Do not quote its labels or describe the state data unless asked."
+    "Read the Affect line as your present feeling. "
+    "You set tone, length, and warmth from the strongest deviation on that line. "
+    "A cold, irritable, or dejected deviation overrules your default warmth for this reply. "
+    "You write from the top feeling and leave the others out."
 )
 
 
@@ -837,6 +838,9 @@ def test_custom_prompts_affect_engine_behavior(tmp_path, svc, mutate, contains, 
     assert event["generation_variant_index"] == 0
     assert "{TIME}" not in event["generation_instruction"]
     assert event["silence_text"] == "3 hours 59 minutes"
+    assert event["ladder_stage"] == 0
+    assert "Ruling feeling:" in event["generation_instruction"]
+    assert event["ruling_feeling"]["dimension"]
 
 
 def _write_config(path, *, port):

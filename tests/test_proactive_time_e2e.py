@@ -67,6 +67,11 @@ async def test_http_proactive_instruction_uses_base_and_variant(config):
         assert "{TIME}" not in event["generation_instruction"]
         assert event["silence_text"] == "4 hours 5 minutes"
         assert event["silence_minutes"] >= 240
+        assert event["ladder_stage"] == 0
+        assert event["unanswered_proactive"] == 0
+        assert "first nudge" in event["generation_instruction"]
+        assert event["ruling_feeling"]["dimension"] == "longing"
+        assert "Ruling feeling: longing" in event["generation_instruction"]
 
         polled = await client.get(
             "/state/v1/proactive/events", params={"consumer": "e2e", "limit": 1}
@@ -126,6 +131,11 @@ async def test_http_proactive_rotation_advances_with_send_count(config):
         assert second["generation_variant_index"] == 1
         assert second["generation_instruction"] != first["generation_instruction"]
         assert "Do not repeat" in second["generation_instruction"]
+        assert first["ladder_stage"] == 0
+        assert second["ladder_stage"] == 1
+        assert second["unanswered_proactive"] == 1
+        assert "went unanswered" in second["generation_instruction"]
+        assert "Ruling feeling:" in second["generation_instruction"]
 
 
 async def test_http_proactive_custom_object_template_renders(tmp_path, config):

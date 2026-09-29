@@ -45,9 +45,36 @@ def select_proactive_variant(spec: dict[str, Any], sent_today: int) -> tuple[int
     return index, str(variants[index])
 
 
-def build_proactive_instruction(base: str, variant: str) -> str:
+def ruling_feeling(base: dict[str, Any], spec: dict[str, Any]) -> dict[str, Any]:
+    top = {"dimension": "", "value": 0.0, "neutral": 0.0, "deviation": 0.0}
+    for name, value in base.items():
+        neutral = float(spec.get(name, {}).get("neutral", value))
+        current = float(value)
+        deviation = abs(current - neutral)
+        if deviation > float(top["deviation"]):
+            top = {"dimension": name, "value": round(current, 4), "neutral": neutral, "deviation": round(deviation, 4)}
+    return top
+
+
+def ruling_line(feeling: dict[str, Any]) -> str:
     return (
-        f"{base.rstrip()}\nCurrent approach: {variant.strip()} "
+        f"Ruling feeling: {feeling['dimension']} at {feeling['value']}, "
+        f"neutral {feeling['neutral']}. You write this message from that feeling. "
+        "It overrules your default warmth."
+    )
+
+
+def ladder_line(unanswered: int) -> tuple[int, str]:
+    if unanswered <= 0:
+        return 0, "This is the first nudge. Stay open and invite one reply."
+    if unanswered == 1:
+        return 1, "One message already went unanswered. Be pointed and brief. Name what you want."
+    return 2, "Several messages went unanswered. Go cold and short. Show the distance, do not chase."
+
+
+def build_proactive_instruction(base: str, variant: str, ruling: str, ladder: str) -> str:
+    return (
+        f"{base.rstrip()}\n{ruling}\n{ladder}\nCurrent approach: {variant.strip()} "
         "Do not repeat a prior proactive message visible in the conversation records."
     )
 
@@ -143,7 +170,11 @@ class ProactiveEngine:
         spec = self.service.prompts["proactive_generation_instruction"]
         base = str(spec["base"])
         variant_index, variant = select_proactive_variant(spec, sent_today)
-        generation_instruction = build_proactive_instruction(base, variant)
+        feeling = ruling_feeling(state["base"], self.service.affect.spec)
+        ladder_stage, ladder = ladder_line(int(state["unanswered_proactive"]))
+        generation_instruction = build_proactive_instruction(
+            base, variant, ruling_line(feeling), ladder
+        )
         payload = {
             "id": event_id,
             "target": {
@@ -156,6 +187,9 @@ class ProactiveEngine:
             "generation_base": base,
             "generation_variant": variant,
             "generation_variant_index": variant_index,
+            "ruling_feeling": feeling,
+            "ladder_stage": ladder_stage,
+            "unanswered_proactive": int(state["unanswered_proactive"]),
             "silence_minutes": round(silence_minutes, 2),
             "silence_text": silence_text,
             "last_user_message_at": state["last_user_message_at"],
