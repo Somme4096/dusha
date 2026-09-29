@@ -13,6 +13,42 @@ from .service import CompanionService
 from .timeutil import isoformat, parse_time, utc_now
 
 
+def format_silence(minutes: float) -> str:
+    total = max(0, int(round(minutes)))
+    if total < 1:
+        return "less than a minute"
+    if total < 60:
+        unit = "minute" if total == 1 else "minutes"
+        return f"{total} {unit}"
+    if total < 24 * 60:
+        hours, remainder = divmod(total, 60)
+        hour_unit = "hour" if hours == 1 else "hours"
+        if remainder == 0:
+            return f"{hours} {hour_unit}"
+        minute_unit = "minute" if remainder == 1 else "minutes"
+        return f"{hours} {hour_unit} {remainder} {minute_unit}"
+    days, remainder = divmod(total, 24 * 60)
+    day_unit = "day" if days == 1 else "days"
+    if remainder == 0:
+        return f"{days} {day_unit}"
+    hours = remainder // 60
+    if hours == 0:
+        minute_unit = "minute" if remainder == 1 else "minutes"
+        return f"{days} {day_unit} {remainder} {minute_unit}"
+    hour_unit = "hour" if hours == 1 else "hours"
+    return f"{days} {day_unit} {hours} {hour_unit}"
+
+
+def render_proactive_instruction(template: str, silence_text: str) -> str:
+    if "{TIME}" in template:
+        return template.replace("{TIME}", silence_text)
+    prefix = (
+        f"It has been {silence_text} since the last user message. "
+        "The conversation is paused, not ongoing. "
+    )
+    return prefix + template
+
+
 class ProactiveEngine:
     def __init__(self, service: CompanionService, config: AppConfig):
         self.service = service
@@ -100,6 +136,9 @@ class ProactiveEngine:
             )
         )
         event_id = str(uuid.uuid4())
+        silence_text = format_silence(silence_minutes)
+        template = str(self.service.prompts["proactive_generation_instruction"])
+        generation_instruction = render_proactive_instruction(template, silence_text)
         payload = {
             "id": event_id,
             "target": {
@@ -108,7 +147,12 @@ class ProactiveEngine:
                 "route": route["route"],
             },
             "reason": reason,
-            "generation_instruction": self.service.prompts["proactive_generation_instruction"],
+            "generation_instruction": generation_instruction,
+            "generation_template": template,
+            "silence_minutes": round(silence_minutes, 2),
+            "silence_text": silence_text,
+            "last_user_message_at": state["last_user_message_at"],
+            "evaluated_at": isoformat(current),
             "context": context,
             "created_at": isoformat(current),
         }

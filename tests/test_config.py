@@ -819,7 +819,10 @@ def test_custom_prompts_affect_engine_behavior(tmp_path, svc, mutate, contains, 
     _decide(service, stored["id"], "fear", now=know + timedelta(minutes=1))
     event = engine.evaluate(know + timedelta(hours=4))
     assert event is not None
-    assert event["generation_instruction"] == "SENTINEL_PROACTIVE_INSTRUCTION"
+    assert event["generation_instruction"].endswith("SENTINEL_PROACTIVE_INSTRUCTION")
+    assert "3 hours 59 minutes" in event["generation_instruction"]
+    assert "{TIME}" not in event["generation_instruction"]
+    assert event["silence_text"] == "3 hours 59 minutes"
 
 
 def _write_config(path, *, port):
