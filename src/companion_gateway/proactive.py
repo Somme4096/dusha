@@ -39,14 +39,17 @@ def format_silence(minutes: float) -> str:
     return f"{days} {day_unit} {hours} {hour_unit}"
 
 
-def render_proactive_instruction(template: str, silence_text: str) -> str:
-    if "{TIME}" in template:
-        return template.replace("{TIME}", silence_text)
-    prefix = (
-        f"It has been {silence_text} since the last user message. "
-        "The conversation is paused, not ongoing. "
+def select_proactive_variant(spec: dict[str, Any], sent_today: int) -> tuple[int, str]:
+    variants = list(spec["variants"])
+    index = int(sent_today) % len(variants)
+    return index, str(variants[index])
+
+
+def build_proactive_instruction(base: str, variant: str) -> str:
+    return (
+        f"{base.rstrip()}\nCurrent approach: {variant.strip()} "
+        "Do not repeat a prior proactive message visible in the conversation records."
     )
-    return prefix + template
 
 
 class ProactiveEngine:
@@ -137,8 +140,10 @@ class ProactiveEngine:
         )
         event_id = str(uuid.uuid4())
         silence_text = format_silence(silence_minutes)
-        template = str(self.service.prompts["proactive_generation_instruction"])
-        generation_instruction = render_proactive_instruction(template, silence_text)
+        spec = self.service.prompts["proactive_generation_instruction"]
+        base = str(spec["base"])
+        variant_index, variant = select_proactive_variant(spec, sent_today)
+        generation_instruction = build_proactive_instruction(base, variant)
         payload = {
             "id": event_id,
             "target": {
@@ -148,7 +153,9 @@ class ProactiveEngine:
             },
             "reason": reason,
             "generation_instruction": generation_instruction,
-            "generation_template": template,
+            "generation_base": base,
+            "generation_variant": variant,
+            "generation_variant_index": variant_index,
             "silence_minutes": round(silence_minutes, 2),
             "silence_text": silence_text,
             "last_user_message_at": state["last_user_message_at"],

@@ -96,7 +96,7 @@ Reference the copies:
 
 `emotions.expected_version` pins the file's `emotion_version`. A mismatch fails startup. Omit it to accept any valid file.
 
-Prompts replace whole text slots. A provided slot must carry every key in that slot. A missing key fails validation. Omitted slots inherit the packaged text. Blank strings are valid replacements. The five slots are `affect_presentation`, `companion_state`, `evergreen`, `proactive_generation_instruction`, and `decision_instruction`. You can use `{TIME}` in `proactive_generation_instruction` and the gateway replaces it with the elapsed silence, such as `4 hours 5 minutes`. When the template omits `{TIME}`, the gateway prepends the elapsed silence so the model treats the message as a re-engagement.
+Prompts replace whole text slots. A provided slot must carry every key in that slot. A missing key fails validation. Omitted slots inherit the packaged text. Blank strings are valid replacements. The five slots are `affect_presentation`, `companion_state`, `evergreen`, `proactive_generation_instruction`, and `decision_instruction`. `proactive_generation_instruction` is an object with `base` and `variants`. The gateway picks one variant per event by send count and appends it to the base, so you control rotation by editing the list. Silence timing stays in the event fields and conversation records, not in the instruction text.
 
 Value precedence resolves in this order:
 

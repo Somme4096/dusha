@@ -8,7 +8,7 @@ from .resources import loads_strict, read_packaged
 from .serialization import canonical as _serialization_canonical
 from .serialization import fingerprint as _serialization_fingerprint
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _TEXT_SLOTS = {
     "affect_presentation",
@@ -18,7 +18,9 @@ _TEXT_SLOTS = {
     "decision_instruction",
 }
 
-_STRING_SLOTS = {"proactive_generation_instruction", "decision_instruction"}
+_STRING_SLOTS = {"decision_instruction"}
+
+_PROACTIVE_KEYS = {"base", "variants"}
 
 _SLOT_KEYS: dict[str, set[str]] = {
     "affect_presentation": {
@@ -48,6 +50,37 @@ class PromptsValidationError(ValueError):
 def _string(value: Any, path: str) -> str:
     if not isinstance(value, str):
         raise PromptsValidationError(f"{path} must be a string")
+    return value
+
+
+def _validate_proactive_slot(value: Any, *, require_complete: bool) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise PromptsValidationError("proactive_generation_instruction must be an object")
+    unknown = sorted(set(value) - _PROACTIVE_KEYS)
+    if unknown:
+        raise PromptsValidationError(
+            f"unknown field(s) under proactive_generation_instruction: {unknown}"
+        )
+    missing = sorted(_PROACTIVE_KEYS - set(value))
+    if missing:
+        raise PromptsValidationError(
+            f"proactive_generation_instruction is incomplete. Missing field(s): {missing}"
+        )
+    base = value["base"]
+    if not isinstance(base, str):
+        raise PromptsValidationError("proactive_generation_instruction.base must be a string")
+    variants = value["variants"]
+    if not isinstance(variants, list) or not variants:
+        raise PromptsValidationError(
+            "proactive_generation_instruction.variants must be a non-empty list"
+        )
+    for index, variant in enumerate(variants):
+        if not isinstance(variant, str) or not variant.strip():
+            raise PromptsValidationError(
+                f"proactive_generation_instruction.variants[{index}] must be a non-empty string"
+            )
+    value["base"] = base
+    value["variants"] = list(variants)
     return value
 
 
@@ -81,6 +114,12 @@ def _validate(snapshot: dict[str, Any], require_complete: bool) -> dict[str, Any
         if unknown:
             raise PromptsValidationError(f"unknown prompts slot(s): {unknown}")
     _validate_text_slots(snapshot, require_complete=require_complete)
+    if "proactive_generation_instruction" in snapshot:
+        snapshot["proactive_generation_instruction"] = _validate_proactive_slot(
+            snapshot["proactive_generation_instruction"], require_complete=require_complete
+        )
+    elif require_complete:
+        raise PromptsValidationError("missing prompts slot: proactive_generation_instruction")
     for slot in _STRING_SLOTS:
         if slot in snapshot:
             snapshot[slot] = _string(snapshot[slot], slot)

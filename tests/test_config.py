@@ -611,7 +611,15 @@ def test_identity_loading(tmp_path, svc, make_identity, configured, expected, er
         (lambda s: s["companion_state"].update(bogus_key="x"), "unknown field"),
         (lambda s: s.update(companion_state={"affect_instruction": "only this"}), "incomplete"),
         (lambda s: s.update(decision_instruction=5), "must be a string"),
-        (lambda s: s.update(proactive_generation_instruction=5), "must be a string"),
+        (lambda s: s.update(proactive_generation_instruction=5), "must be an object"),
+        (
+            lambda s: s["proactive_generation_instruction"].update(variants=[]),
+            "must be a non-empty list",
+        ),
+        (
+            lambda s: s["proactive_generation_instruction"].update(variants=["  "]),
+            "must be a non-empty string",
+        ),
     ],
 )
 def test_prompts_overlay_rejects_malformed(tmp_path, mutate, pattern):
@@ -810,7 +818,11 @@ def test_custom_prompts_affect_engine_behavior(tmp_path, svc, mutate, contains, 
         assert excludes not in text
 
     prompts = _prompts_config(
-        tmp_path, lambda s: s.update(proactive_generation_instruction="SENTINEL_PROACTIVE_INSTRUCTION"))
+        tmp_path,
+        lambda s: s["proactive_generation_instruction"].update(
+            base="SENTINEL_PROACTIVE_BASE", variants=["SENTINEL_VARIANT_A", "SENTINEL_VARIANT_B"]
+        ),
+    )
     service = svc(prompts=prompts, decision=DecisionConfig(increment=1.0))
     engine = ProactiveEngine(service, service.config)
     know = datetime(2026, 9, 6, 0, 0, tzinfo=UTC)
@@ -819,8 +831,10 @@ def test_custom_prompts_affect_engine_behavior(tmp_path, svc, mutate, contains, 
     _decide(service, stored["id"], "fear", now=know + timedelta(minutes=1))
     event = engine.evaluate(know + timedelta(hours=4))
     assert event is not None
-    assert event["generation_instruction"].endswith("SENTINEL_PROACTIVE_INSTRUCTION")
-    assert "3 hours 59 minutes" in event["generation_instruction"]
+    assert "SENTINEL_PROACTIVE_BASE" in event["generation_instruction"]
+    assert "SENTINEL_VARIANT_A" in event["generation_instruction"]
+    assert event["generation_variant"] == "SENTINEL_VARIANT_A"
+    assert event["generation_variant_index"] == 0
     assert "{TIME}" not in event["generation_instruction"]
     assert event["silence_text"] == "3 hours 59 minutes"
 

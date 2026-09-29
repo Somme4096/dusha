@@ -47,7 +47,7 @@ async def _ingest(client, occurred_at, *, harness="e2e-time", conversation="conv
     return response.json()
 
 
-async def test_http_proactive_instruction_includes_elapsed_time(config):
+async def test_http_proactive_instruction_uses_base_and_variant(config):
     config.proactive.poll_interval_seconds = 3600
     app = api.create_app(config)
     async with _running_client(app) as client:
@@ -58,12 +58,15 @@ async def test_http_proactive_instruction_includes_elapsed_time(config):
         assert evaluated.status_code == 200
         event = evaluated.json()["event"]
         assert event is not None
+        spec = app.state.service.prompts["proactive_generation_instruction"]
+        assert event["generation_base"] == spec["base"]
+        assert event["generation_variant"] == spec["variants"][0]
+        assert event["generation_variant_index"] == 0
+        assert spec["base"] in event["generation_instruction"]
+        assert spec["variants"][0] in event["generation_instruction"]
         assert "{TIME}" not in event["generation_instruction"]
-        assert "4 hours 5 minutes" in event["generation_instruction"]
-        assert "paused, not ongoing" in event["generation_instruction"]
         assert event["silence_text"] == "4 hours 5 minutes"
         assert event["silence_minutes"] >= 240
-        assert event["last_user_message_at"] is not None
 
         polled = await client.get(
             "/state/v1/proactive/events", params={"consumer": "e2e", "limit": 1}
@@ -72,7 +75,7 @@ async def test_http_proactive_instruction_includes_elapsed_time(config):
         events = polled.json()["events"]
         assert len(events) == 1
         assert events[0]["id"] == event["id"]
-        assert "4 hours 5 minutes" in events[0]["generation_instruction"]
+        assert events[0]["generation_instruction"] == event["generation_instruction"]
 
     second = api.create_app(config)
     async with _running_client(second) as client:
@@ -96,10 +99,42 @@ async def test_http_proactive_evaluate_returns_null_when_silence_too_short(confi
         assert evaluated.json()["event"] is None
 
 
-async def test_http_proactive_custom_time_template_renders(tmp_path, config):
+async def test_http_proactive_rotation_advances_with_send_count(config):
+    config.proactive.poll_interval_seconds = 3600
+    config.proactive.cooldown_minutes = 0
+    config.proactive.max_unanswered = 10
+    config.proactive.max_per_day = 5
+    app = api.create_app(config)
+    async with _running_client(app) as client:
+        past = utc_now() - timedelta(hours=4)
+        await _ingest(client, past, conversation="rotation")
+        _backdate(app, past)
+        first = (await client.post("/state/v1/proactive/evaluate")).json()["event"]
+        assert first is not None
+        assert first["generation_variant_index"] == 0
+        polled = await client.get(
+            "/state/v1/proactive/events", params={"consumer": "e2e", "limit": 1}
+        )
+        first_id = polled.json()["events"][0]["id"]
+        ack = await client.post(
+            f"/state/v1/proactive/events/{first_id}/ack",
+            json={"consumer": "e2e", "outcome": "sent", "text": "first proactive hello"},
+        )
+        assert ack.status_code == 200
+        second = (await client.post("/state/v1/proactive/evaluate")).json()["event"]
+        assert second is not None
+        assert second["generation_variant_index"] == 1
+        assert second["generation_instruction"] != first["generation_instruction"]
+        assert "Do not repeat" in second["generation_instruction"]
+
+
+async def test_http_proactive_custom_object_template_renders(tmp_path, config):
     config.proactive.poll_interval_seconds = 3600
     snapshot = api.create_app(config).state.service.prompts
-    snapshot["proactive_generation_instruction"] = "After {TIME}, ping the user."
+    snapshot["proactive_generation_instruction"] = {
+        "base": "SENTINEL BASE.",
+        "variants": ["SENTINEL FIRST", "SENTINEL SECOND"],
+    }
     path = tmp_path / "prompts.json"
     overlay = {k: v for k, v in snapshot.items() if k != "schema_version"}
     overlay.pop("prompts_version", None)
@@ -114,4 +149,7 @@ async def test_http_proactive_custom_time_template_renders(tmp_path, config):
         assert evaluated.status_code == 200
         event = evaluated.json()["event"]
         assert event is not None
-        assert event["generation_instruction"] == "After 2 hours, ping the user."
+        assert event["generation_base"] == "SENTINEL BASE."
+        assert event["generation_variant"] == "SENTINEL FIRST"
+        assert "SENTINEL BASE." in event["generation_instruction"]
+        assert "SENTINEL FIRST" in event["generation_instruction"]

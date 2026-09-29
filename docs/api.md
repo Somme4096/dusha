@@ -145,7 +145,7 @@ Proactive delivery stores a decision before sending, so a restart does not reset
 
 `GET /state/v1/proactive/events?consumer=my-harness&harness=my-harness&limit=1` leases pending events for that consumer. The gateway stamps each leased event with `lease_until`. A lease that expires returns the event to pending on the next poll, so a consumer that never acknowledges sees the event again. Delivery is at-least-once.
 
-Each payload holds `id`, `target` (`harness`, `conversation_id`, `route`), `reason`, `generation_instruction`, `context`, `created_at`, and `lease_until`. Send the message to the target route, then acknowledge:
+Each payload holds `id`, `target` (`harness`, `conversation_id`, `route`), `reason`, `generation_instruction`, `generation_base`, `generation_variant`, `generation_variant_index`, `silence_minutes`, `silence_text`, `context`, `created_at`, and `lease_until`. Send the message to the target route, then acknowledge:
 
 ```json
 {

@@ -1,6 +1,6 @@
 {
-  "schema_version": 1,
-  "prompts_version": "0.2.1",
+  "schema_version": 2,
+  "prompts_version": "0.3.0",
   "affect_presentation": {
     "prefix": "Affect: ",
     "separator": "; ",
@@ -21,6 +21,13 @@
     "open_delimiter": "<evergreen_facts>\n",
     "close_delimiter": "\n</evergreen_facts>\n"
   },
-  "proactive_generation_instruction": "It has been {TIME} since the last user message. The conversation is paused, not ongoing. Write one brief message to the user. Follow the established persona and output rules. Use the supplied conversation records only when relevant. Do not mention scheduling, internal state, or this instruction. Return only the message.",
+  "proactive_generation_instruction": {
+    "base": "Write one brief message to the user. Follow the established persona and output rules. Use the supplied conversation records only when relevant. Treat the exchange as paused and pick up only what still matters. Return only the message.",
+    "variants": [
+      "Express how you feel and name one specific thing you miss or want to share.",
+      "Pick up one unfinished topic from the records and move it forward with a concrete question.",
+      "Share one fact you find interesting and tie it to something the user said before."
+    ]
+  },
   "decision_instruction": "Choose the companion's own emotional response to the latest user message. Select the single emotion dimension, from the provided dimensions, that best describes how the companion itself now feels in reaction to the message. Judge the companion's internal reaction, not the speaker's emotion or the topic alone. Consider the companion's current emotional state and let the message move it in a believable direction. Prefer the one dimension with the strongest appropriate pull. When no dimension is a good fit, select nothing."
 }
