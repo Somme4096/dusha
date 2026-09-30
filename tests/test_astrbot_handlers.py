@@ -21,7 +21,15 @@ class AstrBotConfig:
 
 Context = type("Context", (), {})
 Star = type("Star", (), {"__init__": lambda self, context: setattr(self, "context", context)})
-MessageChain = type("MessageChain", (), {})
+
+
+class MessageChain:
+    def __init__(self):
+        self.text = ""
+
+    def message(self, text):
+        self.text = text
+        return self
 LLMResponse = type("LLMResponse", (), {})
 ProviderRequest = type("ProviderRequest", (), {})
 
@@ -255,3 +263,117 @@ def test_the_affect_tool_is_removed():
     names = {node.name for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef)}
     assert "record_affect_event" not in names
     assert "record_affect_event" not in _load_main().GATEWAY_TOOL_NAMES
+
+
+class _ConversationManager:
+    def __init__(self, cid="cid-1"):
+        self.cid = cid
+        self.pairs = []
+        self.created = []
+
+    async def get_curr_conversation_id(self, route):
+        return self.cid
+
+    async def new_conversation(self, route):
+        self.created.append(route)
+        self.cid = "cid-new"
+        return self.cid
+
+    async def get_conversation(self, route, cid):
+        return None
+
+    async def add_message_pair(self, cid, user_message, assistant_message):
+        self.pairs.append((cid, user_message, assistant_message))
+
+
+class _PersonaManager:
+    async def get_default_persona_v3(self, umo=None):
+        return {"prompt": "persona"}
+
+
+def _proactive_event(route="telegram-sophia:FriendMessage:user-1"):
+    return {
+        "id": "evt-1",
+        "target": {"route": route},
+        "generation_instruction": "Say hello.",
+        "context": {"injection": "injection"},
+        "reason": "silence",
+        "silence_text": "10 minutes",
+    }
+
+
+def _install_segments():
+    name = "astrbot.core.agent.message"
+    if name not in sys.modules:
+        module = types.ModuleType(name)
+
+        class TextPart:
+            def __init__(self, text):
+                self.text = text
+
+        class UserMessageSegment:
+            def __init__(self, content):
+                self.content = content
+
+        class AssistantMessageSegment:
+            def __init__(self, content):
+                self.content = content
+
+        module.TextPart = TextPart
+        module.UserMessageSegment = UserMessageSegment
+        module.AssistantMessageSegment = AssistantMessageSegment
+        sys.modules[name] = module
+
+
+async def _deliver_plugin(plugin_factory, *, send_result=True, cid="cid-1"):
+    _install_segments()
+    posts = []
+
+    def handler(request):
+        posts.append(json.loads(request.read()))
+        return httpx.Response(200, json={"ok": True})
+
+    plugin = await plugin_factory(handler=handler, platform_id="telegram-sophia")
+    manager = _ConversationManager(cid=cid)
+    plugin.context.conversation_manager = manager
+    plugin.context.persona_manager = _PersonaManager()
+
+    async def provider_id(route):
+        return "prov"
+
+    async def llm_generate(**kwargs):
+        return types.SimpleNamespace(completion_text="hello proactive")
+
+    async def send_message(route, chain):
+        return send_result
+
+    plugin.context.get_current_chat_provider_id = provider_id
+    plugin.context.llm_generate = llm_generate
+    plugin.context.send_message = send_message
+    return plugin, manager, posts
+
+
+async def test_proactive_delivery_archives_history_and_acks_sent(plugin_factory):
+    plugin, manager, posts = await _deliver_plugin(plugin_factory)
+    await plugin._deliver(_proactive_event())
+    assert len(manager.pairs) == 1
+    cid, user_message, assistant_message = manager.pairs[0]
+    assert cid == "cid-1"
+    assert assistant_message.content[0].text == "hello proactive"
+    assert "proactive" in user_message.content[0].text
+    assert posts == [{"consumer": "astrbot", "outcome": "sent", "text": "hello proactive"}]
+
+
+async def test_proactive_send_failure_skips_history_and_acks_failed(plugin_factory):
+    plugin, manager, posts = await _deliver_plugin(plugin_factory, send_result=False)
+    await plugin._deliver(_proactive_event())
+    assert manager.pairs == []
+    assert posts[0]["outcome"] == "failed"
+
+
+async def test_proactive_delivery_creates_conversation_when_missing(plugin_factory):
+    plugin, manager, posts = await _deliver_plugin(plugin_factory, cid=None)
+    await plugin._deliver(_proactive_event())
+    assert manager.created == ["telegram-sophia:FriendMessage:user-1"]
+    assert manager.pairs[0][0] == "cid-new"
+    assert posts[0]["outcome"] == "sent"

@@ -487,6 +487,45 @@ class CompanionGatewayPlugin(star.Star):
         default = await self.context.persona_manager.get_default_persona_v3(umo=route)
         return str(default.get("prompt", "")) if default else ""
 
+    async def _archive_proactive_history(self, route: str, text: str, event: dict[str, Any]) -> None:
+        try:
+            manager = getattr(self.context, "conversation_manager", None)
+            if manager is None:
+                return
+            cid = await manager.get_curr_conversation_id(route)
+            if not cid:
+                new_conversation = getattr(manager, "new_conversation", None)
+                if new_conversation is None:
+                    return
+                cid = await new_conversation(route)
+                if not cid:
+                    return
+            try:
+                from astrbot.core.agent.message import (
+                    AssistantMessageSegment,
+                    TextPart,
+                    UserMessageSegment,
+                )
+
+                reason = str(event.get("reason", "silence") or "silence")
+                silence = str(event.get("silence_text", "") or "").strip()
+                marker = f"[proactive {reason}]" + (f" after {silence} of silence" if silence else "")
+                user_message = UserMessageSegment(content=[TextPart(text=marker)])
+                assistant_message = AssistantMessageSegment(content=[TextPart(text=text)])
+            except Exception:
+                reason = str(event.get("reason", "silence") or "silence")
+                silence = str(event.get("silence_text", "") or "").strip()
+                marker = f"[proactive {reason}]" + (f" after {silence} of silence" if silence else "")
+                user_message = {"role": "user", "content": marker}  # type: ignore[assignment]
+                assistant_message = {"role": "assistant", "content": text}  # type: ignore[assignment]
+            await manager.add_message_pair(
+                cid=cid,
+                user_message=user_message,
+                assistant_message=assistant_message,
+            )
+        except Exception as error:
+            logger.warning(f"[companion-gateway] Proactive history archive failed: {error}")
+
     async def _deliver(self, event: dict[str, Any]) -> None:
         route = str(event["target"]["route"])
         try:
@@ -507,6 +546,7 @@ class CompanionGatewayPlugin(star.Star):
             sent = await self.context.send_message(route, MessageChain().message(text))
             if not sent:
                 raise RuntimeError("AstrBot did not find the target platform")
+            await self._archive_proactive_history(route, text, event)
             await self._post(
                 f"/state/v1/proactive/events/{event['id']}/ack",
                 {"consumer": "astrbot", "outcome": "sent", "text": text},
