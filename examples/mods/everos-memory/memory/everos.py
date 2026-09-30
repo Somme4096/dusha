@@ -15,7 +15,7 @@ from .timeutil import parse_time
 _SAFE = re.compile(r"^[a-zA-Z0-9_.@+-]+$")
 _OPTIONS = {
     "url", "app_id", "project_id", "instance_namespace", "user_sender_id",
-    "assistant_sender_id", "timeout_seconds", "flush_after_ingest",
+    "assistant_sender_id", "timeout_seconds", "flush_timeout_seconds", "flush_after_ingest",
 }
 _RPC_TIMEOUT_ENV = "SOPHIA_MEMORY_RPC_TIMEOUT_SECONDS"
 _MIN_RPC_TIMEOUT = 0.5
@@ -63,6 +63,12 @@ class EverOSMirror:
         self.client = httpx.Client(
             timeout=httpx.Timeout(self.timeout), follow_redirects=False, trust_env=False,
         )
+        flush_timeout = options.get("flush_timeout_seconds", 300)
+        if isinstance(flush_timeout, bool) or not isinstance(flush_timeout, (int, float)):
+            raise ValueError("flush_timeout_seconds must be a finite positive number of seconds")
+        self.flush_timeout = float(flush_timeout)
+        if not math.isfinite(self.flush_timeout) or not 0 < self.flush_timeout <= 3600:
+            raise ValueError("flush_timeout_seconds must be a finite positive number of seconds")
         flush_after_ingest = options.get("flush_after_ingest", False)
         if not isinstance(flush_after_ingest, bool):
             raise ValueError("flush_after_ingest must be a boolean")
@@ -394,7 +400,9 @@ class EverOSMirror:
         error = None
         result = None
         try:
-            response = self.client.post(self.url + "/api/v2/memory/flush", json=payload)
+            response = self.client.post(
+                self.url + "/api/v2/memory/flush", json=payload, timeout=self.flush_timeout
+            )
             response.raise_for_status()
             body = response.json()
             data = body.get("data") if isinstance(body, dict) else None

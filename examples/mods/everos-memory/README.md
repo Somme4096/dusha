@@ -84,6 +84,8 @@ add during Sophia ingest, then let the scheduler flush it through EverOS.
 The flush runs on a background thread so a slow sidecar never blocks the
 plugin RPC; completion lands in `everos_flush_state` and surfaces through
 `status`. At most one flush runs per session at a time.
+`flush_timeout_seconds` (default 300) bounds the background flush HTTP call
+independently of the RPC `timeout_seconds`, so slow LLM extraction can finish.
 EverOS must run with a configured LLM for extraction. `buffered` acknowledges
 the deferred add. `processed` acknowledges the flush, not indexing completion.
 Use the [EverOS setup and public API documentation](https://github.com/EverMind-AI/EverOS)
