@@ -1,0 +1,11 @@
+{
+  "name": "opencode-sophia-plugin",
+  "version": "1.0.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@opencode/plugin": "latest"
+  }
+}

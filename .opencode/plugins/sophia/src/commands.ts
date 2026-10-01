@@ -1,0 +1,146 @@
+import type { Plugin } from "@opencode/plugin";
+import type { CommandInvocation } from "@opencode/plugin/promise/command";
+import type { Registration } from "@opencode/plugin/promise/registration";
+import { SophiaClient, errorMessage } from "./client";
+import { loadConfig, saveConfig } from "./config";
+import type { SophiaConfig } from "./types";
+
+type SessionId = Parameters<Plugin.Context["session"]["synthetic"]>[0]["sessionID"];
+
+const HELP_TEXT = [
+  "Sophia companion gateway commands",
+  "/sophia status - show configuration and connection status",
+  "/sophia test - test the gateway connection",
+  "/sophia url <url> - set the gateway base URL",
+  "/sophia token <token> - set the API token, use clear to remove it",
+  "/sophia auto-inject <on|off> - toggle companion state injection",
+].join("\n");
+
+interface ParsedInvocation {
+  subcommand: string;
+  args: string[];
+}
+
+function parseInvocation(text: string): ParsedInvocation {
+  const withoutCommand = text.trim().replace(/^\/?sophia\b/i, "").trim();
+  const parts = withoutCommand.length > 0 ? withoutCommand.split(/\s+/) : [];
+  return { subcommand: (parts[0] ?? "").toLowerCase(), args: parts.slice(1) };
+}
+
+function normalizeUrl(value: string): string {
+  const trimmed = value.trim().replace(/\/+$/, "");
+  if (!trimmed) return trimmed;
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  return `http://${trimmed}`;
+}
+
+async function reply(ctx: Plugin.Context, sessionID: SessionId, text: string): Promise<void> {
+  try {
+    await ctx.session.synthetic({ sessionID, text, description: "Sophia" });
+  } catch {
+    // The session can close while the command runs.
+  }
+}
+
+async function testConnection(config: SophiaConfig): Promise<{ connected: boolean; line: string }> {
+  const client = new SophiaClient({ baseUrl: config.baseUrl, apiToken: config.apiToken });
+  try {
+    const health = await client.health();
+    return { connected: true, line: `connected (status: ${health.status}, database: ${health.database})` };
+  } catch (error) {
+    return { connected: false, line: errorMessage(error) };
+  }
+}
+
+function renderStatus(config: SophiaConfig, connectionLine: string): string {
+  return [
+    "Sophia companion gateway",
+    `URL: ${config.baseUrl}`,
+    `Auth: ${config.apiToken ? "token set" : "no token"}`,
+    `Auto-inject: ${config.autoInject ? "on" : "off"}`,
+    `Harness: ${config.harness}`,
+    `Status: ${connectionLine}`,
+    "",
+    HELP_TEXT,
+  ].join("\n");
+}
+
+export async function handleSophiaCommand(ctx: Plugin.Context, invocation: CommandInvocation): Promise<void> {
+  const { sessionID } = invocation;
+  const parsed = parseInvocation(invocation.prompt?.text ?? "");
+  const config = await loadConfig(ctx);
+
+  switch (parsed.subcommand) {
+    case "":
+    case "status": {
+      const connection = await testConnection(config);
+      await reply(ctx, sessionID, renderStatus(config, connection.line));
+      return;
+    }
+    case "test": {
+      const connection = await testConnection(config);
+      const text = connection.connected
+        ? `Sophia is reachable at ${config.baseUrl}.`
+        : `Sophia is not reachable. ${connection.line}`;
+      await reply(ctx, sessionID, text);
+      return;
+    }
+    case "url": {
+      const value = parsed.args[0];
+      if (!value) {
+        await reply(ctx, sessionID, "Usage: /sophia url <url>");
+        return;
+      }
+      config.baseUrl = normalizeUrl(value);
+      await saveConfig(ctx, config);
+      const connection = await testConnection(config);
+      await reply(ctx, sessionID, `Sophia URL set to ${config.baseUrl}.\nStatus: ${connection.line}`);
+      return;
+    }
+    case "token": {
+      const value = parsed.args[0];
+      if (value === undefined) {
+        await reply(ctx, sessionID, "Usage: /sophia token <token>, or /sophia token clear to remove it.");
+        return;
+      }
+      config.apiToken = value === "clear" ? "" : value;
+      await saveConfig(ctx, config);
+      const connection = await testConnection(config);
+      const action = config.apiToken ? "updated" : "cleared";
+      await reply(ctx, sessionID, `API token ${action}.\nStatus: ${connection.line}`);
+      return;
+    }
+    case "auto-inject": {
+      const value = (parsed.args[0] ?? "").toLowerCase();
+      if (value !== "on" && value !== "off") {
+        const current = config.autoInject ? "on" : "off";
+        await reply(ctx, sessionID, `Auto-inject is currently ${current}. Use /sophia auto-inject <on|off>.`);
+        return;
+      }
+      config.autoInject = value === "on";
+      await saveConfig(ctx, config);
+      await reply(ctx, sessionID, `Auto-inject ${config.autoInject ? "enabled" : "disabled"}.`);
+      return;
+    }
+    case "help": {
+      await reply(ctx, sessionID, HELP_TEXT);
+      return;
+    }
+    default: {
+      await reply(ctx, sessionID, `Unknown option "${parsed.subcommand}".\n\n${HELP_TEXT}`);
+    }
+  }
+}
+
+export async function registerSophiaCommand(ctx: Plugin.Context): Promise<Registration | undefined> {
+  return ctx.command.transform((editor) => {
+    if (typeof (editor as { add?: unknown }).add !== "function") return;
+    editor.add({
+      name: "sophia",
+      description: "Check, test, and configure the Sophia companion gateway.",
+      execute: async (invocation) => {
+        await handleSophiaCommand(ctx, invocation);
+      },
+    });
+  });
+}
