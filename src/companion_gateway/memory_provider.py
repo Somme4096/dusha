@@ -233,6 +233,8 @@ class _SuiteMemory:
             if "error" in response:
                 error_type = response.get("error_type", "MemoryPluginError")
                 error_msg = str(response["error"])
+                if error_type not in ("MemoryPluginError", "EvergreenConflict"):
+                    error_msg = f"{error_msg} ({error_type})"
                 if error_type == "ValueError":
                     raise ValueError(error_msg)
                 if error_type == "KeyError":
