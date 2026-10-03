@@ -1,7 +1,8 @@
-# Laya decision plugin
+# SystemOne decision plugin
 
-This plugin calls a running [Laya](https://github.com/NandhaKishorM/laya) HTTP
-service. The public plugin API is documented in the project [README](https://github.com/Somme4096/sophia).
+This plugin calls a running [llama.cpp server](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md)
+with decision-model support (`POST /v1/systemone`). The public plugin API is
+documented in the project [README](https://github.com/Somme4096/sophia).
 
 The gateway runs it in its dedicated `uv` environment as a child process. The
 plugin has inherited OS permissions and is not a container or OS sandbox.

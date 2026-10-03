@@ -71,7 +71,7 @@ wheels = [
 ]
 
 [[package]]
-name = "sophia-laya-decision-suite"
+name = "sophia-system-one-decision-suite"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [

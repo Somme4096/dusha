@@ -223,12 +223,12 @@ def test_decision_mods_dir_and_increment(tmp_path, write_json, monkeypatch):
     config = conf_dir / "config.json"
     write_json(config, {
         "data_dir": "data",
-        "decision": {"module": "laya", "mods_dir": "mods", "increment": 0.2},
+        "decision": {"module": "system_one", "mods_dir": "mods", "increment": 0.2},
     })
     cfg = load_config(config)
     assert Path(cfg.decision.mods_dir) == (conf_dir / "mods").resolve()
     assert cfg.decision.increment == 0.2
-    assert cfg.decision.module == "laya"
+    assert cfg.decision.module == "system_one"
 
     write_json(config, {"data_dir": "data", "decision": {"mods_dir": str(tmp_path / "abs-mods")}})
     cfg = load_config(config)

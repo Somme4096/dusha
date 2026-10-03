@@ -111,7 +111,7 @@ def generic_plugin(tmp_path_factory: pytest.TempPathFactory) -> Path:
 @pytest.fixture(scope="session")
 def decision_plugin(tmp_path_factory: pytest.TempPathFactory) -> Path:
     mods = tmp_path_factory.mktemp("decision-mods")
-    source = Path(__file__).parents[1] / "examples" / "mods" / "laya"
+    source = Path(__file__).parents[1] / "examples" / "mods" / "system_one"
     destination = mods / "state_decider"
     shutil.copytree(source, destination, ignore=shutil.ignore_patterns(".venv", "__pycache__", "*.pyc"))
     (destination / "main.py").write_text(

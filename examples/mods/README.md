@@ -27,26 +27,26 @@ message, fact, affect, or proactive tables. Install it by copying the plugin
 directory into the configured mods directory. The gateway creates its isolated
 `uv` environment from the plugin's `pyproject.toml` and `uv.lock`.
 
-## `laya`
+## `system_one`
 
-Pure HTTP adapter for a running [Laya](https://github.com/NandhaKishorM/laya)
-service (`POST /v1/systemone`). No `laya`/`torch` dependency.
+Pure HTTP adapter for a running [llama.cpp server](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md)
+with decision-model support (`POST /v1/systemone`). No `torch` dependency.
 
 Install the plugin directory into the gateway's mods directory:
 
 ```sh
 mkdir -p ~/.config/companion-gateway/mods
-cp -R examples/mods/laya ~/.config/companion-gateway/mods/laya
+cp -R examples/mods/system_one ~/.config/companion-gateway/mods/system_one
 ```
 
 Options passed to the mod:
 
 | option            | required | meaning                                                        |
 | ----------------- | -------- | -------------------------------------------------------------- |
-| `base_url`        | yes      | Laya server root, e.g. `http://127.0.0.1:8000`. No default.    |
+| `base_url`        | yes      | SystemOne server root, e.g. `http://127.0.0.1:8000`. No default.    |
 | `timeout_seconds` | no       | Finite positive timeout; default `10`.                         |
 | `api_key`         | no       | Explicit bearer token supplied to the plugin.                |
-| `model`           | no       | Laya checkpoint name; omitted so the server auto-selects.      |
+| `model`           | no       | SystemOne checkpoint name; omitted so the server auto-selects.      |
 | `allowed_ips`     | no       | Literal IPv4 or IPv6 addresses allowed for all requests.      |
 
 The allowed choices are exactly the keys of `request.emotions`; each is sent
