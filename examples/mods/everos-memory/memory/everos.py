@@ -179,13 +179,16 @@ class EverOSMirror:
         self, *, query: str, scope: str, harness: str, conversation_id: str, max_chars: int,
     ) -> dict[str, Any]:
         empty: dict[str, Any] = {"text": "", "records": []}
-        if not query.strip() or max_chars <= 0:
+        if max_chars <= 0:
             return empty
         session_id = self._session_for(harness, conversation_id, scope)
         if not session_id:
             return empty
         try:
-            episodes = self.search_episodes(session_id, query)
+            if query.strip():
+                episodes = self.search_episodes(session_id, query)
+            else:
+                episodes = self.get_recent_episodes(session_id)
         except Exception:
             return empty
         records: list[dict[str, Any]] = []
@@ -240,6 +243,31 @@ class EverOSMirror:
         if not isinstance(episodes, list):
             return []
         return [item for item in episodes if isinstance(item, dict)]
+
+    def get_recent_episodes(self, session_id: str, limit: int = 5) -> list[dict[str, Any]]:
+        payload = {
+            "user_id": self.user_sender_id,
+            "app_id": self.app_id,
+            "project_id": self.project_id,
+            "memory_type": "episode",
+            "page": 1,
+            "page_size": max(1, min(limit, 100)),
+            "sort_by": "timestamp",
+            "sort_order": "desc",
+            "filters": {"session_id": session_id},
+        }
+        response = self.client.post(self.url + "/api/v2/memory/get", json=payload)
+        response.raise_for_status()
+        body = response.json()
+        data = body.get("data") if isinstance(body, dict) else None
+        episodes = data.get("episodes") if isinstance(data, dict) else None
+        if not isinstance(episodes, list):
+            return []
+        return [
+            item
+            for item in episodes
+            if isinstance(item, dict) and str(item.get("session_id")) == session_id
+        ]
 
     @classmethod
     def _episode_text(cls, episode: dict[str, Any]) -> str:
