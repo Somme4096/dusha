@@ -190,7 +190,7 @@ An empty `platform_id` disables routing and proactive polling. Run `/sid` throug
 
 ### Tools
 
-The plugin registers six LLM tools when the provider supports tools:
+The plugin registers nine LLM tools when the provider supports tools:
 
 | Tool | Arguments | Calls |
 | --- | --- | --- |
@@ -200,14 +200,17 @@ The plugin registers six LLM tools when the provider supports tools:
 | `revise_evergreen_fact` | `fact_id`, `expected_revision`, `text`, `priority`, `review_after`, `expires_at`, `reason` | `POST /state/v1/evergreen/facts/{id}/revisions` |
 | `forget_evergreen_fact` | `fact_id`, `expected_revision`, `reason` | `POST /state/v1/evergreen/facts/{id}/forget` |
 | `review_evergreen_facts` | `due_only`, `include_inactive`, `limit` | `GET /state/v1/evergreen/facts` |
+| `yumecho_add` | `text` | `POST /state/v1/memo/add` |
+| `yumecho_list` | `status`, `limit` | `GET /state/v1/memo/list` |
+| `yumecho_done` | `note_id`, `reason` | `POST /state/v1/memo/{id}/done` |
 
-The six tools read or manage memory and facts. Tools return JSON with `ok: true` on success, or `ok: false` plus `error` and, for HTTP failures, `status`. Affect is no longer exposed as a tool; the gateway's configured decision plugin owns it.
+The nine tools read or manage memory, facts, and memos. Tools return JSON with `ok: true` on success, or `ok: false` plus `error` and, for HTTP failures, `status`. `yumecho_done` rejects an empty `reason` locally. Affect is no longer exposed as a tool; the gateway's configured decision plugin owns it.
 
 ### Behavior
 
-For each exchange the plugin stores the user message, builds context with `exclude_message_ids` set to that message and `include_recent: false`, then injects the result into AstrBot's current request. It leaves the active persona and recent history untouched. After the model responds, it archives the assistant text. User-message ingest itself invokes the configured decision plugin; the AstrBot plugin only adds memory and fact tools.
+For each exchange the plugin stores the user message, builds context with `exclude_message_ids` set to that message and `include_recent: false`, then injects the result into AstrBot's current request. It leaves the active persona and recent history untouched. After the model responds, it archives the assistant text. User-message ingest itself invokes the configured decision plugin; the AstrBot plugin only adds memory, fact, and memo tools.
 
-The plugin polls with `consumer=astrbot` and `harness=astrbot`. On delivery it checks the route platform, loads the route persona, generates one message from `generation_instruction` and the event context, sends through `Context.send_message`, and acknowledges `sent`. On failure it acknowledges `failed`.
+The plugin polls with `consumer=astrbot` and `harness=astrbot`. On delivery it checks the route platform, loads the route persona, generates one message from `generation_instruction` and the event context, sends through `Context.send_message`, and acknowledges `sent`. The proactive prompt notes that pending yumecho memos are in context and that completed ones should be reported briefly. On failure it acknowledges `failed`.
 
 ### Troubleshooting
 

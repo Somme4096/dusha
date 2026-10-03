@@ -133,6 +133,10 @@ TOOLS = [
      lambda r: httpx.Response(200, json={"results": []}), '{"ok":true,"records":[]}'),
     (lambda p, e: p.get_conversation_record(e, memory_id=1), "conversation record read failed",
      lambda r: httpx.Response(200, json={"messages": []}), '{"ok":true,"records":[]}'),
+    (lambda p, e: p.yumecho_add(e, "note"), "memo add failed", _generic, OK),
+    (lambda p, e: p.yumecho_list(e), "memo list failed",
+     lambda r: httpx.Response(200, json={"memos": []}), '{"ok":true,"memos":[]}'),
+    (lambda p, e: p.yumecho_done(e, note_id=1, reason="done"), "memo done failed", _generic, OK),
 ]
 
 
@@ -160,13 +164,14 @@ async def test_error_maps_to_fallback_and_logs(call, fallback, handler, expected
 
 VALIDATION = [
     (lambda p, e: p.search_conversation_memory(e, query="   "), '{"ok":false,"error":"query is required"}'),
+    (lambda p, e: p.yumecho_done(e, note_id=1, reason="   "), '{"ok":false,"error":"reason is required"}'),
     (lambda p, e: p.search_conversation_memory(e, query=123), AttributeError),
     (lambda p, e: p.remember_evergreen_fact(e, key="k", text="t", review_after=123), AttributeError),
 ]
 
 
 @pytest.mark.parametrize("call, expected", VALIDATION,
-                         ids=["blank query", "search query", "review_after"])
+                         ids=["blank query", "blank memo reason", "search query", "review_after"])
 async def test_validation_ordering(call, expected, plugin_factory):
     plugin = await plugin_factory()
     if isinstance(expected, str):
@@ -232,11 +237,35 @@ async def test_get_record_and_review_clamp_params(plugin_factory):
                       {"due_only": "false", "include_inactive": "true", "limit": "100"}]
 
 
-def test_tool_decorators_register_the_six_gateway_tools():
+async def test_yumecho_payloads_and_reason_required(plugin_factory):
+    posts = []
+    params = []
+
+    def handler(request):
+        if request.method == "POST":
+            posts.append(json.loads(request.read()))
+        else:
+            params.append(dict(request.url.params))
+        return httpx.Response(200, json={"memo": {"id": 1}})
+
+    plugin = await plugin_factory(handler=handler)
+    await plugin.yumecho_add(AstrMessageEvent(), "buy milk")
+    await plugin.yumecho_list(AstrMessageEvent(), status="archived", limit=999)
+    await plugin.yumecho_done(AstrMessageEvent(), note_id=3, reason=" bought it ")
+    assert posts == [{"text": "buy milk"}, {"reason": " bought it "}]
+    assert params == [{"status": "archived", "limit": "500"}]
+    assert await plugin.yumecho_done(AstrMessageEvent(), note_id=3, reason="  ") == (
+        '{"ok":false,"error":"reason is required"}'
+    )
+    assert len(posts) == 2
+
+
+def test_tool_decorators_register_the_nine_gateway_tools():
     assert list(filter_registry.tools) == list(_load_main().GATEWAY_TOOL_NAMES) == [
         "remember_evergreen_fact", "revise_evergreen_fact",
         "forget_evergreen_fact", "review_evergreen_facts", "search_conversation_memory",
         "get_conversation_record",
+        "yumecho_add", "yumecho_list", "yumecho_done",
     ]
 
 
@@ -342,11 +371,13 @@ async def _deliver_plugin(plugin_factory, *, send_result=True, cid="cid-1"):
         return "prov"
 
     async def llm_generate(**kwargs):
+        plugin.generated_prompts.append(kwargs.get("prompt", ""))
         return types.SimpleNamespace(completion_text="hello proactive")
 
     async def send_message(route, chain):
         return send_result
 
+    plugin.generated_prompts = []
     plugin.context.get_current_chat_provider_id = provider_id
     plugin.context.llm_generate = llm_generate
     plugin.context.send_message = send_message
@@ -361,6 +392,7 @@ async def test_proactive_delivery_archives_history_and_acks_sent(plugin_factory)
     assert cid == "cid-1"
     assert assistant_message.content[0].text == "hello proactive"
     assert "proactive" in user_message.content[0].text
+    assert "yumecho" in plugin.generated_prompts[0]
     assert posts == [{"consumer": "astrbot", "outcome": "sent", "text": "hello proactive"}]
 
 

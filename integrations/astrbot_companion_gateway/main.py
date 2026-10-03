@@ -29,6 +29,14 @@ GATEWAY_TOOL_NAMES = (
     "review_evergreen_facts",
     "search_conversation_memory",
     "get_conversation_record",
+    "yumecho_add",
+    "yumecho_list",
+    "yumecho_done",
+)
+
+PROACTIVE_YUMECHO_NOTE = (
+    "Pending yumecho memos are in your context. If this message completes one, call "
+    "yumecho_done with a short reason and mention the completion briefly."
 )
 
 
@@ -428,6 +436,75 @@ class CompanionGatewayPlugin(star.Star):
 
         return await self._run_tool_call(event, "conversation record read failed", operation)
 
+    @filter.llm_tool(name="yumecho_add")
+    async def yumecho_add(
+        self,
+        event: AstrMessageEvent,
+        text: str,
+    ) -> str:
+        """Record one pending memo for later proactive follow-up.
+
+        Use this for loose ends and reminders you want to revisit. Keep it short. Report success
+        only when the result has ok=true.
+
+        Args:
+            text(string): The memo text to store.
+        """
+        payload: dict[str, Any] = {"text": text}
+
+        async def operation() -> dict[str, Any]:
+            return await self._post("/state/v1/memo/add", payload)
+
+        return await self._run_tool_call(event, "memo add failed", operation)
+
+    @filter.llm_tool(name="yumecho_list")
+    async def yumecho_list(
+        self,
+        event: AstrMessageEvent,
+        status: str = "active",
+        limit: int = 20,
+    ) -> str:
+        """List stored memos, active by default.
+
+        Args:
+            status(string): active or archived.
+            limit(number): Maximum number of memos from 1 to 500.
+        """
+
+        async def operation() -> dict[str, Any]:
+            return await self._get(
+                "/state/v1/memo/list",
+                {"status": status, "limit": max(1, min(limit, 500))},
+            )
+
+        return await self._run_tool_call(event, "memo list failed", operation)
+
+    @filter.llm_tool(name="yumecho_done")
+    async def yumecho_done(
+        self,
+        event: AstrMessageEvent,
+        note_id: int,
+        reason: str,
+    ) -> str:
+        """Archive one memo with the reason it was completed.
+
+        Report success only when the result has ok=true.
+
+        Args:
+            note_id(number): The memo ID from an injected memo or yumecho_list.
+            reason(string): A short, non-empty reason for completing the memo.
+        """
+
+        def prepare() -> str | None:
+            if not reason.strip():
+                return self._json({"ok": False, "error": "reason is required"})
+            return None
+
+        async def operation() -> dict[str, Any]:
+            return await self._post(f"/state/v1/memo/{note_id}/done", {"reason": reason})
+
+        return await self._run_tool_call(event, "memo done failed", operation, prepare)
+
     @filter.on_llm_response()
     async def store_response(self, event: AstrMessageEvent, response: LLMResponse) -> None:
         if not self._accepts(event):
@@ -537,7 +614,7 @@ class CompanionGatewayPlugin(star.Star):
             provider_id = await self.context.get_current_chat_provider_id(route)
             response = await self.context.llm_generate(
                 chat_provider_id=provider_id,
-                prompt=str(event["generation_instruction"]),
+                prompt=str(event["generation_instruction"]) + "\n" + PROACTIVE_YUMECHO_NOTE,
                 system_prompt=persona + "\n" + str(event["context"]["injection"]),
             )
             text = (response.completion_text or "").strip()
