@@ -347,6 +347,37 @@ async def test_evergreen_api_lifecycle_and_memory_context(config, monkeypatch):
         assert forgotten.json()["fact"]["effective_state"] == "forgotten"
 
 
+async def test_memo_api_lifecycle_and_auth(config, monkeypatch):
+    async with _client(api.create_app(config)) as client:
+        added = await client.post("/state/v1/memo/add", json={"text": "Draft the report."})
+        assert added.status_code == 200
+        note = added.json()["memo"]
+        assert note["status"] == "active"
+
+        listed = await client.get("/state/v1/memo/list")
+        assert [memo["id"] for memo in listed.json()["memos"]] == [note["id"]]
+
+        empty_reason = await client.post(
+            f"/state/v1/memo/{note['id']}/done", json={"reason": "   "}
+        )
+        assert empty_reason.status_code == 422
+
+        missing = await client.post("/state/v1/memo/999999/done", json={"reason": "Missing."})
+        assert missing.status_code == 404
+        assert missing.json()["detail"] == "memo not found"
+
+        done = await client.post(
+            f"/state/v1/memo/{note['id']}/done", json={"reason": "Published."}
+        )
+        assert done.status_code == 200
+        assert done.json()["memo"]["status"] == "archived"
+
+        active = await client.get("/state/v1/memo/list", params={"status": "active"})
+        assert active.json()["memos"] == []
+        archived = await client.get("/state/v1/memo/list", params={"status": "archived"})
+        assert archived.json()["memos"][0]["reason"] == "Published."
+
+
 async def test_api_context_shape_and_same_state_auth(config, monkeypatch):
     async with _client(api.create_app(config)) as client:
         response = await client.post(
@@ -419,6 +450,7 @@ async def test_openapi_paths_are_documented(config, monkeypatch):
             "/state/v1/memory/index", "/state/v1/memory/search", "/state/v1/memory/{message_id}",
             "/state/v1/evergreen/facts", "/state/v1/evergreen/facts/{fact_id}/history",
             "/state/v1/evergreen/facts/{fact_id}/revisions", "/state/v1/evergreen/facts/{fact_id}/forget",
+            "/state/v1/memo/add", "/state/v1/memo/list", "/state/v1/memo/{note_id}/done",
             "/state/v1/context", "/state/v1/affect",
             "/state/v1/proactive/evaluate", "/state/v1/proactive/events",
             "/state/v1/proactive/events/{event_id}/ack", "/v1/models", "/v1/chat/completions",
@@ -505,6 +537,9 @@ PROTECTED_ROUTES = [
      {"expected_revision": 1, "text": "value"}, None),
     ("POST", "/state/v1/evergreen/facts/auth/forget",
      {"expected_revision": 1, "reason": "done"}, None),
+    ("POST", "/state/v1/memo/add", {"text": "auth memo"}, None),
+    ("GET", "/state/v1/memo/list", None, None),
+    ("POST", "/state/v1/memo/1/done", {"reason": "done"}, None),
     ("POST", "/state/v1/context", {"query": ""}, None),
     ("GET", "/state/v1/affect", None, None),
     ("POST", "/state/v1/proactive/evaluate", None, None),

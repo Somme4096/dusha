@@ -5,6 +5,8 @@ from typing import Any
 from .serialization import safe_json
 
 CONTEXT_VERSION = 1
+_MEMO_MAX_ITEMS = 10
+_MEMO_MAX_CHARS = 2000
 
 
 class ContextBudgetError(ValueError):
@@ -67,6 +69,12 @@ class ContextComposer:
         return evergreen["open_delimiter"] + safe_json(facts) + evergreen["close_delimiter"]
 
     @staticmethod
+    def _memo_block(notes: list[dict[str, Any]]) -> str:
+        if not notes:
+            return ""
+        return "<memo_notes>" + safe_json(notes) + "</memo_notes>"
+
+    @staticmethod
     def _plugin_block(plugin_context: dict[str, Any]) -> str:
         payload: dict[str, Any] = {
             "source": plugin_context.get("source", "memory_plugin"),
@@ -112,6 +120,7 @@ class ContextComposer:
         evergreen_facts: list[dict[str, Any]],
         session_records: list[dict[str, Any]],
         plugin_context: dict[str, Any] | None = None,
+        memo_notes: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         empty_companion = self._companion_block(affect_snapshot, affect_text, [])
         mandatory_len = len(self.identity_text) + len(empty_companion)
@@ -131,13 +140,24 @@ class ContextComposer:
             else:
                 break
 
+        used_memos: list[dict[str, Any]] = []
+        for note in list(memo_notes or [])[:_MEMO_MAX_ITEMS]:
+            trial = self._memo_block(used_memos + [note])
+            if len(trial) > _MEMO_MAX_CHARS:
+                break
+            if mandatory_len + evergreen_len + len(trial) <= self.budget:
+                used_memos = used_memos + [note]
+            else:
+                break
+        memo_block = self._memo_block(used_memos)
+
         used_plugin: dict[str, Any] | None = None
         plugin_block = ""
         if plugin_context and self.plugin_context_max_chars > 0:
-            available = self.budget - mandatory_len - evergreen_len
+            available = self.budget - mandatory_len - evergreen_len - len(memo_block)
             plugin_block, used_plugin = self._plugin_render(plugin_context, available)
 
-        fixed_len = len(self.identity_text) + evergreen_len + len(plugin_block)
+        fixed_len = len(self.identity_text) + evergreen_len + len(plugin_block) + len(memo_block)
         session: list[dict[str, Any]] = []
         used_records: list[dict[str, Any]] = []
         for record in session_records:
@@ -153,6 +173,7 @@ class ContextComposer:
             self.identity_text
             + self._evergreen_block(used_evergreen)
             + plugin_block
+            + memo_block
             + companion_block
         )
         if len(injection) > self.budget:
@@ -162,7 +183,11 @@ class ContextComposer:
             )
 
         instructions, emotion = self._instructions_and_emotion(affect_snapshot, affect_text)
-        memory: dict[str, Any] = {"evergreen": used_evergreen, "session": used_records}
+        memory: dict[str, Any] = {
+            "evergreen": used_evergreen,
+            "session": used_records,
+            "memo_notes": used_memos,
+        }
         if used_plugin is not None:
             memory["plugin_context"] = used_plugin
         context = {

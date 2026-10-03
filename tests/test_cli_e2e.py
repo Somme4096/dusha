@@ -41,6 +41,29 @@ def test_cli_success_and_persistence_across_process_restarts(cli_config: Path) -
     )
 
 
+def test_cli_memo_lifecycle_across_process_restarts(cli_config: Path) -> None:
+    config = cli_config
+    added = _run(config, "memo", "add", "Draft the yumecho report.")
+    assert added.returncode == 0
+    note = json.loads(added.stdout)["memo"]
+
+    listed = _run(config, "memo", "list")
+    assert listed.returncode == 0
+    assert any(memo["id"] == note["id"] for memo in json.loads(listed.stdout)["memos"])
+
+    empty_reason = _run(config, "memo", "done", str(note["id"]), "   ")
+    assert empty_reason.returncode != 0
+
+    done = _run(config, "memo", "done", str(note["id"]), "Published.")
+    assert done.returncode == 0
+    assert json.loads(done.stdout)["memo"]["status"] == "archived"
+
+    active = _run(config, "memo", "list")
+    assert json.loads(active.stdout)["memos"] == []
+    archived = _run(config, "memo", "list", "--status", "archived")
+    assert json.loads(archived.stdout)["memos"][0]["reason"] == "Published."
+
+
 def test_cli_failure_path_uses_nonzero_exit_and_stderr(cli_config: Path) -> None:
     config = cli_config
     result = _run(config, "memory", "show", "999999")

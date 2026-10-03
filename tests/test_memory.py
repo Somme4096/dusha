@@ -42,7 +42,7 @@ def test_database_schema_and_upgrade_path(svc, tmp_path):
         for table, columns in expected.items():
             actual = [row["name"] for row in db.execute(f"PRAGMA table_info({table})")]
             assert actual == columns
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 5
         assert db.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='affect_events'"
         ).fetchone() is None
@@ -90,7 +90,7 @@ def test_database_schema_and_upgrade_path(svc, tmp_path):
     restored = upgraded._memory_fallback.get(stored["id"])
     assert restored["text"] == "Keep this exact text through the schema upgrade."
     with upgraded.database.connect() as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 5
         assert db.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='legacy_affect_events'"
         ).fetchone()
@@ -119,7 +119,7 @@ def test_database_upgrades_version_two_through_the_chain(svc):
     upgraded = svc()
     assert upgraded._memory_fallback.get(stored["id"])["text"] == "Keep this exact text."
     with upgraded.database.connect() as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 5
         assert db.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='legacy_affect_events'"
         ).fetchone()
@@ -291,6 +291,65 @@ def test_review_due_and_duplicate_key_rules_are_deterministic(svc):
         service.evergreen.revise(
             fact_id=fact["fact_id"], expected_revision=2, text="The user prefers imperial units.", now=now
         )
+
+
+def test_memo_add_list_done_and_reason_required(svc):
+    service = svc()
+    first = service.memo_add("Draft the yumecho phase one report.")
+    second = service.memo_add("Buy more green tea.")
+    assert first["status"] == "active"
+    assert first["archived_at"] is None
+    assert [note["id"] for note in service.memo_list()] == [first["id"], second["id"]]
+    assert [note["id"] for note in service.memo_list(limit=1)] == [first["id"]]
+
+    with pytest.raises(ValueError, match="reason is required"):
+        service.memo_done(first["id"], "   ")
+
+    done = service.memo_done(first["id"], "Report published.")
+    assert done["status"] == "archived"
+    assert done["reason"] == "Report published."
+    assert done["archived_at"] is not None
+    assert [note["id"] for note in service.memo_list()] == [second["id"]]
+    assert [note["id"] for note in service.memo_list(status="archived")] == [first["id"]]
+
+    with pytest.raises(ValueError, match="status must be active or archived"):
+        service.memo_list(status="bogus")
+    with pytest.raises(KeyError):
+        service.memo_done(999999, "Missing note.")
+    with pytest.raises(ValueError, match="memo text is required"):
+        service.memo_add("   ")
+
+
+def test_active_memos_are_injected_and_archived_memos_are_not(svc):
+    service = svc()
+    active = service.memo_add("Draft the yumecho phase one report.")
+    archived = service.memo_add("Obsolete memo.")
+    service.memo_done(archived["id"], "No longer needed.")
+
+    result = service.build_context(query="")
+    assert "<memo_notes>" in result["injection"]
+    assert "Draft the yumecho phase one report." in result["injection"]
+    assert "Obsolete memo." not in result["injection"]
+    assert result["context"]["memory"]["memo_notes"] == [
+        {"id": active["id"], "text": "Draft the yumecho phase one report.",
+         "created_at": active["created_at"]}
+    ]
+
+
+def test_memo_migration_from_version_four(svc):
+    service = svc()
+    with service.database.connect() as db:
+        db.execute("DROP TABLE memo_notes")
+        db.execute("PRAGMA user_version=4")
+    service.close()
+
+    upgraded = svc()
+    with upgraded.database.connect() as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 5
+        assert db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='memo_notes'"
+        ).fetchone()
+    assert upgraded.memo_add("Created after migration.")["status"] == "active"
 
 
 def test_nested_embedding_configuration_loads_from_json(tmp_path):

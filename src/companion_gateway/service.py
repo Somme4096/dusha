@@ -31,6 +31,9 @@ logger = logging.getLogger("companion_gateway")
 _PLUGIN_BATCH_MAX_BYTES = 512 * 1024
 _PLUGIN_CONTEXT_MAX_RECORDS = 50
 _PLUGIN_CATCH_UP_BATCHES = 20
+_MEMO_CONTEXT_MAX_ITEMS = 10
+_MEMO_TEXT_MAX_CHARS = 4_000
+_MEMO_REASON_MAX_CHARS = 1_000
 
 
 class StorageUnavailableError(RuntimeError):
@@ -194,12 +197,14 @@ class CompanionService:
                 close_delimiter=evergreen["close_delimiter"],
             )
         plugin_context = self._plugin_context(query, harness, conversation_id)
+        memo_notes = self._active_memo_items()
         composed = self.composer.compose(
             affect_snapshot=affect_snapshot,
             affect_text=affect_text,
             evergreen_facts=evergreen_facts,
             session_records=records,
             plugin_context=plugin_context,
+            memo_notes=memo_notes,
         )
         return {
             "injection": composed["injection"],
@@ -435,6 +440,84 @@ class CompanionService:
         if self._memory_fallback is not None:
             self._memory_fallback.rebuild_index()
         return {"status": "rebuilt"}
+
+    def memo_add(self, text: str, now: datetime | None = None) -> dict[str, Any]:
+        self._require_storage()
+        value = self._validate_memo_text(text)
+        timestamp = isoformat(now or utc_now())
+        with self.database.connect() as db:
+            cursor = db.execute(
+                """INSERT INTO memo_notes(text, status, reason, created_at, updated_at, archived_at)
+                   VALUES(?, 'active', '', ?, ?, NULL)""",
+                (value, timestamp, timestamp),
+            )
+            row = db.execute(
+                "SELECT * FROM memo_notes WHERE id=?", (cursor.lastrowid,)
+            ).fetchone()
+        return dict(row)
+
+    def memo_list(self, status: str = "active", limit: int = 20) -> list[dict[str, Any]]:
+        self._require_storage()
+        state = self._validate_memo_status(status)
+        capped = max(1, min(int(limit), 500))
+        with self.database.connect() as db:
+            rows = db.execute(
+                """SELECT * FROM memo_notes
+                   WHERE status=? ORDER BY created_at ASC, id ASC LIMIT ?""",
+                (state, capped),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def memo_done(self, note_id: int, reason: str, now: datetime | None = None) -> dict[str, Any]:
+        self._require_storage()
+        value = str(reason).strip()
+        if not value:
+            raise ValueError("reason is required when completing a memo")
+        if len(value) > _MEMO_REASON_MAX_CHARS:
+            raise ValueError("reason exceeds 1000 characters")
+        timestamp = isoformat(now or utc_now())
+        with self.database.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            current = db.execute(
+                "SELECT * FROM memo_notes WHERE id=?", (int(note_id),)
+            ).fetchone()
+            if current is None:
+                raise KeyError(note_id)
+            if current["status"] == "archived":
+                raise ValueError("memo is already archived")
+            db.execute(
+                """UPDATE memo_notes
+                   SET status='archived', reason=?, updated_at=?, archived_at=?
+                   WHERE id=?""",
+                (value, timestamp, timestamp, int(note_id)),
+            )
+            row = db.execute(
+                "SELECT * FROM memo_notes WHERE id=?", (int(note_id),)
+            ).fetchone()
+        return dict(row)
+
+    def _active_memo_items(self) -> list[dict[str, Any]]:
+        notes = self.memo_list(status="active", limit=_MEMO_CONTEXT_MAX_ITEMS)
+        return [
+            {"id": note["id"], "text": note["text"], "created_at": note["created_at"]}
+            for note in notes
+        ]
+
+    @staticmethod
+    def _validate_memo_text(value: str) -> str:
+        text = str(value).strip()
+        if not text:
+            raise ValueError("memo text is required")
+        if len(text) > _MEMO_TEXT_MAX_CHARS:
+            raise ValueError("memo text exceeds 4000 characters")
+        return text
+
+    @staticmethod
+    def _validate_memo_status(value: str) -> str:
+        status = str(value or "active").strip().casefold()
+        if status not in {"active", "archived"}:
+            raise ValueError("status must be active or archived")
+        return status
 
     @staticmethod
     def _record(message: dict[str, Any], source: str) -> dict[str, Any]:

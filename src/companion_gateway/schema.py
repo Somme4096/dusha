@@ -87,6 +87,14 @@ class RevisionsEnvelope(ExtraAllow):
     revisions: list
 
 
+class MemoEnvelope(ExtraAllow):
+    memo: dict
+
+
+class MemosEnvelope(ExtraAllow):
+    memos: list
+
+
 class ProactiveEvaluateResponse(ExtraAllow):
     event: dict | None
 

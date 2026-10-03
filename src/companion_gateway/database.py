@@ -4,7 +4,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -150,7 +150,19 @@ CREATE TABLE IF NOT EXISTS plugin_ingest_state (
     updated_at TEXT NOT NULL
 );
 
-PRAGMA user_version = 4;
+CREATE TABLE IF NOT EXISTS memo_notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    text TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'archived')),
+    reason TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    archived_at TEXT
+);
+CREATE INDEX IF NOT EXISTS memo_notes_status_created
+ON memo_notes(status, created_at);
+
+PRAGMA user_version = 5;
 """
 
 MIGRATE_2_TO_3 = """
@@ -194,6 +206,26 @@ PRAGMA user_version = 4;
 COMMIT;
 """
 
+MIGRATE_4_TO_5 = """
+PRAGMA foreign_keys = ON;
+BEGIN IMMEDIATE;
+
+CREATE TABLE IF NOT EXISTS memo_notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    text TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'archived')),
+    reason TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    archived_at TEXT
+);
+CREATE INDEX IF NOT EXISTS memo_notes_status_created
+ON memo_notes(status, created_at);
+
+PRAGMA user_version = 5;
+COMMIT;
+"""
+
 
 class Database:
     def __init__(self, path: str | Path):
@@ -213,18 +245,20 @@ class Database:
             ).fetchone()
         if not initialized or version == SCHEMA_VERSION:
             return
-        if version in (2, 3):
+        if version in (2, 3, 4):
             with self.connect() as db:
                 if version == 2:
                     db.executescript(MIGRATE_2_TO_3)
-                self._archive_legacy_label_tables(db)
-                db.executescript(MIGRATE_3_TO_4)
-                self._strip_recent_labels(db)
+                if version in (2, 3):
+                    self._archive_legacy_label_tables(db)
+                    db.executescript(MIGRATE_3_TO_4)
+                    self._strip_recent_labels(db)
+                db.executescript(MIGRATE_4_TO_5)
             return
         if initialized:
             raise RuntimeError(
                 f"database schema version {version} is incompatible. "
-                "Use an empty data directory or restore a schema version 2, 3, or 4 backup"
+                "Use an empty data directory or restore a schema version 2, 3, 4, or 5 backup"
             )
 
     @staticmethod

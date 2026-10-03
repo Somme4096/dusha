@@ -84,6 +84,17 @@ def parser() -> argparse.ArgumentParser:
     evergreen_forget.add_argument("--source-message-id", type=int)
     evergreen_forget.add_argument("--reason", required=True)
 
+    memo = commands.add_parser("memo", help="Manage agent memos")
+    memo_commands = memo.add_subparsers(dest="memo_command", required=True)
+    memo_add = memo_commands.add_parser("add")
+    memo_add.add_argument("text")
+    memo_list = memo_commands.add_parser("list")
+    memo_list.add_argument("--status", default="active", choices=["active", "archived"])
+    memo_list.add_argument("--limit", type=int, default=20)
+    memo_done = memo_commands.add_parser("done")
+    memo_done.add_argument("note_id", type=int)
+    memo_done.add_argument("reason")
+
     affect = commands.add_parser("affect", help="Inspect affect")
     affect_commands = affect.add_subparsers(dest="affect_command", required=True)
     affect_commands.add_parser("show")
@@ -257,6 +268,29 @@ _EVERGREEN_HANDLERS: dict[str, Handler] = {
 }
 
 
+def _cmd_memo(service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace) -> None:
+    _MEMO_HANDLERS[args.memo_command](service, proactive, args)
+
+
+def _memo_add(service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace) -> None:
+    _print({"memo": service.memo_add(args.text)})
+
+
+def _memo_list(service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace) -> None:
+    _print({"memos": service.memo_list(args.status, args.limit)})
+
+
+def _memo_done(service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace) -> None:
+    _print({"memo": service.memo_done(args.note_id, args.reason)})
+
+
+_MEMO_HANDLERS: dict[str, Handler] = {
+    "add": _memo_add,
+    "list": _memo_list,
+    "done": _memo_done,
+}
+
+
 def _cmd_affect(service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace) -> None:
     _AFFECT_HANDLERS[args.affect_command](service, proactive, args)
 
@@ -307,6 +341,7 @@ _COMMANDS: dict[str, Handler] = {
     "backup": _cmd_backup,
     "memory": _cmd_memory,
     "evergreen": _cmd_evergreen,
+    "memo": _cmd_memo,
     "affect": _cmd_affect,
     "proactive": _cmd_proactive,
 }
@@ -320,7 +355,7 @@ def main() -> None:
         return
 
     service = CompanionService(cfg)
-    if args.command in {"memory", "evergreen"} and not service.storage_enabled:
+    if args.command in {"memory", "evergreen", "memo"} and not service.storage_enabled:
         print("built-in message storage is disabled", file=sys.stderr)
         service.close()
         raise SystemExit(1)

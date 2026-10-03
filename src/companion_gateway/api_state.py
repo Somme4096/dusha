@@ -117,6 +117,14 @@ class AckInput(GatewayInput):
     error: str = ""
 
 
+class MemoAddInput(GatewayInput):
+    text: str
+
+
+class MemoDoneInput(GatewayInput):
+    reason: str
+
+
 def create_state_router(service: CompanionService, proactive: ProactiveEngine, authorized) -> APIRouter:
     router = APIRouter()
     memory_store: MemoryStore | None = service._memory_fallback
@@ -333,6 +341,57 @@ def create_state_router(service: CompanionService, proactive: ProactiveEngine, a
             conflict=EvergreenConflict,
         )
         return {"fact": fact}
+
+    @router.post(
+        "/state/v1/memo/add",
+        tags=["state"],
+        response_model=_schema.MemoEnvelope,
+        summary="Add an agent memo",
+        dependencies=[Depends(authorized), Depends(require_storage)],
+        responses={401: _ERROR_DOCS[401], 422: _ERROR_DOCS[422], 503: _ERROR_DOCS[503]},
+    )
+    async def memo_add(body: MemoAddInput) -> dict[str, Any]:
+        memo = await _service_call(service.memo_add, body.text, errors=(ValueError,))
+        return {"memo": memo}
+
+    @router.get(
+        "/state/v1/memo/list",
+        tags=["state"],
+        response_model=_schema.MemosEnvelope,
+        dependencies=[Depends(authorized), Depends(require_storage)],
+        responses={401: _ERROR_DOCS[401], 422: _ERROR_DOCS[422], 503: _ERROR_DOCS[503]},
+    )
+    async def memo_list(
+        status: str = "active",
+        limit: int = Query(20, ge=1, le=500),
+    ) -> dict[str, Any]:
+        memos = await _service_call(
+            service.memo_list, status=status, limit=limit, errors=(ValueError,)
+        )
+        return {"memos": memos}
+
+    @router.post(
+        "/state/v1/memo/{note_id}/done",
+        tags=["state"],
+        response_model=_schema.MemoEnvelope,
+        summary="Archive an agent memo with a reason",
+        dependencies=[Depends(authorized), Depends(require_storage)],
+        responses={
+            401: _ERROR_DOCS[401],
+            404: _ERROR_DOCS[404],
+            422: _ERROR_DOCS[422],
+            503: _ERROR_DOCS[503],
+        },
+    )
+    async def memo_done(note_id: int, body: MemoDoneInput) -> dict[str, Any]:
+        memo = await _service_call(
+            service.memo_done,
+            note_id,
+            body.reason,
+            errors=(KeyError, ValueError),
+            not_found="memo not found",
+        )
+        return {"memo": memo}
 
     @router.post(
         "/state/v1/context",
