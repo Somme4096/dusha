@@ -209,7 +209,7 @@ class CompanionGatewayPlugin(star.Star):
                     "conversation_id": event.unified_msg_origin,
                     "query": prompt,
                     "exclude_message_ids": [stored["id"]],
-                    "include_recent": False,
+                    "include_recent": True,
                 },
             )
             self._inject_context(req, context["injection"])
