@@ -605,6 +605,52 @@ class CompanionGatewayPlugin(star.Star):
         except Exception as error:
             logger.warning(f"[companion-gateway] Proactive history archive failed: {error}")
 
+    @staticmethod
+    def _provider_id(provider: Any) -> str:
+        config = getattr(provider, "provider_config", None)
+        candidate = config.get("id") if isinstance(config, dict) else getattr(config, "id", None)
+        if not candidate:
+            meta = getattr(provider, "meta", None)
+            if callable(meta):
+                with contextlib.suppress(Exception):
+                    candidate = getattr(meta(), "id", None)
+        return str(candidate).strip() if candidate else ""
+
+    async def _generate_with_fallback(self, prompt: str, system_prompt: str, pinned_id: str) -> LLMResponse:
+        """Generate with the pinned provider, then retry each other provider in order."""
+        tried: set[str] = set()
+
+        async def _attempt(provider_id: str) -> LLMResponse:
+            tried.add(provider_id)
+            return await self.context.llm_generate(
+                chat_provider_id=provider_id,
+                prompt=prompt,
+                system_prompt=system_prompt,
+            )
+
+        last_error: Exception | None = None
+        try:
+            return await _attempt(pinned_id)
+        except Exception as error:
+            last_error = error
+        manager = getattr(self.context, "provider_manager", None)
+        get_insts = getattr(manager, "get_insts", None) if manager is not None else None
+        providers: list[Any] = []
+        if callable(get_insts):
+            with contextlib.suppress(Exception):
+                providers = list(get_insts() or [])
+        for provider in providers:
+            candidate = self._provider_id(provider)
+            if not candidate or candidate in tried:
+                continue
+            try:
+                return await _attempt(candidate)
+            except Exception as error:
+                last_error = error
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("no chat provider is available for proactive delivery")
+
     async def _deliver(self, event: dict[str, Any]) -> None:
         route = str(event["target"]["route"])
         try:
@@ -614,10 +660,10 @@ class CompanionGatewayPlugin(star.Star):
             if not persona:
                 raise RuntimeError("no AstrBot persona is configured for this session")
             provider_id = await self.context.get_current_chat_provider_id(route)
-            response = await self.context.llm_generate(
-                chat_provider_id=provider_id,
-                prompt=str(event["generation_instruction"]) + "\n" + PROACTIVE_YUMECHO_NOTE,
-                system_prompt=persona + "\n" + str(event["context"]["injection"]),
+            response = await self._generate_with_fallback(
+                str(event["generation_instruction"]) + "\n" + PROACTIVE_YUMECHO_NOTE,
+                persona + "\n" + str(event["context"]["injection"]),
+                provider_id,
             )
             text = (response.completion_text or "").strip()
             if not text:

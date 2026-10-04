@@ -320,6 +320,19 @@ class _PersonaManager:
         return {"prompt": "persona"}
 
 
+class _Provider:
+    def __init__(self, provider_id):
+        self.provider_config = {"id": provider_id}
+
+
+class _ProviderManager:
+    def __init__(self, *provider_ids):
+        self.providers = [_Provider(pid) for pid in provider_ids]
+
+    def get_insts(self):
+        return list(self.providers)
+
+
 def _proactive_event(route="telegram-sophia:FriendMessage:user-1"):
     return {
         "id": "evt-1",
@@ -354,7 +367,7 @@ def _install_segments():
         sys.modules[name] = module
 
 
-async def _deliver_plugin(plugin_factory, *, send_result=True, cid="cid-1"):
+async def _deliver_plugin(plugin_factory, *, send_result=True, cid="cid-1", generate=None, provider_ids=None):
     _install_segments()
     posts = []
 
@@ -374,12 +387,18 @@ async def _deliver_plugin(plugin_factory, *, send_result=True, cid="cid-1"):
         plugin.generated_prompts.append(kwargs.get("prompt", ""))
         return types.SimpleNamespace(completion_text="hello proactive")
 
+    sends = []
+
     async def send_message(route, chain):
+        sends.append(chain.text)
         return send_result
 
     plugin.generated_prompts = []
+    plugin.sent_messages = sends
+    if provider_ids is not None:
+        plugin.context.provider_manager = _ProviderManager(*provider_ids)
     plugin.context.get_current_chat_provider_id = provider_id
-    plugin.context.llm_generate = llm_generate
+    plugin.context.llm_generate = generate or llm_generate
     plugin.context.send_message = send_message
     return plugin, manager, posts
 
@@ -409,3 +428,41 @@ async def test_proactive_delivery_creates_conversation_when_missing(plugin_facto
     assert manager.created == ["telegram-sophia:FriendMessage:user-1"]
     assert manager.pairs[0][0] == "cid-new"
     assert posts[0]["outcome"] == "sent"
+
+
+async def test_proactive_delivery_falls_back_to_next_provider(plugin_factory):
+    calls = []
+
+    async def generate(**kwargs):
+        calls.append(kwargs["chat_provider_id"])
+        if kwargs["chat_provider_id"] == "prov":
+            raise RuntimeError("Connection error")
+        return types.SimpleNamespace(completion_text="fallback text")
+
+    plugin, manager, posts = await _deliver_plugin(
+        plugin_factory, generate=generate, provider_ids=["prov", "backup"]
+    )
+    await plugin._deliver(_proactive_event())
+    assert calls == ["prov", "backup"]
+    assert plugin.sent_messages == ["fallback text"]
+    assert manager.pairs[0][2].content[0].text == "fallback text"
+    assert posts == [{"consumer": "astrbot", "outcome": "sent", "text": "fallback text"}]
+
+
+async def test_proactive_delivery_all_providers_fail_acks_failed(plugin_factory):
+    calls = []
+
+    async def generate(**kwargs):
+        calls.append(kwargs["chat_provider_id"])
+        raise RuntimeError(f"Connection error: {kwargs['chat_provider_id']}")
+
+    plugin, manager, posts = await _deliver_plugin(
+        plugin_factory, generate=generate, provider_ids=["prov", "backup"]
+    )
+    await plugin._deliver(_proactive_event())
+    assert calls == ["prov", "backup"]
+    assert plugin.sent_messages == []
+    assert manager.pairs == []
+    assert posts == [
+        {"consumer": "astrbot", "outcome": "failed", "error": "Connection error: backup"}
+    ]
