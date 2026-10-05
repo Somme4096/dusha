@@ -653,6 +653,15 @@ class CompanionGatewayPlugin(star.Star):
             logger.warning(f"[companion-gateway] Proactive event unavailable: {error}")
             return None
 
+    def _provider_instances(self) -> list[Any]:
+        manager = getattr(self.context, "provider_manager", None)
+        get_insts = getattr(manager, "get_insts", None) if manager is not None else None
+        if not callable(get_insts):
+            return []
+        with contextlib.suppress(Exception):
+            return list(get_insts() or [])
+        return []
+
     async def _generate_with_fallback(
         self,
         prompt: str,
@@ -662,19 +671,15 @@ class CompanionGatewayPlugin(star.Star):
         event: Any | None = None,
     ) -> LLMResponse:
         """Generate with the pinned provider, then retry each other provider in order."""
+        loop = getattr(self.context, "tool_loop_agent", None)
+        providers = self._provider_instances()
+        if event is not None and tools is not None and callable(loop):
+            return await self._run_tool_loop(loop, prompt, system_prompt, pinned_id, tools, event, providers)
+
         tried: set[str] = set()
 
         async def _attempt(provider_id: str) -> LLMResponse:
             tried.add(provider_id)
-            loop = getattr(self.context, "tool_loop_agent", None)
-            if event is not None and tools is not None and callable(loop):
-                return await loop(
-                    event=event,
-                    chat_provider_id=provider_id,
-                    prompt=prompt,
-                    tools=tools,
-                    system_prompt=system_prompt,
-                )
             if tools is not None:
                 return await self.context.llm_generate(
                     chat_provider_id=provider_id,
@@ -693,12 +698,6 @@ class CompanionGatewayPlugin(star.Star):
             return await _attempt(pinned_id)
         except Exception as error:
             last_error = error
-        manager = getattr(self.context, "provider_manager", None)
-        get_insts = getattr(manager, "get_insts", None) if manager is not None else None
-        providers: list[Any] = []
-        if callable(get_insts):
-            with contextlib.suppress(Exception):
-                providers = list(get_insts() or [])
         for provider in providers:
             candidate = self._provider_id(provider)
             if not candidate or candidate in tried:
@@ -706,6 +705,56 @@ class CompanionGatewayPlugin(star.Star):
             try:
                 return await _attempt(candidate)
             except Exception as error:
+                last_error = error
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("no chat provider is available for proactive delivery")
+
+    async def _run_tool_loop(
+        self,
+        loop: Callable[..., Awaitable[LLMResponse]],
+        prompt: str,
+        system_prompt: str,
+        pinned_id: str,
+        tools: Any,
+        event: Any,
+        providers: list[Any],
+    ) -> LLMResponse:
+        """Run the tool loop once per provider while the runner retries calls in place.
+
+        Provider retries happen inside ``tool_loop_agent`` so a provider switch never
+        restarts the loop and never re-executes tools that already ran.
+        """
+        from astrbot.core.exceptions import ProviderNotFoundError
+
+        def other_ids(exclude: set[str]) -> list[str]:
+            ids: list[str] = []
+            for provider in providers:
+                candidate = self._provider_id(provider)
+                if candidate and candidate not in exclude and candidate not in ids:
+                    ids.append(candidate)
+            return ids
+
+        order = ([pinned_id] if pinned_id else []) + other_ids({pinned_id})
+
+        async def _invoke(primary: str, fallback_ids: list[str]) -> LLMResponse:
+            fallback_set = set(fallback_ids)
+            fallbacks = [p for p in providers if self._provider_id(p) in fallback_set]
+            return await loop(
+                event=event,
+                chat_provider_id=primary,
+                prompt=prompt,
+                tools=tools,
+                system_prompt=system_prompt,
+                fallback_providers=fallbacks,
+            )
+
+        last_error: Exception | None = None
+        for index, primary in enumerate(order):
+            try:
+                return await _invoke(primary, order[index + 1 :])
+            except ProviderNotFoundError as error:
+                # Raised before the loop starts, so no tool has run yet.
                 last_error = error
         if last_error is not None:
             raise last_error

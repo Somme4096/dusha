@@ -466,3 +466,52 @@ async def test_proactive_delivery_all_providers_fail_acks_failed(plugin_factory)
     assert posts == [
         {"consumer": "astrbot", "outcome": "failed", "error": "Connection error: backup"}
     ]
+
+
+def _install_exceptions():
+    name = "astrbot.core.exceptions"
+    if name not in sys.modules:
+        module = types.ModuleType(name)
+
+        class ProviderNotFoundError(Exception):
+            pass
+
+        module.ProviderNotFoundError = ProviderNotFoundError
+        sys.modules[name] = module
+        sys.modules["astrbot.core"].exceptions = module
+    return sys.modules[name]
+
+
+async def test_tool_loop_passes_other_providers_as_in_runner_fallback(plugin_factory):
+    _install_exceptions()
+    plugin = await plugin_factory()
+    plugin.context.provider_manager = _ProviderManager("prov", "backup")
+    calls = []
+
+    async def loop(**kwargs):
+        calls.append(kwargs)
+        return types.SimpleNamespace(completion_text="ok")
+
+    await plugin._run_tool_loop(
+        loop, "prompt", "system", "prov", object(), object(), plugin._provider_instances()
+    )
+    assert calls[0]["chat_provider_id"] == "prov"
+    assert [p.provider_config["id"] for p in calls[0]["fallback_providers"]] == ["backup"]
+
+
+async def test_tool_loop_relaxes_missing_pinned_provider(plugin_factory):
+    exceptions = _install_exceptions()
+    plugin = await plugin_factory()
+    plugin.context.provider_manager = _ProviderManager("prov", "backup")
+    calls = []
+
+    async def loop(**kwargs):
+        calls.append(kwargs["chat_provider_id"])
+        if kwargs["chat_provider_id"] == "missing":
+            raise exceptions.ProviderNotFoundError("nope")
+        return types.SimpleNamespace(completion_text="ok")
+
+    await plugin._run_tool_loop(
+        loop, "prompt", "system", "missing", object(), object(), plugin._provider_instances()
+    )
+    assert calls == ["missing", "prov"]
