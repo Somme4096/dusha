@@ -616,12 +616,72 @@ class CompanionGatewayPlugin(star.Star):
                     candidate = getattr(meta(), "id", None)
         return str(candidate).strip() if candidate else ""
 
-    async def _generate_with_fallback(self, prompt: str, system_prompt: str, pinned_id: str) -> LLMResponse:
+    def _gateway_tool_set(self) -> Any:
+        """Build a ToolSet with only the gateway tools for proactive generation."""
+        manager = getattr(self.context, "get_llm_tool_manager", None)
+        tool_manager = manager() if callable(manager) else None
+        if tool_manager is None:
+            return None
+        try:
+            full = tool_manager.get_full_tool_set()
+        except Exception as error:
+            logger.warning(f"[companion-gateway] Gateway tools unavailable: {error}")
+            return None
+        from astrbot.core.agent.tool import ToolSet
+
+        tools = ToolSet()
+        for name in GATEWAY_TOOL_NAMES:
+            tool = full.get_tool(name)
+            if tool is not None:
+                tools.add_tool(tool)
+        return tools if not tools.empty() else None
+
+    def _proactive_event(self, route: str) -> Any:
+        """Build a synthetic event so the tool loop can execute gateway tools."""
+        try:
+            from astrbot.core.cron.events import CronMessageEvent
+            from astrbot.core.platform.message_session import MessageSession
+
+            session = MessageSession.from_str(route)
+            return CronMessageEvent(
+                context=self.context,
+                session=session,
+                message="",
+                message_type=session.message_type,
+            )
+        except Exception as error:
+            logger.warning(f"[companion-gateway] Proactive event unavailable: {error}")
+            return None
+
+    async def _generate_with_fallback(
+        self,
+        prompt: str,
+        system_prompt: str,
+        pinned_id: str,
+        tools: Any | None = None,
+        event: Any | None = None,
+    ) -> LLMResponse:
         """Generate with the pinned provider, then retry each other provider in order."""
         tried: set[str] = set()
 
         async def _attempt(provider_id: str) -> LLMResponse:
             tried.add(provider_id)
+            loop = getattr(self.context, "tool_loop_agent", None)
+            if event is not None and tools is not None and callable(loop):
+                return await loop(
+                    event=event,
+                    chat_provider_id=provider_id,
+                    prompt=prompt,
+                    tools=tools,
+                    system_prompt=system_prompt,
+                )
+            if tools is not None:
+                return await self.context.llm_generate(
+                    chat_provider_id=provider_id,
+                    prompt=prompt,
+                    system_prompt=system_prompt,
+                    tools=tools,
+                )
             return await self.context.llm_generate(
                 chat_provider_id=provider_id,
                 prompt=prompt,
@@ -664,6 +724,8 @@ class CompanionGatewayPlugin(star.Star):
                 str(event["generation_instruction"]) + "\n" + PROACTIVE_YUMECHO_NOTE,
                 persona + "\n" + str(event["context"]["injection"]),
                 provider_id,
+                tools=self._gateway_tool_set(),
+                event=self._proactive_event(route),
             )
             text = (response.completion_text or "").strip()
             if not text:
