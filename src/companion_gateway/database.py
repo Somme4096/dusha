@@ -227,6 +227,26 @@ COMMIT;
 """
 
 
+class _ClosingConnection:
+    """Commits or rolls back like sqlite3's context manager, then closes the connection."""
+
+    def __init__(self, connection: sqlite3.Connection):
+        self._connection = connection
+
+    def __enter__(self) -> sqlite3.Connection:
+        return self._connection
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        try:
+            if exc_type is None:
+                self._connection.commit()
+            else:
+                self._connection.rollback()
+        finally:
+            self._connection.close()
+        return False
+
+
 class Database:
     def __init__(self, path: str | Path):
         self.path = Path(path)
@@ -238,7 +258,7 @@ class Database:
     def _prepare_schema(self) -> None:
         if not self.path.exists():
             return
-        with sqlite3.connect(self.path) as db:
+        with _ClosingConnection(sqlite3.connect(self.path)) as db:
             version = int(db.execute("PRAGMA user_version").fetchone()[0])
             initialized = db.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages'"
@@ -287,13 +307,13 @@ class Database:
                 (json.dumps(state, ensure_ascii=True, separators=(",", ":")),),
             )
 
-    def connect(self) -> sqlite3.Connection:
+    def connect(self) -> _ClosingConnection:
         db = sqlite3.connect(self.path, timeout=10)
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA journal_mode=WAL")
         db.execute("PRAGMA busy_timeout=5000")
         db.execute("PRAGMA foreign_keys=ON")
-        return db
+        return _ClosingConnection(db)
 
     def integrity_check(self) -> str:
         with self.connect() as db:
@@ -302,6 +322,6 @@ class Database:
     def backup(self, destination: str | Path) -> Path:
         target = Path(destination).expanduser()
         target.parent.mkdir(parents=True, exist_ok=True)
-        with self.connect() as source, sqlite3.connect(target) as output:
+        with self.connect() as source, _ClosingConnection(sqlite3.connect(target)) as output:
             source.backup(output)
         return target
