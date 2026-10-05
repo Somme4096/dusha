@@ -616,8 +616,13 @@ class CompanionGatewayPlugin(star.Star):
                     candidate = getattr(meta(), "id", None)
         return str(candidate).strip() if candidate else ""
 
+    @staticmethod
+    def _is_proactive_tool(name: str) -> bool:
+        lowered = name.casefold()
+        return name in GATEWAY_TOOL_NAMES or "donsetch" in lowered or "fetch" in lowered
+
     def _gateway_tool_set(self) -> Any:
-        """Build a ToolSet with only the gateway tools for proactive generation."""
+        """Build the proactive ToolSet: gateway tools plus donsetch/fetch tools."""
         manager = getattr(self.context, "get_llm_tool_manager", None)
         tool_manager = manager() if callable(manager) else None
         if tool_manager is None:
@@ -630,9 +635,8 @@ class CompanionGatewayPlugin(star.Star):
         from astrbot.core.agent.tool import ToolSet
 
         tools = ToolSet()
-        for name in GATEWAY_TOOL_NAMES:
-            tool = full.get_tool(name)
-            if tool is not None:
+        for tool in full.tools:
+            if self._is_proactive_tool(tool.name):
                 tools.add_tool(tool)
         return tools if not tools.empty() else None
 

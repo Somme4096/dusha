@@ -269,6 +269,17 @@ def test_tool_decorators_register_the_nine_gateway_tools():
     ]
 
 
+def test_proactive_tool_filter_includes_donsetch_and_fetch():
+    is_proactive = _load_main().CompanionGatewayPlugin._is_proactive_tool
+    assert is_proactive("yumecho_done") is True
+    assert is_proactive("remember_evergreen_fact") is True
+    assert is_proactive("donsetch_search") is True
+    assert is_proactive("fetch_url") is True
+    assert is_proactive("astrbot_execute_shell") is False
+    assert is_proactive("send_message_to_user") is False
+
+
+
 def _load_routing():
     spec = importlib.util.spec_from_file_location("astrbot_gateway_routing", _INTEGRATION_DIR / "routing.py")
     assert spec and spec.loader
