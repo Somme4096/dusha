@@ -1,43 +1,50 @@
 # Companion State Gateway API and integration
 
-The gateway stores raw conversation memory, persistent affect, evergreen facts, and proactive delivery decisions in one SQLite file. It does not own the persona or the model. You send it messages, ask for a context injection, then call your provider yourself or let the optional proxy call it for you. Setting `storage.enabled` to `false` keeps the file but closes the message, memory, context, and evergreen routes.
+The gateway stores raw conversation memory, persistent affect, evergreen facts, and proactive delivery decisions in one SQLite file. It does not own the persona or the model. You send it messages, ask for a context injection, then call your provider yourself or let the optional proxy call it for you. Setting `storage.enabled` to `false` keeps the file but closes the message, memory, context, evergreen, and memo routes.
 
-Base URL: `http://127.0.0.1:8765`. FastAPI serves the live schema at `/docs` and `/openapi.json` when auth is disabled; with `api_token_env` set, both are disabled.
+Base URL: `http://127.0.0.1:8765`. FastAPI serves the live schema at `/docs` and `/openapi.json` while auth is off. Setting `api_token_env` disables both.
 
-The state API lives under `/state/v1/*`. The optional OpenAI-compatible proxy lives under `/v1/*`. `/health` reports process and index status.
+The state API lives under `/state/v1/*`. The optional OpenAI-compatible proxy lives under `/v1/*` while `api_openai.enabled` is `true`. `/health` reports process and index status.
 
 ## Endpoints at a glance
 
 | Method | Path | Purpose | Statuses |
 | --- | --- | --- | --- |
 | GET | `/health` | Process, database, and index status | 200 |
-| POST | `/state/v1/messages` | Store one message, invoke the decision plugin | 200, 401, 422 |
-| GET | `/state/v1/messages/{message_id}` | Read one stored message | 200, 401, 404 |
-| POST | `/state/v1/memory/search` | Search the archive with adjacent context | 200, 401 |
-| GET | `/state/v1/memory/{message_id}` | Read a message plus neighbors | 200, 401, 404 |
-| GET | `/state/v1/memory/index` | Report the message count and memory plugin index status | 200, 401 |
-| POST | `/state/v1/context` | Build the provider-neutral injection | 200, 401, 422 |
+| POST | `/state/v1/messages` | Store one message, update affect for a new user message | 200, 401, 422, 503 |
+| GET | `/state/v1/messages/{message_id}` | Read one stored message | 200, 401, 404, 503 |
+| POST | `/state/v1/memory/search` | Search the archive with adjacent context | 200, 401, 503 |
+| GET | `/state/v1/memory/{message_id}` | Read a message plus neighbors | 200, 401, 404, 503 |
+| GET | `/state/v1/memory/index` | Report index status from the memory plugin or the built-in index | 200, 401, 503 |
+| POST | `/state/v1/context` | Build the provider-neutral injection | 200, 401, 422, 503 |
 | GET | `/state/v1/affect` | Read affect state and advance decay | 200, 401 |
-| POST | `/state/v1/evergreen/facts` | Remember a fact | 200, 401, 409, 422 |
-| GET | `/state/v1/evergreen/facts` | List current facts | 200, 401 |
-| GET | `/state/v1/evergreen/facts/{fact_id}/history` | List every revision | 200, 401, 404 |
-| POST | `/state/v1/evergreen/facts/{fact_id}/revisions` | Revise with `expected_revision` | 200, 401, 404, 409, 422 |
-| POST | `/state/v1/evergreen/facts/{fact_id}/forget` | Forget with `expected_revision` | 200, 401, 404, 409, 422 |
+| POST | `/state/v1/evergreen/facts` | Remember a fact | 200, 401, 409, 422, 503 |
+| GET | `/state/v1/evergreen/facts` | List current facts | 200, 401, 503 |
+| GET | `/state/v1/evergreen/facts/{fact_id}/history` | List every revision | 200, 401, 404, 503 |
+| POST | `/state/v1/evergreen/facts/{fact_id}/revisions` | Revise with `expected_revision` | 200, 401, 404, 409, 422, 503 |
+| POST | `/state/v1/evergreen/facts/{fact_id}/forget` | Forget with `expected_revision` | 200, 401, 404, 409, 422, 503 |
+| POST | `/state/v1/memo/add` | Add one memo | 200, 401, 422, 503 |
+| GET | `/state/v1/memo/list` | List active or archived memos | 200, 401, 422, 503 |
+| POST | `/state/v1/memo/{note_id}/done` | Archive a memo with a reason | 200, 401, 404, 422, 503 |
 | POST | `/state/v1/proactive/evaluate` | Run one evaluation pass | 200, 401 |
 | GET | `/state/v1/proactive/events` | Poll and lease pending events | 200, 401 |
 | POST | `/state/v1/proactive/events/{event_id}/ack` | Acknowledge a leased event | 200, 401, 404, 409 |
-| GET | `/v1/models` | Proxy a model list to `upstream.base_url` | 503, upstream |
-| POST | `/v1/chat/completions` | Proxy chat completions and ingest the transcript | 503, 422, upstream |
+| GET | `/v1/models` | Proxy a model list to `upstream.base_url` | 401, 503, upstream |
+| POST | `/v1/chat/completions` | Proxy chat completions and ingest the transcript | 401, 422, 503, upstream |
 
-When `storage.enabled` is `false`, every message, memory, context, and evergreen route in the table returns `503 {"detail":"built-in message storage is disabled"}`. Affect, proactive, and health routes stay available. Re-enabling storage restores the routes and the stored rows remain on disk.
+The `401` entries apply while `api_token_env` is set.
+
+With `storage.enabled` set to `false`, the message, memory, context, evergreen, and memo routes return `503 {"detail":"built-in message storage is disabled"}`. `POST /v1/chat/completions` returns the same `503` because the proxy stores the transcript. Affect, proactive, and health routes stay available, and `POST /state/v1/proactive/evaluate` answers `{"event": null}` until storage returns. Re-enabling storage restores the routes, and the stored rows remain on disk.
+
+Setting `api_openai.enabled` to `false` removes both `/v1/*` routes. Requests to them return `404` and the OpenAPI document omits them. Both proxy routes also return `503` while `upstream.base_url` is empty.
 
 `/docs` and `/openapi.json` carry request models, response schemas, and error shapes. Treat this page as the integration guide and the OpenAPI document as the field reference. JSON blocks below parse as written.
 
 ## Auth and boundaries
 
-Set `api_token_env` to an environment variable name to protect the data and model routes: every `/state/v1/*` request plus `/v1/models` and `/v1/chat/completions` needs the variable's value in `X-Companion-Token`. A missing or wrong token returns `401 {"detail":"invalid companion token"}`. An empty `api_token_env` leaves the API open, which suits a trusted network. The variable is read once at startup; changing it requires a restart.
+Set `api_token_env` to an environment variable name to protect the data and model routes. Each `/state/v1/*` request, plus `/v1/models` and `/v1/chat/completions`, then needs the variable's value in `X-Companion-Token`. A missing or wrong token returns `401 {"detail":"invalid companion token"}`. An empty `api_token_env` leaves the API open, which suits a trusted network. The gateway reads the variable once at startup, so a new value needs a restart.
 
-Auth covers `/state/v1/*`, `/v1/models`, and `/v1/chat/completions`. `/health` stays public. When auth is enabled, `/docs`, `/redoc`, and `/openapi.json` are disabled to keep the public surface minimal; when it is disabled they are served as usual.
+Auth covers `/state/v1/*`, `/v1/models`, and `/v1/chat/completions`. `/health` stays public. With auth on, the gateway disables `/docs`, `/redoc`, and `/openapi.json` to keep the public surface small. With auth off it serves them as usual.
 
 The proxy picks its upstream credential per request. A nonempty value in the environment variable named by `upstream.api_key_env` makes the proxy send `Bearer <value>` and ignore the caller `Authorization` header. Otherwise the proxy forwards the caller `Authorization` header. The configured key wins.
 
@@ -47,7 +54,7 @@ A full exchange runs four steps. The proxy performs all four when you point a cl
 
 ### 1. Ingest the user message
 
-`POST /state/v1/messages` stores one canonical message. `content` accepts a plain string or OpenAI-style structured content. A new user message marks user contact and, when a decision plugin is configured, invokes it to select at most one emotion dimension for a bounded increase. Assistant and tool messages store as usual.
+`POST /state/v1/messages` stores one canonical message. `content` accepts a plain string or OpenAI-style structured content. A new user message marks user contact, cancels unsent proactive events, and runs the two affect steps described under [Affect](#affect). Assistant and tool messages store as usual.
 
 ```json
 {
@@ -61,9 +68,9 @@ A full exchange runs four steps. The proxy performs all four when you point a cl
 }
 ```
 
-The response returns the stored `id`, a `duplicate` flag, the internal `conversation_id`, the message `sha256`, and `affect` for a new user message. `affect` is `null` when no plugin is configured or the plugin abstained or failed. Otherwise it holds `emotion`, `increment`, `decision_id`, and the updated `state`. A supplied `affect_label` is rejected with `422`; labels are gone.
+The response returns the stored `id`, a `duplicate` flag, the internal `conversation_id`, the message `sha256`, and `affect`. For a new user message where the decision plugin or semantic appraisal picked a dimension, `affect` holds `emotion`, `increment`, `decision_id`, and the updated `state`. That `state` includes phrase deltas applied on the same turn. `affect` is `null` for assistant and tool messages, for duplicates, for a turn where neither source picked a dimension, and for a turn where phrase deltas alone moved the state. The request model forbids unknown fields, so a supplied `affect_label` returns `422`.
 
-Replaying the same `external_id` inside the same `(harness, conversation_id)` stores one message and returns `duplicate: true` with the original `id`, without invoking the plugin again. That scope is the deduplication the API performs. No global idempotency layer exists.
+Replaying the same `external_id` inside the same `(harness, conversation_id)` stores one message and returns `duplicate: true` with the original `id`, without running the affect steps again. That scope is the deduplication the API performs. No global idempotency layer exists.
 
 ### 2. Build context
 
@@ -79,13 +86,21 @@ Replaying the same `external_id` inside the same `(harness, conversation_id)` st
 }
 ```
 
-Pass `include_recent: true` when the gateway should add recent messages to the injection. Pass `false` when your provider conversation holds recent history and you want recalled records alone. `exclude_message_ids` removes messages you have sent.
+Pass `include_recent: true`, the default, when the gateway should add recent messages to the injection. Pass `false` when your provider conversation holds recent history and you want recalled records alone. `exclude_message_ids` removes messages you have sent.
 
-The response carries `injection`, `affect`, `evergreen_facts`, `records`, `search_hits`, and `context`. `injection` concatenates the raw identity text (when configured), the evergreen block, and one JSON block wrapped in `<companion_state>` and `</companion_state>`. Stored text cannot break the delimiters because the serializer escapes `&`, `<`, and `>`.
+The response carries `injection`, `affect`, `evergreen_facts`, `records`, `search_hits`, and `context`. The gateway builds `injection` from up to five parts, in this order:
 
-`context` mirrors the same data as fields: `version`, `identity`, `instructions`, `memory`, and `emotion`. A harness that wants fields reads `context`. A harness that wants one string prepends `injection` to its system prompt.
+1. The raw identity text, when you configured one.
+2. The evergreen block, a JSON list of the facts that fit.
+3. The memory plugin block, when an enabled memory plugin returned context.
+4. The memo block, a JSON list of active memos with `id`, `text`, and `created_at`.
+5. The companion state block, one JSON object holding the instructions, the emotion values, and the session records.
 
-The whole injection must fit `memory.injection_max_chars`. The gateway does not truncate the identity or the mandatory companion state. If those two exceed the budget, the endpoint returns `422` with a detail naming the required size. Evergreen facts and session records fill the remaining space when they fit.
+Parts 2 to 5 sit between delimiters from `prompts.json`. The `evergreen` and `companion_state` slots hold their own pairs, and the `context_blocks` slot holds the pairs for the memo block and the memory plugin block. The packaged opening delimiters are `<evergreen_facts>`, `<memory_context>`, `<memo_notes>`, and `<companion_state>`. Stored text cannot break the delimiters because the serializer escapes `&`, `<`, and `>`.
+
+`context` mirrors the same data as fields: `version`, `identity`, `instructions`, `memory`, and `emotion`. `memory` holds `evergreen`, `session`, `memo_notes`, and, when the plugin block made it in, `plugin_context`. A harness that wants fields reads `context`. A harness that wants one string prepends `injection` to its system prompt.
+
+The whole injection must fit `memory.injection_max_chars`. The gateway keeps the identity and the companion state block whole. If those two exceed the budget, the endpoint returns `422` with a detail naming the required size. The optional content then claims the remaining space in a fixed order: evergreen facts, memos, the memory plugin block, and last the session records. Each list stops at the first item that does not fit. Memos count against the budget, up to 10 notes and 2,000 characters for the whole memo block. The gateway shrinks the memory plugin block to the space left, dropping its records before cutting its text, and `memory.plugin_context_max_chars` caps that block before the budget applies.
 
 ### 3. Call the provider
 
@@ -101,17 +116,23 @@ X-Companion-Route: opaque-return-address
 
 ### 4. Archive the assistant reply
 
-Call `POST /state/v1/messages` with `role: "assistant"`. The gateway stores the reply and leaves affect untouched. Only a new user message invokes the decision plugin.
+Call `POST /state/v1/messages` with `role: "assistant"`. The gateway stores the reply and leaves affect untouched. Affect steps run for new user messages alone.
 
 ## Affect
 
 `GET /state/v1/affect` returns `base` and `mood` for every dimension in the resolved `emotions.json`, timestamps, and `unanswered_proactive`. This read advances decay and silence effects to the current time, then persists the result. Reading affect changes state.
 
-There are no labels. The gateway has no keyword rules, no staging, and no agent labeling endpoints. On a new user message the service calls the configured decision plugin (see [configuration.md](configuration.md#decision-plugins)). The plugin returns at most one dimension name from the resolved `emotions.json`; the engine increases that dimension by the configured bounded `decision.increment` and clamps it. A missing, failed, or invalid decision changes nothing. Every applied decision is recorded in the `affect_decisions` table.
+A new user message can move affect in two steps. The gateway runs them in this order.
+
+Step one picks at most one dimension. The gateway calls the configured decision plugin (see [configuration.md](configuration.md#decision-plugins)), and the plugin returns one dimension name from the resolved `emotions.json` or abstains. With `embedding` configured, semantic appraisal picks the dimension when the decision plugin is absent, abstains, fails, or returns an unknown name (see [configuration.md](configuration.md#shared-embedding-and-semantic-affect)). The engine raises the picked dimension by that dimension's decision increment, clamps it, and writes one row to `affect_decisions`. The ingest response reports this step in `affect`. A turn without a picked dimension skips the step.
+
+Step two applies phrase deltas. It runs with a memory plugin enabled and storage on. The gateway sends the message text to the plugin's `match_phrase` operation and applies the per-dimension deltas the plugin returns. One message can move several dimensions, and a delta can be negative. These deltas bypass the decision increment. The engine scales each delta by `impact_scale` and by the room left in the value range, then holds the result at or above the dimension floor. The gateway writes no `affect_decisions` row for phrase deltas, and a turn that moved on phrase deltas alone returns `affect: null` from ingest. A failed `match_phrase` call changes nothing. The engine skips delta names missing from `emotions.json` and logs a warning.
+
+The gateway keeps no keyword list of its own, so phrase rules belong to the memory plugin. Labels, staging, and the agent labeling endpoints are gone.
 
 ## Evergreen facts
 
-Evergreen facts are append-only revisions. Every change increments the fact `revision`. Revise and forget use an optimistic `expected_revision` check, so a stale value returns `409` with the current revision. The check applies to one fact at a time; the API has no global compare-and-swap layer.
+Evergreen facts are append-only revisions. Every change increments the fact `revision`. Revise and forget use an optimistic `expected_revision` check, so a stale value returns `409` with the current revision. The check applies to one fact at a time. The API has no global compare-and-swap layer.
 
 Lifecycle:
 
@@ -137,6 +158,50 @@ Remember request:
 
 The fact object carries `fact_id`, `revision`, `state`, `effective_state`, `priority`, `review_due`, and timestamps. `state` holds `active` or `forgotten`. `effective_state` accounts for the clock, so an expired fact reads `expired`. The gateway injects active, unexpired facts. It does not extract facts from conversation, merge claims, or call a model to manage them.
 
+## Memos
+
+Memos are short notes the agent leaves for itself, such as a loose end to pick up in a later proactive message. They belong to the whole gateway, so the routes take no harness or conversation. Each context build injects up to 10 active memos, oldest first.
+
+`POST /state/v1/memo/add` stores one active memo:
+
+```json
+{
+  "text": "Ask how the interview went."
+}
+```
+
+The gateway trims `text` and returns `422` when it is blank or longer than 4,000 characters. The response wraps the stored row:
+
+```json
+{
+  "memo": {
+    "id": 3,
+    "text": "Ask how the interview went.",
+    "status": "active",
+    "reason": "",
+    "created_at": "2026-01-01T00:00:00+00:00",
+    "updated_at": "2026-01-01T00:00:00+00:00",
+    "archived_at": null
+  }
+}
+```
+
+`GET /state/v1/memo/list?status=active&limit=20` returns `{"memos": [...]}` with the same row shape, oldest first. `status` accepts `active` or `archived` and defaults to `active`. A different value returns `422`. `limit` runs from 1 to 500 and defaults to 20.
+
+`POST /state/v1/memo/{note_id}/done` archives one memo and requires a reason:
+
+```json
+{
+  "reason": "Asked, the interview went well."
+}
+```
+
+The response is `{"memo": {...}}` with `status` set to `archived`, the trimmed `reason`, and `archived_at`. An unknown `note_id` returns `404 {"detail":"memo not found"}`. A blank reason, a reason longer than 1,000 characters, or a memo that is already archived returns `422`.
+
+## Memory index status
+
+`GET /state/v1/memory/index` has two response shapes. With a memory plugin enabled, the body is the object the plugin's `status` operation returns. The gateway passes it through unchecked, so its fields depend on the plugin. Without a plugin, or when the plugin's `status` call fails, the gateway answers for its built-in lexical index: `mode` and `retrieval` read `lexical`, `messages` counts stored messages, `storage_enabled`, `plugin_configured`, and `plugin_enabled` report the setup, and the chunk and embedding counters stay at zero. `/health` embeds the same object under `memory_index`.
+
 ## Proactive delivery
 
 Proactive delivery stores a decision before sending, so a restart does not reset the daily and unanswered limits.
@@ -145,7 +210,11 @@ Proactive delivery stores a decision before sending, so a restart does not reset
 
 `GET /state/v1/proactive/events?consumer=my-harness&harness=my-harness&limit=1` leases pending events for that consumer. The gateway stamps each leased event with `lease_until`. A lease that expires returns the event to pending on the next poll, so a consumer that never acknowledges sees the event again. Delivery is at-least-once.
 
-Each payload holds `id`, `target` (`harness`, `conversation_id`, `route`), `reason`, `generation_instruction`, `generation_base`, `generation_variant`, `generation_variant_index`, `ruling_feeling` (`dimension`, `value`, `neutral`, `deviation`), `ladder_stage`, `unanswered_proactive`, `silence_minutes`, `silence_text`, `context`, `created_at`, and `lease_until`. Send the message to the target route, then acknowledge:
+Each payload holds `id`, `target` (`harness`, `conversation_id`, `route`), `reason`, `generation_instruction`, `generation_base`, `generation_variant`, `generation_variant_index`, `ruling_feeling` (`dimension`, `value`, `neutral`, `deviation`), `ladder_stage`, `unanswered_proactive`, `silence_minutes`, `silence_text`, `last_user_message_at`, `evaluated_at`, `context`, and `created_at`. A polled payload adds `lease_until`.
+
+`reason` comes from `proactive.triggers` in the resolved `emotions.json`. The engine walks that list in order and copies the `reason` string of the first trigger whose dimension has reached its threshold. The packaged file ships two triggers with the reasons `fear` and `silence`, and your own file can name others. A pass where no trigger matches creates no event.
+
+Send the message to the target route, then acknowledge:
 
 ```json
 {
@@ -157,9 +226,9 @@ Each payload holds `id`, `target` (`harness`, `conversation_id`, `route`), `reas
 }
 ```
 
-`outcome` accepts `sent`, `failed`, or `release`. `sent` archives the text as an assistant message and records the send. `failed` returns the event to pending after `retry_delay_minutes`. `release` returns it at once. The same consumer must hold the lease; any other consumer gets `409`, and an unknown `event_id` gets `404`.
+`outcome` accepts `sent`, `failed`, or `release`. `sent` archives the text as an assistant message and records the send. `failed` returns the event to pending after `retry_delay_minutes`. `release` returns it at once. The same consumer must hold the lease. A different consumer gets `409`, and an unknown `event_id` gets `404`.
 
-The engine gates each pass on silence, quiet hours, cooldown, the daily limit, the unanswered limit, and the current drives. It keys duplicate silence events on the last user message, the local date, and the day's send count, and keys follow-up events on the source affect event. A user reply cancels unsent events and resets the unanswered count.
+The engine gates each pass on silence, quiet hours, cooldown, the daily limit, the unanswered limit, and the triggers. It keeps one unsent event at a time and keys duplicates on the last user message, the local date, and the day's send count. A user reply cancels unsent events and resets the unanswered count.
 
 ## AstrBot plugin
 
@@ -183,10 +252,19 @@ Restart AstrBot or reload the plugin from its manager. AstrBot reads `metadata.y
 | `gateway_url` | `http://127.0.0.1:8765` | Gateway address reachable from AstrBot |
 | `platform_id` | `""` | Exact AstrBot platform ID allowed to use the gateway |
 | `api_token` | `""` | Value for `X-Companion-Token` when the gateway requires one |
-| `poll_seconds` | `30` | Seconds between proactive polls; values below 5 clamp to 5 |
-| `enable_proactive` | `true` | Poll and deliver proactive events |
+| `harness` | `astrbot` | Harness name the plugin sends with messages, context requests, and proactive polls |
+| `request_timeout_seconds` | `60` | Seconds to wait for one gateway response. Values below 1 clamp to 1 |
+| `poll_interval_seconds` | `30` | Seconds between proactive polls. Values below 5 clamp to 5 |
+| `proactive_enabled` | `true` | Poll and deliver proactive events |
+| `proactive_tool_keywords` | `["donsetch", "fetch"]` | Name fragments that add AstrBot tools to proactive messages |
 
-An empty `platform_id` disables routing and proactive polling. Run `/sid` through the Discord bot that should own this companion and copy its `Bot ID` into `platform_id`. The plugin ignores other adapters in the same AstrBot process and strips its memory tools from their LLM requests.
+`_conf_schema.json` holds these defaults, and the plugin reads its fallback values from that file. A config saved under the old names `poll_seconds` and `enable_proactive` still loads. The plugin renames both keys once at startup and keeps the new key when a file carries both.
+
+An empty `platform_id` disables routing and proactive polling. Run `/sid` through the Discord bot that should own this companion and copy its `Bot ID` into `platform_id`. The plugin ignores other adapters in the same AstrBot process and strips its gateway tools from their LLM requests.
+
+The gateway keys each conversation by harness name plus AstrBot's session ID. Keep `harness` at `astrbot` once conversations exist. After a rename each chat opens a new conversation with empty recent history, and the plugin stops receiving proactive events queued under the old name. Older messages stay searchable.
+
+Storing a user message can take longer than a plain read. The gateway may run the decision plugin, then the memory plugin's `match_phrase` and `ingest_messages` operations, and each has a 15 second budget by default. The 60 second default for `request_timeout_seconds` covers all three. Raise it when you raise `decision.timeout_seconds` or `memory_plugin.timeout_seconds` on the gateway.
 
 ### Tools
 
@@ -204,13 +282,19 @@ The plugin registers nine LLM tools when the provider supports tools:
 | `yumecho_list` | `status`, `limit` | `GET /state/v1/memo/list` |
 | `yumecho_done` | `note_id`, `reason` | `POST /state/v1/memo/{id}/done` |
 
-The nine tools read or manage memory, facts, and memos. Tools return JSON with `ok: true` on success, or `ok: false` plus `error` and, for HTTP failures, `status`. `yumecho_done` rejects an empty `reason` locally. Affect is no longer exposed as a tool; the gateway's configured decision plugin owns it.
+The nine tools read or manage memory, facts, and memos. Tools return JSON with `ok: true` on success, or `ok: false` plus `error` and, for HTTP failures, `status`. `yumecho_done` rejects an empty `reason` before it calls the gateway. The AstrBot plugin exposes no affect tool, because the gateway updates affect during message ingest. The OpenCode plugin still offers `sophia_affect_status`, which reads `GET /state/v1/affect`.
 
 ### Behavior
 
-For each exchange the plugin stores the user message, builds context with `exclude_message_ids` set to that message and `include_recent: false`, then injects the result into AstrBot's current request. It leaves the active persona and recent history untouched. After the model responds, it archives the assistant text. User-message ingest itself invokes the configured decision plugin; the AstrBot plugin only adds memory, fact, and memo tools.
+For each exchange the plugin stores the user message, then requests context with `include_recent: true` and `exclude_message_ids` set to the stored message. It adds the injection to AstrBot's current request as an extra user content part, or appends it to the system prompt on AstrBot builds without those parts. The active persona stays as AstrBot built it. A request that already carries `<companion_state>` gets no second injection. After the model responds, the plugin archives the assistant text. The gateway updates affect while it stores the user message, so the plugin sends no affect calls of its own.
 
-The plugin polls with `consumer=astrbot` and `harness=astrbot`. On delivery it checks the route platform, loads the route persona, generates one message from `generation_instruction` and the event context, sends through `Context.send_message`, and acknowledges `sent`. The proactive prompt notes that pending yumecho memos are in context and that completed ones should be reported briefly. On failure it acknowledges `failed`.
+A failed store call does not cancel the context call. If storing the message fails or times out, the plugin logs `Message archive failed` and still requests context, with an empty `exclude_message_ids`, so the turn keeps its injection. The gateway may finish storing after the plugin gave up, and the injected records can then repeat the current message. The evergreen tools also send no `source_message_id` on that turn. If the context call fails, the plugin logs `Context unavailable` and AstrBot sends the request without an injection.
+
+With `proactive_enabled` on, the plugin polls `GET /state/v1/proactive/events` for one event at a time and passes the `harness` setting as both `consumer` and `harness`. For each event it checks that the route belongs to `platform_id` and loads the route's persona. The prompt is the event's `generation_instruction` plus a note that pending yumecho memos sit in context and that the model should call `yumecho_done` for one the message completes. The system prompt is the persona followed by the event's injection.
+
+Generation can call tools. The plugin offers the nine gateway tools plus each registered AstrBot tool whose name contains one of `proactive_tool_keywords`, ignoring case. An empty list leaves the nine gateway tools. On an AstrBot build that provides `tool_loop_agent`, the plugin runs that loop on the session's current chat provider and hands it the other configured providers as fallbacks. AstrBot switches provider inside the loop, so a tool that ran does not run twice. If AstrBot cannot find the starting provider, the plugin starts the loop on the next one. On a build without the loop, the plugin calls `llm_generate` with the same tools, one provider after another, until one answers.
+
+The plugin sends the text through `Context.send_message`, writes it into AstrBot's conversation history after a `[proactive <reason>]` marker turn, and acknowledges `sent` with the text. A wrong platform, a missing persona, an empty reply, a failed send, or a failure on the last provider ends in a `failed` acknowledgement that carries the error. The gateway offers the event again after `retry_delay_minutes`.
 
 ### Troubleshooting
 
@@ -232,19 +316,19 @@ With `api_token_env` set on the gateway, put the same value in the plugin's `api
 - It forwards non-streaming responses byte for byte, including upstream errors and status codes.
 - It forwards streaming responses as the raw SSE byte stream.
 
-`/v1/models` returns `503` when `upstream.base_url` is empty. `/v1/chat/completions` returns `503` in the same case and `422` when `messages` is not a list or the injection budget cannot fit. The proxy injects context and archives turns, so it needs a working gateway database. It requires the companion token when `api_token_env` is set.
+Both routes exist while `api_openai.enabled` is `true`, the default. `/v1/models` returns `503` when `upstream.base_url` is empty. `/v1/chat/completions` returns `503` in the same case, `503` with `built-in message storage is disabled` when `storage.enabled` is `false`, and `422` when `messages` is not a list or the injection budget cannot fit. The proxy injects context and archives turns, so it needs storage. It requires the companion token when `api_token_env` is set.
 
 The proxy forwards OpenAI chat shapes. It passes one authorization header plus content-type and rewrites nothing else. OAuth flows and OpenAI Responses-style endpoints stay out of scope. Point AstrBot at the state API through this plugin. AstrBot cannot place its changing session ID in static provider headers, so a proxy route would collapse conversations into `default`. Other harnesses can use the proxy when they can set `X-Conversation-Id`, `X-Harness`, and `X-Companion-Route`.
 
 ## Versions and revisions
 
-- The OpenAPI `version` (`0.1.0`) is the API document version, not a per-endpoint version.
+- The OpenAPI `version` follows the installed package version, the `version` field in `pyproject.toml`. It labels the whole API document, and endpoints carry no version of their own.
 - The `/state/v1` prefix is the state API major version.
 - `context.version` (`1`) is the injection schema version.
 - `context.identity.revision` is a SHA-256 of the raw identity text.
 - An evergreen fact `revision` counts that fact's stored changes. `expected_revision` compares against it.
 - The affect state keeps an internal `revision` counter that increments on every persisted advance. The API does not expose it.
-- The database schema version is `4`. Startup upgrades a version 2 or 3 database in place and rejects older schemas. The retired label tables are archived under `legacy_affect_events` and `legacy_affect_classifications`; no runtime code reads them and archived pending labels are never applied.
+- The database schema version is `5`. Startup upgrades a version 2, 3, or 4 database in place and rejects other versions. Version 5 added the `memo_notes` table. An upgrade from version 2 or 3 renames the retired label tables to `legacy_affect_events` and `legacy_affect_classifications`. No runtime code reads them, and the gateway applies none of the pending labels they hold.
 
 ## Related documentation
 
