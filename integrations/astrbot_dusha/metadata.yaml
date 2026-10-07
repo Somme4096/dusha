@@ -1,5 +1,5 @@
-name: astrbot_companion_gateway
-display_name: Companion State Gateway
+name: astrbot_dusha
+display_name: Dusha
 author: local
 version: 0.2.0
 desc: Stores conversation memory and affect, injects context, and delivers proactive events.

@@ -9,8 +9,8 @@ for public API descriptions.
 Copy the plugin directory into the gateway's configured mods directory.
 
 ```sh
-mkdir -p ~/.config/companion-gateway/mods
-cp -R examples/mods/everos-memory ~/.config/companion-gateway/mods/everos_memory
+mkdir -p ~/.config/dusha/sophia/mods
+cp -R examples/mods/everos-memory ~/.config/dusha/sophia/mods/everos_memory
 ```
 
 The gateway creates an isolated `uv` environment from `pyproject.toml` and

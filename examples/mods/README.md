@@ -35,8 +35,8 @@ with decision-model support (`POST /v1/systemone`). No `torch` dependency.
 Install the plugin directory into the gateway's mods directory:
 
 ```sh
-mkdir -p ~/.config/companion-gateway/mods
-cp -R examples/mods/system_one ~/.config/companion-gateway/mods/system_one
+mkdir -p ~/.config/dusha/sophia/mods
+cp -R examples/mods/system_one ~/.config/dusha/sophia/mods/system_one
 ```
 
 Options passed to the mod:

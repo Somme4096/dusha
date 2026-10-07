@@ -1,4 +1,4 @@
-// Types for the Sophia Companion State Gateway API and plugin configuration.
+// Types for the Sophia Dusha API and plugin configuration.
 
 export interface SophiaConfig {
   baseUrl: string;

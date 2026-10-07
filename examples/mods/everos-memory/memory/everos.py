@@ -17,7 +17,7 @@ _OPTIONS = {
     "url", "app_id", "project_id", "instance_namespace", "user_sender_id",
     "assistant_sender_id", "timeout_seconds", "flush_timeout_seconds", "flush_after_ingest",
 }
-_RPC_TIMEOUT_ENV = "SOPHIA_MEMORY_RPC_TIMEOUT_SECONDS"
+_RPC_TIMEOUT_ENV = "DUSHA_MEMORY_RPC_TIMEOUT_SECONDS"
 _MIN_RPC_TIMEOUT = 0.5
 _SEARCH_TOP_K = 5
 _EPISODE_SKIP_KEYS = {"session_id", "app_id", "project_id", "user_id"}

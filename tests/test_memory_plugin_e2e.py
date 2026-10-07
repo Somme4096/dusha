@@ -9,8 +9,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from companion_gateway import api
-from companion_gateway.config import AppConfig, DecisionConfig, EvergreenConfig, MemoryConfig, MemoryPluginConfig
+from dusha import api
+from dusha.config import AppConfig, DecisionConfig, EvergreenConfig, MemoryConfig, MemoryPluginConfig
 
 GENERIC_PLUGIN_SOURCE = '''\
 import sqlite3

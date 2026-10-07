@@ -14,8 +14,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from companion_gateway import api
-from companion_gateway.config import AppConfig, EmbeddingConfig, EvergreenConfig, MemoryConfig, MemoryPluginConfig
+from dusha import api
+from dusha.config import AppConfig, EmbeddingConfig, EvergreenConfig, MemoryConfig, MemoryPluginConfig
 
 
 def _port() -> int:

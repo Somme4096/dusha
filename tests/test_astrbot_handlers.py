@@ -8,7 +8,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-_INTEGRATION_DIR = Path(__file__).resolve().parents[1] / "integrations" / "astrbot_companion_gateway"
+_INTEGRATION_DIR = Path(__file__).resolve().parents[1] / "integrations" / "astrbot_dusha"
 ROUTING_ERROR = '{"ok":false,"error":"gateway access is disabled for this platform"}'
 
 
@@ -68,7 +68,7 @@ filter_registry = _Filter()
 
 
 def _load_main():
-    package = "astrbot_companion_gateway"
+    package = "astrbot_dusha"
     main_name = f"{package}.main"
     if main_name in sys.modules:
         return sys.modules[main_name]
@@ -103,7 +103,7 @@ async def plugin_factory():
     built = []
 
     async def _build(handler=None, platform_id="telegram-sophia", **settings):
-        plugin = _load_main().CompanionGatewayPlugin(
+        plugin = _load_main().DushaPlugin(
             context=Context(), config=AstrBotConfig(platform_id=platform_id, **settings)
         )
         if handler is not None:
@@ -160,7 +160,7 @@ async def test_error_maps_to_fallback_and_logs(call, fallback, handler, expected
     plugin = await plugin_factory(handler=boom)
     plugin.latest_source_message_ids[AstrMessageEvent().unified_msg_origin] = 7
     assert await call(plugin, AstrMessageEvent()) == f'{{"ok":false,"error":"{fallback}"}}'
-    assert logger.messages == [f"[companion-gateway] {fallback.capitalize()}: boom"]
+    assert logger.messages == [f"[dusha] {fallback.capitalize()}: boom"]
 
 
 VALIDATION = [
@@ -342,7 +342,7 @@ async def test_chat_turn_keeps_context_when_message_storage_times_out(plugin_fac
     assert contexts[0]["harness"] == "astrbot"
     assert contexts[0]["exclude_message_ids"] == []
     assert plugin.latest_source_message_ids == {}
-    assert logger.messages == ["[companion-gateway] Message archive failed: slow decision plugin"]
+    assert logger.messages == ["[dusha] Message archive failed: slow decision plugin"]
 
 
 async def test_chat_turn_survives_a_failed_context_call(plugin_factory):

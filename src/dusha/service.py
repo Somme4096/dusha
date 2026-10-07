@@ -26,7 +26,7 @@ from .memory_provider import MemoryProvider
 from .serialization import compact_json
 from .timeutil import isoformat, parse_time, utc_now
 
-logger = logging.getLogger("companion_gateway")
+logger = logging.getLogger("dusha")
 
 _PLUGIN_BATCH_MAX_BYTES = 512 * 1024
 _PLUGIN_CONTEXT_MAX_RECORDS = 50

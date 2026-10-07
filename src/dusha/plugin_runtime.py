@@ -5,12 +5,11 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .config import default_config_dir
 
 MODULE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 REQUIRED_FILES = ("README.md", "main.py", "pyproject.toml", "uv.lock")
 SYNC_TIMEOUT = 120.0
-MODS_DIR_ENV = "COMPANION_GATEWAY_MODS_DIR"
+MODS_DIR_ENV = "DUSHA_MODS_DIR"
 BASE_ENV = frozenset({"PATH", "HOME", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "LC_CTYPE", "SYSTEMROOT"})
 
 
@@ -19,7 +18,9 @@ def resolve_mods_dir(config: Any, section: str) -> Path:
     if env:
         return Path(env).expanduser()
     configured = str(getattr(getattr(config, section, None), "mods_dir", "") or "")
-    return Path(configured).expanduser() if configured else default_config_dir() / "mods"
+    if configured:
+        return Path(configured).expanduser()
+    return (getattr(config, "home", None) or Path.cwd()) / "mods"
 
 
 def plugin_environment(passthrough: Any = ()) -> dict[str, str]:

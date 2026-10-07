@@ -9,8 +9,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from companion_gateway import api
-from companion_gateway.config import AppConfig, DecisionConfig, MemoryPluginConfig
+from dusha import api
+from dusha.config import AppConfig, DecisionConfig, MemoryPluginConfig
 
 MEMORY_SOURCE = '''\
 import os
@@ -115,7 +115,7 @@ async def test_http_both_plugin_kinds_see_the_same_filtered_environment(
 
 
 async def test_http_decision_plugin_crash_logs_its_stderr_and_ingest_survives(tmp_path, mods, caplog):
-    caplog.set_level(logging.WARNING, logger="companion_gateway")
+    caplog.set_level(logging.WARNING, logger="dusha")
     async with _client(_config(tmp_path, mods, [], crash=True)) as client:
         stored = await _post(client)
     assert stored.status_code == 200

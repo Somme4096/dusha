@@ -13,9 +13,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import plugin_runtime as _runtime
-from .config import default_config_dir  # noqa: F401
 
-logger = logging.getLogger("companion_gateway")
+logger = logging.getLogger("dusha")
 
 _MAX_OUTPUT = 1_048_576
 _STDERR_LOG_LINES = 20

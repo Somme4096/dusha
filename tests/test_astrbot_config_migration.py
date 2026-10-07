@@ -4,7 +4,7 @@ import importlib.util
 import json
 from pathlib import Path
 
-_PATH = Path(__file__).parents[1] / "integrations" / "astrbot_companion_gateway" / "config_migration.py"
+_PATH = Path(__file__).parents[1] / "integrations" / "astrbot_dusha" / "config_migration.py"
 _SPEC = importlib.util.spec_from_file_location("astrbot_config_migration", _PATH)
 assert _SPEC and _SPEC.loader
 migration = importlib.util.module_from_spec(_SPEC)

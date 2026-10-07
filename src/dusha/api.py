@@ -19,7 +19,7 @@ from .config import AppConfig, load_config
 from .proactive import ProactiveEngine
 from .service import CompanionService, StorageUnavailableError
 
-logger = logging.getLogger("companion_gateway")
+logger = logging.getLogger("dusha")
 
 
 class AuthConfigError(ValueError):
@@ -110,8 +110,8 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             service.close()
 
     app = FastAPI(
-        title="Companion State Gateway",
-        version=_metadata.version("companion-state-gateway"),
+        title="Dusha",
+        version=_metadata.version("dusha"),
         description="https://github.com/Somme4096/sophia",
         lifespan=lifespan,
         docs_url=None if auth_enabled else "/docs",

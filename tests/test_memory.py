@@ -6,9 +6,9 @@ from datetime import UTC, datetime
 
 import pytest
 
-from companion_gateway.config import load_config
-from companion_gateway.database import Database
-from companion_gateway.evergreen import EvergreenConflict
+from dusha.config import load_config
+from dusha.database import Database
+from dusha.evergreen import EvergreenConflict
 
 
 def _ingest(service, *, harness="api", conversation_id="one", role="user", content, external_id="", **kw):

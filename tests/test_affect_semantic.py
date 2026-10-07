@@ -5,11 +5,11 @@ from unittest.mock import Mock
 import httpx
 import pytest
 
-from companion_gateway.affect_semantic import SemanticAppraisal
-from companion_gateway.config import EmbeddingConfig
-from companion_gateway.embedding import OpenAIEmbeddingClient
-from companion_gateway.emotions import default_emotions
-from companion_gateway.service import CompanionService
+from dusha.affect_semantic import SemanticAppraisal
+from dusha.config import EmbeddingConfig
+from dusha.embedding import OpenAIEmbeddingClient
+from dusha.emotions import default_emotions
+from dusha.service import CompanionService
 
 PROTOTYPES = default_emotions()["appraisal"]["prototypes"]
 

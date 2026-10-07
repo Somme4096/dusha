@@ -1,9 +1,10 @@
-# Companion State Gateway configuration
+# Dusha configuration
 
-Copy the example and edit it:
+Copy the example into a companion home and edit it:
 
 ```sh
-cp config.example.json config.json
+mkdir -p ~/.config/dusha/sophia
+cp config.example.json ~/.config/dusha/sophia/config.json
 ```
 
 `config.example.json` at the repository root lists every setting with its packaged value, except the emotion overrides described below. Packaged defaults live in `defaults.json` and `emotions.json` inside the installed package. The runtime reads those files directly and Python keeps no second copy. This page explains the settings that change behavior.
@@ -12,13 +13,17 @@ cp config.example.json config.json
 
 The service reads JSON configuration only. `config.json` is the supported format.
 
-Config lookup order:
+Each companion has a home directory, `$XDG_CONFIG_HOME/dusha/<name>/`, or `~/.config/dusha/<name>/` when `XDG_CONFIG_HOME` is unset. The service reads `config.json` from the home it selects in this order:
 
-1. `--config PATH`. A missing explicit file is an error.
-2. `COMPANION_GATEWAY_CONFIG`. A missing file is an error.
-3. `config.json` in `$XDG_CONFIG_HOME/companion-gateway/`, or `~/.config/companion-gateway/config.json` when `XDG_CONFIG_HOME` is unset.
-4. `config.json` in the current directory (fallback).
-5. Packaged defaults. A missing implicit file is valid.
+1. `--config PATH`. The file's directory becomes the home.
+2. `--home DIR`.
+3. `--companion NAME`, or the name after `dusha serve`.
+4. `DUSHA_HOME`.
+5. `DUSHA_COMPANION`.
+6. The only companion under the config root. Several companions and no selection is an error.
+7. Packaged defaults, when no companion exists.
+
+A selected home without a `config.json` is an error. A name holds letters, digits, dots, dashes, and underscores.
 
 The loader never merges configuration files.
 
@@ -45,7 +50,7 @@ Focused example:
 
 ```json
 {
-  "data_dir": "~/.local/share/companion-gateway",
+  "data_dir": "~/.local/share/dusha",
   "host": "127.0.0.1",
   "port": 8765,
   "timezone": "Asia/Taipei",
@@ -96,8 +101,8 @@ Schema version 2 files still load. The gateway converts the old `silence.caps`, 
 Export the packaged files, edit the copies, and reference them:
 
 ```sh
-python -c "import json, companion_gateway.emotions as e; json.dump(e.default_emotions(), open('emotions.json','w'), ensure_ascii=False, indent=2)"
-python -c "import json, companion_gateway.prompts as p; d=p.default_prompts(); d.pop('schema_version'); d.pop('prompts_version'); json.dump(d, open('prompts.json','w'), ensure_ascii=False, indent=2)"
+python -c "import json, dusha.emotions as e; json.dump(e.default_emotions(), open('emotions.json','w'), ensure_ascii=False, indent=2)"
+python -c "import json, dusha.prompts as p; d=p.default_prompts(); d.pop('schema_version'); d.pop('prompts_version'); json.dump(d, open('prompts.json','w'), ensure_ascii=False, indent=2)"
 ```
 
 The emotions command writes the full snapshot, version fields included. The prompts overlay accepts text slots and rejects version metadata, so the prompts command drops `schema_version` and `prompts_version` before writing.
@@ -173,7 +178,7 @@ Configuration:
 - `options`: passed through to the plugin verbatim.
 - `increment`: overrides `decision.increment` from `emotions.json`. `null` keeps the file value. A number must be positive and no larger than the value range span. A per-dimension `increment` in the file still wins for that dimension.
 - `timeout_seconds`: the outer deadline for each decision process. Must be finite and positive. Default `15`. Set it above any HTTP timeout configured in `options`.
-- `mods_dir`: an optional mods directory. Empty uses `<default config dir>/mods`, that is `~/.config/companion-gateway/mods`. A relative value resolves against the config file location.
+- `mods_dir`: an optional mods directory. Empty uses `mods` inside the companion home, for example `~/.config/dusha/sophia/mods`. A relative value resolves against the config file location. Point two companions at one absolute path to share plugins.
 - `env_passthrough`: names of environment variables the plugin may read, on top of the basic system set. Default empty. List a proxy or certificate variable here when the plugin needs one.
 
 Memory plugins take `module`, `options`, `mods_dir`, `timeout_seconds`, and `env_passthrough` with the same meaning, and use an operation-based `fn(request, options)` contract. `memory_plugin.module` defaults to empty, which disables the plugin. A configured name loads that plugin directory from the mods directory:
@@ -195,7 +200,7 @@ The gateway stores messages and facts itself. A memory plugin adds retrieval and
 
 The EverOS plugin shows the intended split. It owns its outbox, sidecar delivery, and episodic extraction, and it never creates or migrates the core message or fact tables. See [examples/mods/everos-memory](../examples/mods/everos-memory/README.md) and [examples/mods/README.md](../examples/mods/README.md).
 
-`COMPANION_GATEWAY_MODS_DIR` overrides both `decision.mods_dir` and `memory_plugin.mods_dir` when set. This is the recommended way to test an isolated mods tree without touching the live configuration.
+`DUSHA_MODS_DIR` overrides both `decision.mods_dir` and `memory_plugin.mods_dir` when set. This is the recommended way to test an isolated mods tree without touching the live configuration.
 
 Plugins are trusted child processes. The runner uses the plugin's dedicated `uv` environment, with inherited OS permissions and no container or OS sandbox. Only install plugins you wrote or reviewed. A plugin that fails to load, raises, or returns a malformed result is logged with its error output and ignored. Message ingest keeps working. HTTP adapters may define explicit options such as credentials and an optional literal-IP `allowed_ips` list. When present, every request and redirect must remain on an allowed literal address.
 
@@ -229,9 +234,9 @@ A memory plugin contributes context through `inject_context`, capped by `memory.
 Manage the memory index:
 
 ```sh
-companion-gateway memory index status
-companion-gateway memory index backfill --limit 256
-companion-gateway memory index rebuild
+dusha memory index status
+dusha memory index backfill --limit 256
+dusha memory index rebuild
 ```
 
 With no plugin these commands report lexical status. With a plugin they call the plugin's `status`, `backfill_once`, and `rebuild_chunks` operations, and `memory index backfill` may need the `embedding.backfill_interval_seconds` cadence to catch up. `memory index rebuild` also rebuilds the core FTS5 index.

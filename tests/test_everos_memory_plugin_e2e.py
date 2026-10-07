@@ -15,8 +15,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from companion_gateway import api
-from companion_gateway.config import (
+from dusha import api
+from dusha.config import (
     AppConfig,
     EmbeddingConfig,
     EvergreenConfig,

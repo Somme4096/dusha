@@ -6,9 +6,9 @@ from datetime import timedelta
 
 import httpx
 
-from companion_gateway import api
-from companion_gateway.config import PromptsConfig
-from companion_gateway.timeutil import isoformat, utc_now
+from dusha import api
+from dusha.config import PromptsConfig
+from dusha.timeutil import isoformat, utc_now
 
 
 def _client(app):

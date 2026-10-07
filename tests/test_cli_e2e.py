@@ -19,7 +19,7 @@ def cli_config(tmp_path: Path) -> Path:
 def _run(config: Path, *args: str) -> subprocess.CompletedProcess[str]:
     env = {**os.environ, "PYTHONPATH": str(Path(__file__).parents[1] / "src")}
     return subprocess.run(
-        [sys.executable, "-m", "companion_gateway.cli", "--config", str(config), *args],
+        [sys.executable, "-m", "dusha.cli", "--config", str(config), *args],
         capture_output=True,
         text=True,
         env=env,
@@ -113,3 +113,49 @@ def test_cli_migration_command_is_unavailable(cli_config: Path) -> None:
 
     assert result.returncode == 2
     assert "invalid choice" in result.stderr
+
+
+def _run_in_root(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(Path(__file__).parents[1] / "src"),
+        "XDG_CONFIG_HOME": str(root),
+    }
+    return subprocess.run(
+        [sys.executable, "-m", "dusha.cli", *args], capture_output=True, text=True, env=env, check=False
+    )
+
+
+def test_cli_companions_keep_separate_state_across_restarts(tmp_path: Path) -> None:
+    for name in ("sophia", "luna"):
+        home = tmp_path / "dusha" / name
+        home.mkdir(parents=True)
+        (home / "config.json").write_text("{}", encoding="utf-8")
+
+    listed = _run_in_root(tmp_path, "list")
+    assert json.loads(listed.stdout) == {
+        "root": str(tmp_path / "dusha"), "companions": ["luna", "sophia"],
+    }
+
+    added = _run_in_root(tmp_path, "-c", "sophia", "memo", "add", "Only Sophia knows this.")
+    assert added.returncode == 0
+    sophia = json.loads(_run_in_root(tmp_path, "--companion", "sophia", "memo", "list").stdout)
+    luna = json.loads(_run_in_root(tmp_path, "--home", str(tmp_path / "dusha" / "luna"), "memo", "list").stdout)
+    assert [memo["text"] for memo in sophia["memos"]] == ["Only Sophia knows this."]
+    assert luna["memos"] == []
+    assert (tmp_path / "dusha" / "sophia" / "data" / "state.sqlite3").is_file()
+    assert (tmp_path / "dusha" / "luna" / "data" / "state.sqlite3").is_file()
+
+
+def test_cli_rejects_ambiguous_and_unknown_companions(tmp_path: Path) -> None:
+    for name in ("sophia", "luna"):
+        home = tmp_path / "dusha" / name
+        home.mkdir(parents=True)
+        (home / "config.json").write_text("{}", encoding="utf-8")
+
+    ambiguous = _run_in_root(tmp_path, "memo", "list")
+    unknown = _run_in_root(tmp_path, "-c", "nobody", "memo", "list")
+    assert ambiguous.returncode == 2
+    assert "several companions exist" in ambiguous.stderr
+    assert unknown.returncode == 2
+    assert "configuration file not found" in unknown.stderr

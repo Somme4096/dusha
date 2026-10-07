@@ -4,8 +4,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from companion_gateway.config import AffectConfig, AppConfig, DecisionConfig, ProactiveConfig
-from companion_gateway.proactive import ProactiveEngine
+from dusha.config import AffectConfig, AppConfig, DecisionConfig, ProactiveConfig
+from dusha.proactive import ProactiveEngine
 
 NOW = datetime(2026, 9, 6, 3, 0, tzinfo=UTC)
 
@@ -153,8 +153,8 @@ def test_characterization_decision_is_persistent_and_decays(svc, tmp_path):
 
 
 def test_affect_stored_state_keeps_legacy_ascii_escaping(svc, tmp_path, write_json):
-    from companion_gateway import emotions
-    from companion_gateway.config import AffectConfig, AppConfig
+    from dusha import emotions
+    from dusha.config import AffectConfig, AppConfig
 
     base = emotions.default_emotions()
     base["emotion_version"] = "unicode-dimension"

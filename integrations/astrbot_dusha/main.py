@@ -43,7 +43,7 @@ PROACTIVE_YUMECHO_NOTE = (
 )
 
 
-class CompanionGatewayPlugin(star.Star):
+class DushaPlugin(star.Star):
     def __init__(self, context: star.Context, config: AstrBotConfig) -> None:
         super().__init__(context)
         self.config = config
@@ -71,10 +71,10 @@ class CompanionGatewayPlugin(star.Star):
 
     async def initialize(self) -> None:
         if not self.platform_id:
-            logger.warning("[companion-gateway] platform_id is empty. Gateway routing is disabled")
+            logger.warning("[dusha] platform_id is empty. Gateway routing is disabled")
             return
         if self.proactive_enabled and self.poll_task is None:
-            self.poll_task = asyncio.create_task(self._poll_loop(), name="companion-gateway-poll")
+            self.poll_task = asyncio.create_task(self._poll_loop(), name="dusha-poll")
 
     async def terminate(self) -> None:
         if self.poll_task:
@@ -146,7 +146,7 @@ class CompanionGatewayPlugin(star.Star):
                 detail = error.response.json().get("detail")
                 if isinstance(detail, str) and detail:
                     result["error"] = detail
-        return CompanionGatewayPlugin._json(result)
+        return DushaPlugin._json(result)
 
     async def _run_tool_call(
         self,
@@ -174,7 +174,7 @@ class CompanionGatewayPlugin(star.Star):
         try:
             return self._json({"ok": True, **(await operation())})
         except Exception as error:
-            logger.warning(f"[companion-gateway] {fallback.capitalize()}: {error}")
+            logger.warning(f"[dusha] {fallback.capitalize()}: {error}")
             return self._tool_error(error, fallback)
 
     @staticmethod
@@ -222,7 +222,7 @@ class CompanionGatewayPlugin(star.Star):
         except Exception as error:
             # The previous turn's id would credit tool writes to the wrong message.
             self.latest_source_message_ids.pop(event.unified_msg_origin, None)
-            logger.warning(f"[companion-gateway] Message archive failed: {error}")
+            logger.warning(f"[dusha] Message archive failed: {error}")
         try:
             context = await self._post(
                 "/state/v1/context",
@@ -236,7 +236,7 @@ class CompanionGatewayPlugin(star.Star):
             )
             self._inject_context(req, context["injection"])
         except Exception as error:
-            logger.warning(f"[companion-gateway] Context unavailable: {error}")
+            logger.warning(f"[dusha] Context unavailable: {error}")
 
     @filter.llm_tool(name="remember_evergreen_fact")
     async def remember_evergreen_fact(
@@ -553,7 +553,7 @@ class CompanionGatewayPlugin(star.Star):
                 },
             )
         except Exception as error:
-            logger.warning(f"[companion-gateway] Response archive failed: {error}")
+            logger.warning(f"[dusha] Response archive failed: {error}")
 
     async def _poll_loop(self) -> None:
         while True:
@@ -573,7 +573,7 @@ class CompanionGatewayPlugin(star.Star):
             except asyncio.CancelledError:
                 raise
             except Exception as error:
-                logger.warning(f"[companion-gateway] Proactive poll failed: {error}")
+                logger.warning(f"[dusha] Proactive poll failed: {error}")
             await asyncio.sleep(self.poll_interval_seconds)
 
     async def _persona_prompt(self, route: str) -> str:
@@ -625,7 +625,7 @@ class CompanionGatewayPlugin(star.Star):
                 assistant_message=assistant_message,
             )
         except Exception as error:
-            logger.warning(f"[companion-gateway] Proactive history archive failed: {error}")
+            logger.warning(f"[dusha] Proactive history archive failed: {error}")
 
     @staticmethod
     def _provider_id(provider: Any) -> str:
@@ -651,7 +651,7 @@ class CompanionGatewayPlugin(star.Star):
         try:
             full = tool_manager.get_full_tool_set()
         except Exception as error:
-            logger.warning(f"[companion-gateway] Gateway tools unavailable: {error}")
+            logger.warning(f"[dusha] Gateway tools unavailable: {error}")
             return None
         from astrbot.core.agent.tool import ToolSet
 
@@ -675,7 +675,7 @@ class CompanionGatewayPlugin(star.Star):
                 message_type=session.message_type,
             )
         except Exception as error:
-            logger.warning(f"[companion-gateway] Proactive event unavailable: {error}")
+            logger.warning(f"[dusha] Proactive event unavailable: {error}")
             return None
 
     def _provider_instances(self) -> list[Any]:
@@ -813,7 +813,7 @@ class CompanionGatewayPlugin(star.Star):
                 {"consumer": self.harness, "outcome": "sent", "text": text},
             )
         except Exception as error:
-            logger.warning(f"[companion-gateway] Proactive delivery failed: {error}")
+            logger.warning(f"[dusha] Proactive delivery failed: {error}")
             with contextlib.suppress(Exception):
                 await self._post(
                     f"/state/v1/proactive/events/{event['id']}/ack",

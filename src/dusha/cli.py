@@ -9,7 +9,7 @@ from typing import Any
 import uvicorn
 
 from .api import create_app
-from .config import load_config
+from .config import config_root, list_companions, load_config
 from .proactive import ProactiveEngine
 from .service import CompanionService
 
@@ -21,11 +21,15 @@ def _print(value: Any) -> None:
 
 
 def parser() -> argparse.ArgumentParser:
-    root = argparse.ArgumentParser(prog="companion-gateway")
+    root = argparse.ArgumentParser(prog="dusha")
+    root.add_argument("-c", "--companion", default=None, help="Companion name under the dusha config root")
+    root.add_argument("--home", default=None, help="Companion home directory")
     root.add_argument("--config", default=None, help="Configuration file path")
     commands = root.add_subparsers(dest="command", required=True)
 
-    commands.add_parser("serve", help="Run the HTTP service")
+    commands.add_parser("list", help="List companions")
+    serve = commands.add_parser("serve", help="Run the HTTP service")
+    serve.add_argument("serve_companion", nargs="?", default=None, metavar="companion")
     commands.add_parser("health", help="Check the database")
 
     backup = commands.add_parser("backup", help="Create a consistent SQLite backup")
@@ -349,7 +353,15 @@ _COMMANDS: dict[str, Handler] = {
 
 def main() -> None:
     args = parser().parse_args()
-    cfg = load_config(args.config)
+    if args.command == "list":
+        _print({"root": str(config_root()), "companions": list_companions()})
+        return
+    companion = args.companion or getattr(args, "serve_companion", None)
+    try:
+        cfg = load_config(args.config, home=args.home, companion=companion)
+    except (FileNotFoundError, ValueError) as error:
+        print(error, file=sys.stderr)
+        raise SystemExit(2) from error
     if args.command == "serve":
         uvicorn.run(create_app(cfg), host=cfg.host, port=cfg.port, log_level="info")
         return

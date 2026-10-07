@@ -7,9 +7,9 @@ from datetime import timedelta
 import httpx
 import pytest
 
-from companion_gateway import api
-from companion_gateway.config import AffectConfig, PromptsConfig, load_config
-from companion_gateway.timeutil import isoformat, utc_now
+from dusha import api
+from dusha.config import AffectConfig, PromptsConfig, load_config
+from dusha.timeutil import isoformat, utc_now
 
 CUSTOM = {
     "schema_version": 3,

@@ -27,9 +27,9 @@ from .memory_plugin import (
     RebuildMemoryIndexResult,
 )
 
-logger = logging.getLogger("companion_gateway")
+logger = logging.getLogger("dusha")
 _RESTART_COOLDOWN = 5.0
-_RPC_TIMEOUT_ENV = "SOPHIA_MEMORY_RPC_TIMEOUT_SECONDS"
+_RPC_TIMEOUT_ENV = "DUSHA_MEMORY_RPC_TIMEOUT_SECONDS"
 
 
 def _json_value(value: Any) -> Any:

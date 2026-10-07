@@ -1,0 +1,1 @@
+"""AstrBot adapter for Dusha."""

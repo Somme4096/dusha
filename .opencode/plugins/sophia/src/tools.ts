@@ -265,7 +265,7 @@ function buildTools(ctx: Plugin.Context): Info[] {
 export async function registerSophiaTools(ctx: Plugin.Context): Promise<Registration | undefined> {
   return ctx.tool.transform((editor) => {
     if (typeof (editor as { namespace?: unknown }).namespace === "function") {
-      editor.namespace({ name: "sophia", description: "Sophia companion gateway tools." });
+      editor.namespace({ name: "sophia", description: "Dusha tools." });
     }
     if (typeof (editor as { add?: unknown }).add !== "function") return;
     for (const tool of buildTools(ctx)) editor.add(tool);

@@ -1,14 +1,13 @@
 [Unit]
-Description=Companion state gateway
+Description=Dusha for %i
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 Environment=PATH=/home/linuxbrew/.linuxbrew/bin:%h/.local/bin:/usr/local/bin:/usr/bin
-Environment=COMPANION_GATEWAY_CONFIG=%h/.config/companion-gateway/config.json
-EnvironmentFile=-%h/.config/companion-gateway/environment
-ExecStart=%h/.local/bin/companion-gateway serve
+EnvironmentFile=-%h/.config/dusha/%i/environment
+ExecStart=%h/.local/bin/dusha serve %i
 Restart=on-failure
 RestartSec=5
 

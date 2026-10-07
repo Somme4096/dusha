@@ -1,6 +1,6 @@
 {
   "gateway_url": {
-    "description": "Companion gateway URL",
+    "description": "Dusha URL",
     "type": "string",
     "default": "http://127.0.0.1:8765"
   },

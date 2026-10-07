@@ -9,8 +9,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from companion_gateway import api, api_openai, api_state
-from companion_gateway.config import AppConfig, IdentityPromptConfig, MemoryConfig
+from dusha import api, api_openai, api_state
+from dusha.config import AppConfig, IdentityPromptConfig, MemoryConfig
 
 
 async def _run_inline(function, /, *args, **kwargs):
@@ -459,16 +459,16 @@ async def test_openapi_paths_are_documented(config, monkeypatch):
 
 
 def test_configuration_export_commands_roundtrip(tmp_path):
-    from companion_gateway import emotions
-    from companion_gateway import prompts as prompts_module
-    from companion_gateway.config import AppConfig, PromptsConfig
-    from companion_gateway.service import CompanionService
+    from dusha import emotions
+    from dusha import prompts as prompts_module
+    from dusha.config import AppConfig, PromptsConfig
+    from dusha.service import CompanionService
 
     configuration = (Path(__file__).parents[1] / "docs" / "configuration.md").read_text(encoding="utf-8")
     commands = [cmd for block in re.findall(r"```sh\n(.*?)```", configuration, re.DOTALL)
                 for cmd in re.findall(r'python -c "(.*?)"', block, re.DOTALL)]
-    prompts_cmd = next(c for c in commands if "companion_gateway.prompts" in c)
-    emotions_cmd = next(c for c in commands if "companion_gateway.emotions" in c)
+    prompts_cmd = next(c for c in commands if "dusha.prompts" in c)
+    emotions_cmd = next(c for c in commands if "dusha.emotions" in c)
     for command in (emotions_cmd, prompts_cmd):
         result = subprocess.run([sys.executable, "-c", command], cwd=tmp_path, capture_output=True, text=True)
         assert result.returncode == 0, result.stderr

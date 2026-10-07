@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from companion_gateway.config import (
+from dusha.config import (
     AffectConfig,
     AppConfig,
     EvergreenConfig,
@@ -13,7 +13,14 @@ from companion_gateway.config import (
     ProactiveConfig,
     UpstreamConfig,
 )
-from companion_gateway.service import CompanionService
+from dusha.service import CompanionService
+
+
+@pytest.fixture(autouse=True)
+def isolated_config_root(tmp_path_factory, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path_factory.mktemp("xdg")))
+    for name in ("DUSHA_HOME", "DUSHA_COMPANION", "DUSHA_MODS_DIR"):
+        monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture

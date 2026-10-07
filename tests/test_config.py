@@ -7,11 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from companion_gateway import emotions, serialization
-from companion_gateway import identity as identity_module
-from companion_gateway import prompts as prompts_module
-from companion_gateway.affect import AffectEngine
-from companion_gateway.config import (
+from dusha import emotions, serialization
+from dusha import identity as identity_module
+from dusha import prompts as prompts_module
+from dusha.affect import AffectEngine
+from dusha.config import (
     AffectConfig,
     AppConfig,
     DecisionConfig,
@@ -21,9 +21,9 @@ from companion_gateway.config import (
     PromptsConfig,
     load_config,
 )
-from companion_gateway.context import ContextBudgetError
-from companion_gateway.database import Database
-from companion_gateway.emotions import (
+from dusha.context import ContextBudgetError
+from dusha.database import Database
+from dusha.emotions import (
     SCHEMA_VERSION,
     canonical,
     default_emotions,
@@ -32,7 +32,7 @@ from companion_gateway.emotions import (
     load_emotions,
     resolve_emotions,
 )
-from companion_gateway.proactive import ProactiveEngine
+from dusha.proactive import ProactiveEngine
 
 NOW = datetime(2026, 9, 6, 3, 0, tzinfo=UTC)
 IDENTITY_SENTINEL = "# Identity SENTINEL\nRaw user-authored identity text."
@@ -173,30 +173,38 @@ def test_config_examples_load(tmp_path, fmt, specific):
         assert value == expected
 
 
-def test_config_precedence_env_and_missing(tmp_path, monkeypatch):
-    monkeypatch.delenv("COMPANION_GATEWAY_CONFIG", raising=False)
+def test_config_selection_order_and_missing(tmp_path, monkeypatch):
+    root = tmp_path / "xdg" / "dusha"
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-    (tmp_path / "config.json").write_text('{"host": "from-json"}', encoding="utf-8")
-    (tmp_path / "config.yaml").write_text("host: from-yaml\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
-    assert load_config().host == "from-json"
-    (tmp_path / "config.json").unlink()
+    (tmp_path / "config.json").write_text('{"host": "from-cwd"}', encoding="utf-8")
     assert load_config().host == "127.0.0.1"
-    (tmp_path / "config.yaml").unlink()
-    assert load_config().host == "127.0.0.1"
+    assert load_config().home is None
 
+    for name in ("sophia", "luna", "elsewhere"):
+        home = tmp_path / name if name == "elsewhere" else root / name
+        home.mkdir(parents=True)
+        (home / "config.json").write_text(json.dumps({"host": name}), encoding="utf-8")
     explicit = tmp_path / "explicit.json"
     explicit.write_text('{"host": "explicit"}', encoding="utf-8")
-    env = tmp_path / "env.json"
-    env.write_text('{"host": "env"}', encoding="utf-8")
-    monkeypatch.setenv("COMPANION_GATEWAY_CONFIG", str(env))
-    assert load_config(explicit).host == "explicit"
 
-    monkeypatch.setenv("COMPANION_GATEWAY_CONFIG", str(tmp_path / "missing.json"))
-    with pytest.raises(FileNotFoundError, match="COMPANION_GATEWAY_CONFIG"):
+    with pytest.raises(ValueError, match="several companions exist"):
         load_config()
+    monkeypatch.setenv("DUSHA_COMPANION", "luna")
+    assert load_config().host == "luna"
+    monkeypatch.setenv("DUSHA_HOME", str(tmp_path / "elsewhere"))
+    assert load_config().host == "elsewhere"
+    assert load_config(companion="sophia").host == "sophia"
+    assert load_config(companion="sophia").home == root / "sophia"
+    assert load_config(home=root / "luna", companion="sophia").host == "luna"
+    assert load_config(explicit, home=root / "luna").host == "explicit"
+
+    with pytest.raises(FileNotFoundError, match="configuration file not found"):
+        load_config(companion="nobody")
     with pytest.raises(FileNotFoundError, match="configuration file not found"):
         load_config(tmp_path / "missing.json")
+    with pytest.raises(ValueError, match="companion name"):
+        load_config(companion="../escape")
 
 
 def test_yaml_config_is_rejected_and_not_discovered(tmp_path, monkeypatch):
@@ -208,33 +216,31 @@ def test_yaml_config_is_rejected_and_not_discovered(tmp_path, monkeypatch):
     assert load_config().host == "127.0.0.1"
 
 
-def test_default_config_dir_precedence(tmp_path, monkeypatch):
+def test_sole_companion_is_selected_and_owns_its_data_and_mods(tmp_path, monkeypatch):
     home = tmp_path / "home"
-    default_dir = home / ".config" / "companion-gateway"
-    default_dir.mkdir(parents=True)
+    companion = home / ".config" / "dusha" / "sophia"
+    companion.mkdir(parents=True)
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
-    monkeypatch.delenv("COMPANION_GATEWAY_CONFIG", raising=False)
     cwd = tmp_path / "cwd"
     cwd.mkdir()
     monkeypatch.chdir(cwd)
-    (default_dir / "config.json").write_text('{"host": "from-default-dir"}', encoding="utf-8")
-    (cwd / "config.json").write_text('{"host": "from-cwd"}', encoding="utf-8")
-    assert load_config().host == "from-default-dir"
-    (default_dir / "config.json").unlink()
-    assert load_config().host == "from-cwd"
-    (cwd / "config.json").unlink()
-    assert load_config().host == "127.0.0.1"
+    (companion / "config.json").write_text('{"host": "from-sophia"}', encoding="utf-8")
 
-    from companion_gateway.decision import default_config_dir, resolve_mods_dir
+    from dusha.config import companion_home, config_root, list_companions
+    from dusha.decision import resolve_mods_dir
 
-    assert default_config_dir() == default_dir
-    monkeypatch.delenv("COMPANION_GATEWAY_MODS_DIR", raising=False)
-    assert resolve_mods_dir(AppConfig()) == default_dir / "mods"
+    assert config_root() == home / ".config" / "dusha"
+    assert list_companions() == ["sophia"]
+    assert companion_home("sophia") == companion
+    cfg = load_config()
+    assert (cfg.host, cfg.home, cfg.data_dir) == ("from-sophia", companion, companion / "data")
+    assert resolve_mods_dir(cfg) == companion / "mods"
+    assert resolve_mods_dir(AppConfig()) == cwd / "mods"
 
 
 def test_decision_mods_dir_and_increment(tmp_path, write_json, monkeypatch):
-    monkeypatch.delenv("COMPANION_GATEWAY_MODS_DIR", raising=False)
+    monkeypatch.delenv("DUSHA_MODS_DIR", raising=False)
     conf_dir = tmp_path / "conf"
     conf_dir.mkdir()
     config = conf_dir / "config.json"
@@ -251,8 +257,8 @@ def test_decision_mods_dir_and_increment(tmp_path, write_json, monkeypatch):
     cfg = load_config(config)
     assert Path(cfg.decision.mods_dir) == tmp_path / "abs-mods"
 
-    monkeypatch.setenv("COMPANION_GATEWAY_MODS_DIR", str(tmp_path / "env-mods"))
-    from companion_gateway.decision import resolve_mods_dir
+    monkeypatch.setenv("DUSHA_MODS_DIR", str(tmp_path / "env-mods"))
+    from dusha.decision import resolve_mods_dir
 
     assert resolve_mods_dir(load_config(config)) == tmp_path / "env-mods"
 
@@ -473,7 +479,7 @@ def test_fingerprints_differ_when_effective_behavior_differs(tmp_path, svc):
     with pytest.raises(ValueError, match="unknown field"):
         AffectEngine(Database(tmp_path / "state.sqlite3"),
                      AffectConfig(dimensions={"fear": {"neutral": 0.1, "bogus": 2}}))
-    from companion_gateway.config import _strict_section
+    from dusha.config import _strict_section
 
     with pytest.raises(ValueError, match="recent_messages must be int"):
         _strict_section(MemoryConfig, {"recent_messages": "not-an-int"}, "defaults memory")
@@ -609,7 +615,7 @@ def _fact(fact_id, text):
 
 
 def _composer_at(service, budget):
-    from companion_gateway.context import ContextComposer
+    from dusha.context import ContextComposer
 
     return ContextComposer(
         prompts=service.prompts, budget=budget, identity_text=service.identity_text,
@@ -847,7 +853,7 @@ def test_delimiter_escaping_in_injection(tmp_path, svc):
     ],
 )
 def test_custom_prompts_affect_engine_behavior(tmp_path, svc, mutate, contains, endswith, excludes):
-    from companion_gateway.proactive import ProactiveEngine
+    from dusha.proactive import ProactiveEngine
 
     service = svc(prompts=_prompts_config(tmp_path, mutate), decision=DecisionConfig(increment=1.0))
     user = _ingest(service, content="hello", external_id="cpe")
@@ -892,46 +898,11 @@ def _write_config(path, *, port):
     )
 
 
-def test_config_precedence_is_explicit_then_environment_then_user_then_cwd(tmp_path, monkeypatch):
-    explicit = tmp_path / "explicit.json"
-    env_path = tmp_path / "env.json"
-    user_path = tmp_path / "xdg" / "companion-gateway" / "config.json"
-    cwd_path = tmp_path / "config.json"
-    for config_path, port in ((explicit, 1), (env_path, 2), (user_path, 3), (cwd_path, 4)):
-        _write_config(config_path, port=port)
-
-    monkeypatch.setenv("COMPANION_GATEWAY_CONFIG", str(env_path))
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-    monkeypatch.chdir(tmp_path)
-    assert load_config(explicit).port == 1
-    assert load_config().port == 2
-
-    monkeypatch.delenv("COMPANION_GATEWAY_CONFIG")
-    assert load_config().port == 3
-
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "missing-xdg"))
-    assert load_config().port == 4
-
-
-def test_user_config_is_selected_from_neutral_cwd_with_expanded_home(tmp_path, monkeypatch):
-    home = tmp_path / "home"
-    user_path = home / ".config" / "companion-gateway" / "config.json"
-    _write_config(user_path, port=4321)
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
-    monkeypatch.delenv("COMPANION_GATEWAY_CONFIG", raising=False)
-    neutral_cwd = tmp_path / "neutral"
-    neutral_cwd.mkdir()
-    monkeypatch.chdir(neutral_cwd)
-
-    assert load_config().port == 4321
-
-
 def test_missing_explicit_path_is_an_error(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
     with pytest.raises(FileNotFoundError):
-        load_config("~/missing-companion-gateway.json")
+        load_config("~/missing-dusha.json")
 
 
 def test_startup_migrates_configuration_once(tmp_path):
@@ -988,7 +959,7 @@ def test_migration_keeps_canonical_keys_and_removes_semantic_controls(tmp_path):
     assert config.memory.chunk_max_chars == 1000
     assert config.proactive.min_silence_minutes == 100
 
-    from companion_gateway.service import CompanionService
+    from dusha.service import CompanionService
 
     service = CompanionService(config)
     assert service.affect.appraisal is not None
@@ -1010,7 +981,7 @@ def test_failed_migration_write_preserves_original(tmp_path, monkeypatch):
     def fail_replace(*args):
         raise OSError("write failed")
 
-    monkeypatch.setattr("companion_gateway.config.os.replace", fail_replace)
+    monkeypatch.setattr("dusha.config.os.replace", fail_replace)
     with pytest.raises(OSError, match="write failed"):
         load_config(path)
     assert path.read_text() == original

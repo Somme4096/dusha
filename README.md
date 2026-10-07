@@ -1,7 +1,7 @@
-# Companion State Gateway
+# Dusha
 
 
-`companion-gateway` is a Python API reference implementation that combines memory, personality, and affect for LLM companions.
+`dusha` is a Python API reference implementation that combines memory, personality, and affect for LLM companions. One `dusha` process serves one companion, and each companion lives in its own home directory.
 
 The built-in SQLite store owns messages and evergreen facts, and core retrieval runs on lexical SQLite FTS5. A memory plugin can inject extra context and consume gateway-pushed message batches. A shared embedding endpoint adds semantic affect appraisal when configured.
 
@@ -11,13 +11,13 @@ Every prompt, emotional vector, and threshold is configurable through JSON.
 
 Requires Python 3.11 or newer and uv. 
 
-1. Copy the example config into the default config directory: `mkdir -p ~/.config/companion-gateway && cp config.example.json ~/.config/companion-gateway/config.json`
+1. Create a home for your companion and copy the example config into it. This example names her `sophia`: `mkdir -p ~/.config/dusha/sophia && cp config.example.json ~/.config/dusha/sophia/config.json`
 2. Install the CLI: `uv tool install --editable .`
-3. Start the service: `companion-gateway serve`
+3. Start the service: `dusha serve sophia`
 
-The install links the CLI to this checkout on uv's tool bin path. If `companion-gateway` is not on your `PATH`, run `uv tool update-shell`.
+The install links the CLI to this checkout on uv's tool bin path. If `dusha` is not on your `PATH`, run `uv tool update-shell`.
 
-The service reads `config.json` from `$XDG_CONFIG_HOME/companion-gateway/` or `~/.config/companion-gateway/`, then a `config.json` in the working directory as a legacy fallback. Pass `--config PATH` to override. To run it in the background, use [deploy/companion-gateway.service](deploy/companion-gateway.service) with the [service setup steps](docs/guide.md#run-a-durable-single-instance-service).
+A companion home is `$XDG_CONFIG_HOME/dusha/<name>/`, or `~/.config/dusha/<name>/` when `XDG_CONFIG_HOME` is unset. It holds `config.json`, your emotion and prompt files, `mods/`, and `data/` with the database. Run a second companion by adding a second home with its own `port`. `dusha list` prints the companions, and `dusha -c <name> <command>` runs any other command against one. With a single companion you can leave the name out. To run it in the background, use [deploy/dusha@.service](deploy/dusha@.service) with the [service setup steps](docs/guide.md#run-a-durable-single-instance-service).
 
 Check it is running:
 

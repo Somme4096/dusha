@@ -1,30 +1,30 @@
-# Companion State Gateway operator guide
+# Dusha operator guide
 
 Run one gateway process per SQLite file. Install the CLI, then set up the systemd user service, auth, backup, and troubleshooting below.
 
 ## Run a durable single-instance service
 
-Run one process against one `state.sqlite3` file. SQLite WAL allows a single writer, and the in-process schedulers assume one evaluator. Two processes on the same file race writes and duplicate scheduler events. Run one process per database. A second companion needs its own config, data directory, port, and service unit.
+Run one process against one `state.sqlite3` file. SQLite WAL allows a single writer, and the in-process schedulers assume one evaluator. Two processes on the same file race writes and duplicate scheduler events. Run one process per database. A second companion needs its own home and port.
 
 Keep `state.sqlite3` and its `-wal` and `-shm` files on a persistent volume. A container scratch disk or an ephemeral instance disk drops all memory, affect, facts, and proactive events on restart.
 
 Set up a `systemd --user` service. This takes about 15 minutes.
 
-1. Install the CLI. The shipped unit runs `%h/.local/bin/companion-gateway`, so confirm the install puts the binary there.
+1. Install the CLI. The shipped unit runs `%h/.local/bin/dusha`, so confirm the install puts the binary there.
 
 ```sh
 uv tool install --editable .
-command -v companion-gateway
+command -v dusha
 ```
 
-Success check: `command -v` prints a path ending in `/companion-gateway`.
+Success check: `command -v` prints a path ending in `/dusha`.
 
-2. Copy the example config and the shipped unit.
+2. Create a companion home, copy the example config into it, and install the shipped template unit. These steps name the companion `sophia`.
 
 ```sh
-mkdir -p ~/.config/companion-gateway ~/.config/systemd/user
-cp config.example.json ~/.config/companion-gateway/config.json
-cp deploy/companion-gateway.service ~/.config/systemd/user/
+mkdir -p ~/.config/dusha/sophia ~/.config/systemd/user
+cp config.example.json ~/.config/dusha/sophia/config.json
+cp deploy/dusha@.service ~/.config/systemd/user/
 ```
 
 3. Reload the user daemon so systemd picks up the unit.
@@ -33,29 +33,14 @@ cp deploy/companion-gateway.service ~/.config/systemd/user/
 systemctl --user daemon-reload
 ```
 
-The shipped unit sets `COMPANION_GATEWAY_CONFIG` to `%h/.config/companion-gateway/config.json`, the path from step 2. With that layout the unit needs no change, and you can move to step 4.
-
-A config file at a different path needs a drop-in. Leave `deploy/companion-gateway.service` as shipped and open an override:
-
-```sh
-systemctl --user edit companion-gateway
-```
-
-Add your path and save. This example uses `/srv/companion/config.json`:
-
-```ini
-[Service]
-Environment=COMPANION_GATEWAY_CONFIG=/srv/companion/config.json
-```
-
-systemd loads the drop-in after the unit, so its `Environment=` assignment wins.
+The unit is a template. `dusha@sophia` runs `dusha serve sophia` and reads the home `~/.config/dusha/sophia/`. A second companion needs a second home with its own `port`, then `dusha@<name>`.
 
 4. Prepare the optional secrets file. Skip this step when you use no upstream key and no companion token. The `touch` command keeps an existing file's contents.
 
 ```sh
-touch ~/.config/companion-gateway/environment
-chmod 600 ~/.config/companion-gateway/environment
-${EDITOR:-vi} ~/.config/companion-gateway/environment
+touch ~/.config/dusha/sophia/environment
+chmod 600 ~/.config/dusha/sophia/environment
+${EDITOR:-vi} ~/.config/dusha/sophia/environment
 ```
 
 The file holds only the keys you need. Config stores variable names, never values.
@@ -69,8 +54,8 @@ COMPANION_TOKEN=replace-with-a-long-random-value
 
 ```sh
 systemctl --user daemon-reload
-systemctl --user enable --now companion-gateway
-systemctl --user is-active companion-gateway
+systemctl --user enable --now dusha@sophia
+systemctl --user is-active dusha@sophia
 curl http://127.0.0.1:8765/health
 ```
 
@@ -79,7 +64,7 @@ Success check: `is-active` prints `active` and `/health` returns `"status":"ok"`
 Read recent logs without blocking:
 
 ```sh
-journalctl --user -u companion-gateway --no-pager -n20
+journalctl --user -u dusha@sophia --no-pager -n20
 ```
 
 ## Auth and network
@@ -96,7 +81,7 @@ Set `api_token_env` to the name of an environment variable holding a long random
 
 ```sh
 export COMPANION_TOKEN="$(openssl rand -hex 32)"
-companion-gateway serve
+dusha serve sophia
 ```
 
 In another terminal, set `COMPANION_TOKEN` to the same value (do not generate a new one), then test:
@@ -123,7 +108,7 @@ Back up every user-authored file: the config file, the identity Markdown, custom
 Create a consistent live backup:
 
 ```sh
-companion-gateway backup /path/to/backups/state-$(date +%F).sqlite3
+dusha backup /path/to/backups/state-$(date +%F).sqlite3
 ```
 
 The command uses the SQLite online backup API and stays safe while the service writes. Do not copy `state.sqlite3` during active writes.
@@ -138,7 +123,7 @@ The service upgrades a schema version 2, 3, or 4 database to version 5 in place 
 
 Common problems:
 
-- Startup fails with a missing config file: `--config` and `COMPANION_GATEWAY_CONFIG` treat a missing file as an error. Fix the path or drop the explicit setting.
+- Startup fails with a missing config file: a selected companion home must hold `config.json`. Run `dusha list` to see the companions, then fix the name or the path.
 - Startup fails with a missing identity file: the configured `identity_prompt.path` does not exist or is not valid UTF-8. Correct the file or clear the path.
 - A memory plugin adds no context: the plugin is missing, failed to load, or returned an empty `inject_context`. Check the plugin log for `memory plugin context injection failed` or `failed to initialize memory plugin`, then confirm `memory_plugin.module` and the mods directory. Core recent and evergreen memory still works.
 - Message, memory, context, fact, and memo routes return `503`: `storage.enabled` is `false`. Set it back to `true` and restart. The stored rows were never deleted.

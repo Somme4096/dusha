@@ -10,8 +10,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from companion_gateway import api
-from companion_gateway.config import AppConfig, MemoryConfig, MemoryPluginConfig
+from dusha import api
+from dusha.config import AppConfig, MemoryConfig, MemoryPluginConfig
 
 
 @pytest.fixture(scope="session")
@@ -133,7 +133,7 @@ def _write_json(path: Path, value: dict) -> Path:
 def _cli(config: Path, *args: str) -> subprocess.CompletedProcess[str]:
     env = {**os.environ, "PYTHONPATH": str(Path(__file__).parents[1] / "src")}
     return subprocess.run(
-        [sys.executable, "-m", "companion_gateway.cli", "--config", str(config), *args],
+        [sys.executable, "-m", "dusha.cli", "--config", str(config), *args],
         capture_output=True,
         text=True,
         env=env,

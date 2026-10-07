@@ -3,7 +3,7 @@
     "path": "",
     "expected_version": ""
   },
-  "data_dir": "~/.local/share/companion-gateway",
+  "data_dir": "data",
   "host": "127.0.0.1",
   "port": 8765,
   "timezone": "Asia/Taipei",

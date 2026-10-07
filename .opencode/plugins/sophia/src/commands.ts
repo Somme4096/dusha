@@ -8,7 +8,7 @@ import type { SophiaConfig } from "./types";
 type SessionId = Parameters<Plugin.Context["session"]["synthetic"]>[0]["sessionID"];
 
 const HELP_TEXT = [
-  "Sophia companion gateway commands",
+  "Dusha commands",
   "/sophia status - show configuration and connection status",
   "/sophia test - test the gateway connection",
   "/sophia url <url> - set the gateway base URL",
@@ -56,7 +56,7 @@ async function testConnection(config: SophiaConfig): Promise<{ connected: boolea
 
 function renderStatus(config: SophiaConfig, connectionLine: string): string {
   return [
-    "Sophia companion gateway",
+    "Dusha",
     `URL: ${config.baseUrl}`,
     `Auth: ${config.apiToken ? "token set" : "no token"}`,
     `Auto-inject: ${config.autoInject ? "on" : "off"}`,
@@ -163,7 +163,7 @@ export async function registerSophiaCommand(ctx: Plugin.Context): Promise<Regist
     if (typeof (editor as { add?: unknown }).add !== "function") return;
     editor.add({
       name: "sophia",
-      description: "Check, test, and configure the Sophia companion gateway.",
+      description: "Check, test, and configure the Dusha.",
       execute: async (invocation) => {
         await handleSophiaCommand(ctx, invocation);
       },

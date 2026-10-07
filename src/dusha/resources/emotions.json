@@ -1,7 +1,7 @@
 {
   "schema_version": 3,
   "emotion_version": "0.4.0",
-  "description": "Emotional definitions, change rules, and tuning for the companion state gateway. This file owns every dimension name. Code names none.",
+  "description": "Emotional definitions, change rules, and tuning for the dusha. This file owns every dimension name. Code names none.",
   "value_range": {
     "min": 0.0,
     "max": 1.0

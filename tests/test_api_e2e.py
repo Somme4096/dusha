@@ -7,8 +7,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from companion_gateway import api, api_openai
-from companion_gateway.config import load_config
+from dusha import api, api_openai
+from dusha.config import load_config
 
 
 def _client(app):
@@ -250,7 +250,7 @@ async def test_http_openapi_version_follows_the_package(config):
     app = api.create_app(config)
     async with _running_client(app) as client:
         document = await client.get("/openapi.json")
-    assert document.json()["info"]["version"] == metadata.version("companion-state-gateway")
+    assert document.json()["info"]["version"] == metadata.version("dusha")
 
 
 async def test_http_memo_limits_follow_config_and_default_data_dir_sits_beside_config(tmp_path, monkeypatch):

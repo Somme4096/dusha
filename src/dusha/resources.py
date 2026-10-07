@@ -32,7 +32,7 @@ def loads_strict(text: str, *, source: str = "<string>") -> dict:
 
 
 def read_packaged(name: str) -> str:
-    base = resources.files("companion_gateway") / "resources"
+    base = resources.files("dusha") / "resources"
     return (base / name).read_text(encoding="utf-8")
 
 

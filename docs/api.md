@@ -1,4 +1,4 @@
-# Companion State Gateway API and integration
+# Dusha API and integration
 
 The gateway stores raw conversation memory, persistent affect, evergreen facts, and proactive delivery decisions in one SQLite file. It does not own the persona or the model. You send it messages, ask for a context injection, then call your provider yourself or let the optional proxy call it for you. Setting `storage.enabled` to `false` keeps the file but closes the message, memory, context, evergreen, and memo routes.
 
@@ -232,15 +232,15 @@ The engine gates each pass on silence, quiet hours, cooldown, the daily limit, t
 
 ## AstrBot plugin
 
-The plugin in `integrations/astrbot_companion_gateway` connects AstrBot to the gateway as a state service. It requires AstrBot 4.8 or later and supports Discord.
+The plugin in `integrations/astrbot_dusha` connects AstrBot to the gateway as a state service. It requires AstrBot 4.8 or later and supports Discord.
 
 ### Install
 
 Run the gateway first. Copy the source directory into AstrBot's plugin directory:
 
 ```sh
-cp -a integrations/astrbot_companion_gateway \
-  /path/to/AstrBot/data/plugins/astrbot_companion_gateway
+cp -a integrations/astrbot_dusha \
+  /path/to/AstrBot/data/plugins/astrbot_dusha
 ```
 
 Restart AstrBot or reload the plugin from its manager. AstrBot reads `metadata.yaml` and installs the dependency from `requirements.txt` (`httpx`). Keep AstrBot's chat provider pointed at your model provider. Do not set the gateway as AstrBot's chat provider while the plugin runs.
@@ -298,7 +298,7 @@ The plugin sends the text through `Context.send_message`, writes it into AstrBot
 
 ### Troubleshooting
 
-Check the AstrBot log for lines beginning with `[companion-gateway]`. Confirm the gateway answers before you change plugin settings:
+Check the AstrBot log for lines beginning with `[dusha]`. Confirm the gateway answers before you change plugin settings:
 
 ```sh
 curl http://127.0.0.1:8765/health

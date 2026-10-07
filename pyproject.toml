@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "companion-state-gateway"
+name = "dusha"
 version = "0.2.0"
 description = "Harness-neutral OpenAI gateway with durable memory and affect state"
 readme = "README.md"
@@ -19,11 +19,11 @@ dependencies = [
 test = ["pytest>=8,<10", "pytest-asyncio>=0.24,<2", "ruff>=0.8,<1"]
 
 [project.scripts]
-companion-gateway = "companion_gateway.cli:main"
+dusha = "dusha.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/companion_gateway"]
-artifacts = ["src/companion_gateway/resources/*.json"]
+packages = ["src/dusha"]
+artifacts = ["src/dusha/resources/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

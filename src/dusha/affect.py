@@ -16,7 +16,7 @@ from .database import Database
 from .serialization import compact_json
 from .timeutil import isoformat, parse_time, utc_now
 
-logger = logging.getLogger("companion_gateway")
+logger = logging.getLogger("dusha")
 
 Decider = Callable[..., "str | None"]
 PhraseMatcher = Callable[[str], dict[str, float] | None]

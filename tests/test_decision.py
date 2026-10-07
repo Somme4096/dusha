@@ -9,8 +9,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from companion_gateway import api
-from companion_gateway.config import AppConfig, DecisionConfig
+from dusha import api
+from dusha.config import AppConfig, DecisionConfig
 
 
 def _suite(tmp_path: Path, name: str, main: str, workspace: bool = False) -> tuple[Path, Path]:

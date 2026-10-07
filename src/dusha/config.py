@@ -36,9 +36,29 @@ _IDENTITY_PROMPT = _DEFAULTS["identity_prompt"]
 _PROMPTS = _DEFAULTS["prompts"]
 
 
-def default_config_dir() -> Path:
+CONFIG_FILE = "config.json"
+HOME_ENV = "DUSHA_HOME"
+COMPANION_ENV = "DUSHA_COMPANION"
+_COMPANION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
+def config_root() -> Path:
     base = os.getenv("XDG_CONFIG_HOME") or str(Path.home() / ".config")
-    return Path(base) / "companion-gateway"
+    return Path(base) / "dusha"
+
+
+def companion_home(name: str) -> Path:
+    if not _COMPANION_NAME.fullmatch(name):
+        raise ValueError(f"companion name must be letters, digits, dot, dash, or underscore, got {name!r}")
+    return config_root() / name
+
+
+def list_companions() -> list[str]:
+    root = config_root()
+    if not root.is_dir():
+        return []
+    return sorted(item.name for item in root.iterdir() if (item / CONFIG_FILE).is_file())
+
 
 _UNSET: Any = _emotions.UNSET
 _EMOTIONS_FILE_FIELDS = {"emotions_path", "expected_emotion_version"}
@@ -300,6 +320,7 @@ class PromptsConfig:
 
 @dataclass(slots=True)
 class AppConfig:
+    home: Path | None = field(default=None, repr=False, compare=False)
     data_dir: Path = Path(_DEFAULTS["data_dir"])
     host: str = _DEFAULTS["host"]
     port: int = _DEFAULTS["port"]
@@ -487,7 +508,7 @@ def _path_section(cls: type[Any], raw: Any, name: str, source_dir: Path) -> Any:
 
 
 def _app_config_from_raw(raw: dict[str, Any], source_dir: Path) -> AppConfig:
-    allowed = set(typing.get_type_hints(AppConfig)) | {"emotions"}
+    allowed = (set(typing.get_type_hints(AppConfig)) | {"emotions"}) - {"home"}
     unknown = sorted(set(raw) - allowed)
     if unknown:
         raise ValueError(f"unknown top-level field(s): {unknown}")
@@ -572,46 +593,49 @@ def _app_config_from_raw(raw: dict[str, Any], source_dir: Path) -> AppConfig:
     )
 
 
-def _resolve_config_path(explicit: str | Path | None) -> Path | None:
-    if explicit is not None:
-        path = Path(os.path.expandvars(os.path.expanduser(str(explicit))))
-        if path.suffix.lower() != ".json":
-            raise ValueError(f"unsupported configuration format: {path}. Use a JSON file")
-        if not path.exists():
-            raise FileNotFoundError(f"configuration file not found: {path}")
-        return path
-    env = os.getenv("COMPANION_GATEWAY_CONFIG")
-    if env:
-        path = Path(os.path.expandvars(os.path.expanduser(env)))
-        if path.suffix.lower() != ".json":
-            raise ValueError(f"unsupported configuration format: {path}. Use a JSON file")
-        if not path.exists():
-            raise FileNotFoundError(
-                f"configuration file not found (from COMPANION_GATEWAY_CONFIG): {path}"
-            )
-        return path
-    for name in ("config.json",):
-        path = default_config_dir() / name
-        if path.exists():
-            return path
-    for candidate in ("config.json",):
-        path = Path(candidate)
-        if path.exists():
-            return path
-    return None
+def _config_file(explicit: str | Path) -> Path:
+    path = Path(os.path.expandvars(os.path.expanduser(str(explicit))))
+    if path.suffix.lower() != ".json":
+        raise ValueError(f"unsupported configuration format: {path}. Use a JSON file")
+    if not path.exists():
+        raise FileNotFoundError(f"configuration file not found: {path}")
+    return path
 
 
-def load_config(path: str | Path | None = None) -> AppConfig:
-    config_path = _resolve_config_path(path)
-    if config_path is None:
-        return AppConfig()
-    if config_path.suffix.lower() != ".json":
-        raise ValueError(f"unsupported configuration format: {config_path}. Use a JSON file")
+def resolve_home(home: str | Path | None = None, companion: str | None = None) -> Path | None:
+    if home:
+        return Path(os.path.expandvars(os.path.expanduser(str(home))))
+    if companion:
+        return companion_home(companion)
+    if os.getenv(HOME_ENV):
+        return Path(os.path.expandvars(os.path.expanduser(os.environ[HOME_ENV])))
+    if os.getenv(COMPANION_ENV):
+        return companion_home(os.environ[COMPANION_ENV])
+    names = list_companions()
+    if len(names) > 1:
+        raise ValueError(f"several companions exist: {names}. Name one")
+    return companion_home(names[0]) if names else None
+
+
+def load_config(
+    path: str | Path | None = None,
+    *,
+    home: str | Path | None = None,
+    companion: str | None = None,
+) -> AppConfig:
+    if path is not None:
+        config_path = _config_file(path)
+    else:
+        selected = resolve_home(home, companion)
+        if selected is None:
+            return AppConfig()
+        config_path = _config_file(selected / CONFIG_FILE)
     raw = _read_config_file(config_path)
     migrated = _migrate_config(raw)
     cfg = _app_config_from_raw(raw, config_path.parent)
     if migrated:
         _save_migrated_config(config_path, raw)
+    cfg.home = config_path.parent
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
     return cfg
 
