@@ -33,6 +33,17 @@ function optionalString(args: Args, key: string): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+const CLEAR_WORDS = new Set(["clear", "none", "null"]);
+
+function optionalTime(args: Args, key: string): string | null | undefined {
+  const value = args[key];
+  if (value === null) return null;
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  if (CLEAR_WORDS.has(normalized.toLowerCase())) return null;
+  return normalized.length > 0 ? normalized : undefined;
+}
+
 function optionalNumber(args: Args, key: string): number | undefined {
   const value = args[key];
   if (typeof value === "number" && Number.isFinite(value)) return value;
@@ -74,7 +85,7 @@ async function runTool<T>(operation: () => Promise<T>): Promise<Result> {
 
 async function clientFrom(ctx: Plugin.Context): Promise<{ config: SophiaConfig; client: SophiaClient }> {
   const config = await loadConfig(ctx);
-  return { config, client: new SophiaClient({ baseUrl: config.baseUrl, apiToken: config.apiToken }) };
+  return { config, client: SophiaClient.fromConfig(config) };
 }
 
 function buildTools(ctx: Plugin.Context): Info[] {
@@ -165,8 +176,8 @@ function buildTools(ctx: Plugin.Context): Info[] {
             text,
             priority: optionalNumber(args, "priority"),
             reason: optionalString(args, "reason"),
-            review_after: optionalString(args, "review_after"),
-            expires_at: optionalString(args, "expires_at"),
+            review_after: optionalTime(args, "review_after"),
+            expires_at: optionalTime(args, "expires_at"),
           });
         }),
     },
@@ -197,13 +208,13 @@ function buildTools(ctx: Plugin.Context): Info[] {
         {
           fact_id: { type: "string", description: "Fact identifier." },
           expected_revision: { type: "number", description: "Revision the caller expects." },
-          text: { type: "string", description: "Replacement fact text." },
+          text: { type: "string", description: "Complete replacement fact text." },
           priority: { type: "number", description: "Priority from 0 to 100." },
           reason: { type: "string", description: "Why the fact is changing." },
-          review_after: { type: "string", description: "ISO timestamp to review after." },
-          expires_at: { type: "string", description: "ISO timestamp to expire at." },
+          review_after: { type: "string", description: "ISO timestamp to review after, or clear to remove it." },
+          expires_at: { type: "string", description: "ISO timestamp to expire at, or clear to remove it." },
         },
-        ["fact_id", "expected_revision"],
+        ["fact_id", "expected_revision", "text"],
       ) as unknown as Info["input"],
       options: { codemode: false },
       execute: async (input) =>
@@ -211,14 +222,15 @@ function buildTools(ctx: Plugin.Context): Info[] {
           const args = asArgs(input);
           const factId = requireString(args, "fact_id");
           const expectedRevision = requireNumber(args, "expected_revision");
+          const text = requireString(args, "text");
           const { client } = await clientFrom(ctx);
           return client.reviseFact(factId, {
             expected_revision: expectedRevision,
-            text: optionalString(args, "text"),
+            text,
             priority: optionalNumber(args, "priority"),
             reason: optionalString(args, "reason"),
-            review_after: optionalString(args, "review_after"),
-            expires_at: optionalString(args, "expires_at"),
+            review_after: optionalTime(args, "review_after"),
+            expires_at: optionalTime(args, "expires_at"),
           });
         }),
     },
@@ -231,7 +243,7 @@ function buildTools(ctx: Plugin.Context): Info[] {
           expected_revision: { type: "number", description: "Revision the caller expects." },
           reason: { type: "string", description: "Why the fact is being forgotten." },
         },
-        ["fact_id", "expected_revision"],
+        ["fact_id", "expected_revision", "reason"],
       ) as unknown as Info["input"],
       options: { codemode: false },
       execute: async (input) =>
@@ -239,10 +251,11 @@ function buildTools(ctx: Plugin.Context): Info[] {
           const args = asArgs(input);
           const factId = requireString(args, "fact_id");
           const expectedRevision = requireNumber(args, "expected_revision");
+          const reason = requireString(args, "reason");
           const { client } = await clientFrom(ctx);
           return client.forgetFact(factId, {
             expected_revision: expectedRevision,
-            reason: optionalString(args, "reason"),
+            reason,
           });
         }),
     },

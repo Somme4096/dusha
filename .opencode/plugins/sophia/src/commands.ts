@@ -14,6 +14,8 @@ const HELP_TEXT = [
   "/sophia url <url> - set the gateway base URL",
   "/sophia token <token> - set the API token, use clear to remove it",
   "/sophia auto-inject <on|off> - toggle companion state injection",
+  "/sophia harness <name> - set the harness name conversations are stored under",
+  "/sophia timeout <seconds> - set the gateway request timeout",
 ].join("\n");
 
 interface ParsedInvocation {
@@ -43,7 +45,7 @@ async function reply(ctx: Plugin.Context, sessionID: SessionId, text: string): P
 }
 
 async function testConnection(config: SophiaConfig): Promise<{ connected: boolean; line: string }> {
-  const client = new SophiaClient({ baseUrl: config.baseUrl, apiToken: config.apiToken });
+  const client = SophiaClient.fromConfig(config);
   try {
     const health = await client.health();
     return { connected: true, line: `connected (status: ${health.status}, database: ${health.database})` };
@@ -59,6 +61,7 @@ function renderStatus(config: SophiaConfig, connectionLine: string): string {
     `Auth: ${config.apiToken ? "token set" : "no token"}`,
     `Auto-inject: ${config.autoInject ? "on" : "off"}`,
     `Harness: ${config.harness}`,
+    `Timeout: ${config.timeoutSeconds}s`,
     `Status: ${connectionLine}`,
     "",
     HELP_TEXT,
@@ -120,6 +123,29 @@ export async function handleSophiaCommand(ctx: Plugin.Context, invocation: Comma
       config.autoInject = value === "on";
       await saveConfig(ctx, config);
       await reply(ctx, sessionID, `Auto-inject ${config.autoInject ? "enabled" : "disabled"}.`);
+      return;
+    }
+    case "harness": {
+      const value = parsed.args[0];
+      if (!value) {
+        await reply(ctx, sessionID, `Harness is currently ${config.harness}. Use /sophia harness <name>.`);
+        return;
+      }
+      config.harness = value;
+      await saveConfig(ctx, config);
+      await reply(ctx, sessionID, `Harness set to ${config.harness}. New messages are stored under this harness.`);
+      return;
+    }
+    case "timeout": {
+      const value = Number(parsed.args[0]);
+      if (!parsed.args[0] || !Number.isFinite(value) || value <= 0) {
+        const current = `${config.timeoutSeconds}s`;
+        await reply(ctx, sessionID, `Timeout is currently ${current}. Use /sophia timeout <seconds>.`);
+        return;
+      }
+      config.timeoutSeconds = value;
+      await saveConfig(ctx, config);
+      await reply(ctx, sessionID, `Request timeout set to ${config.timeoutSeconds}s.`);
       return;
     }
     case "help": {

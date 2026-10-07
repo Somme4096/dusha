@@ -15,9 +15,14 @@ import type {
   MemorySearchResponse,
   RememberFactRequest,
   ReviseFactRequest,
+  SophiaConfig,
 } from "./types";
+import { DEFAULT_CONFIG } from "./types";
 
-const DEFAULT_TIMEOUT_MS = 10_000;
+function timeoutMsFrom(seconds: unknown): number {
+  const valid = typeof seconds === "number" && Number.isFinite(seconds) && seconds > 0;
+  return (valid ? seconds : DEFAULT_CONFIG.timeoutSeconds) * 1_000;
+}
 
 export interface SophiaClientOptions {
   baseUrl: string;
@@ -85,7 +90,15 @@ export class SophiaClient {
   constructor(options: SophiaClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, "");
     this.apiToken = options.apiToken ?? "";
-    this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.timeoutMs = options.timeoutMs ?? timeoutMsFrom(undefined);
+  }
+
+  static fromConfig(config: SophiaConfig): SophiaClient {
+    return new SophiaClient({
+      baseUrl: config.baseUrl,
+      apiToken: config.apiToken,
+      timeoutMs: timeoutMsFrom(config.timeoutSeconds),
+    });
   }
 
   get url(): string {

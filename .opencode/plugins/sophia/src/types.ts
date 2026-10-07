@@ -5,6 +5,7 @@ export interface SophiaConfig {
   apiToken: string;
   autoInject: boolean;
   harness: string;
+  timeoutSeconds: number;
 }
 
 export const CONFIG_KEY = "config";
@@ -14,6 +15,7 @@ export const DEFAULT_CONFIG: SophiaConfig = {
   apiToken: "",
   autoInject: true,
   harness: "opencode",
+  timeoutSeconds: 30,
 };
 
 export interface HealthResponse {
@@ -153,7 +155,7 @@ export interface ListFactsResponse {
 
 export interface ReviseFactRequest {
   expected_revision: number;
-  text?: string;
+  text: string;
   priority?: number;
   source_message_id?: number | null;
   reason?: string;
@@ -163,7 +165,7 @@ export interface ReviseFactRequest {
 
 export interface ForgetFactRequest {
   expected_revision: number;
-  reason?: string;
+  reason: string;
   source_message_id?: number | null;
 }
 

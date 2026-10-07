@@ -1,7 +1,7 @@
 import { Plugin } from "@opencode/plugin";
 import type { Registration } from "@opencode/plugin/promise/registration";
 import { registerSophiaCommand } from "./commands";
-import { registerContextHook, registerPromptHook } from "./hooks";
+import { registerContextHook, registerPromptHook, registerReplyArchive } from "./hooks";
 import { registerSophiaTools } from "./tools";
 
 async function registerSafely(
@@ -24,6 +24,7 @@ export default Plugin.define({
     await registerSafely(registrations, () => registerSophiaTools(ctx));
     await registerSafely(registrations, () => registerContextHook(ctx));
     await registerSafely(registrations, () => registerPromptHook(ctx));
+    await registerSafely(registrations, () => registerReplyArchive(ctx));
     return async () => {
       for (const registration of registrations) {
         try {
