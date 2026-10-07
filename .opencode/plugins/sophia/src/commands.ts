@@ -9,13 +9,13 @@ type SessionId = Parameters<Plugin.Context["session"]["synthetic"]>[0]["sessionI
 
 const HELP_TEXT = [
   "Dusha commands",
-  "/sophia status - show configuration and connection status",
-  "/sophia test - test the gateway connection",
-  "/sophia url <url> - set the gateway base URL",
-  "/sophia token <token> - set the API token, use clear to remove it",
-  "/sophia auto-inject <on|off> - toggle companion state injection",
-  "/sophia harness <name> - set the harness name conversations are stored under",
-  "/sophia timeout <seconds> - set the gateway request timeout",
+  "/dusha status - show configuration and connection status",
+  "/dusha test - test the gateway connection",
+  "/dusha url <url> - set the gateway base URL",
+  "/dusha token <token> - set the API token, use clear to remove it",
+  "/dusha auto-inject <on|off> - toggle companion state injection",
+  "/dusha harness <name> - set the harness name conversations are stored under",
+  "/dusha timeout <seconds> - set the gateway request timeout",
 ].join("\n");
 
 interface ParsedInvocation {
@@ -24,7 +24,7 @@ interface ParsedInvocation {
 }
 
 function parseInvocation(text: string): ParsedInvocation {
-  const withoutCommand = text.trim().replace(/^\/?sophia\b/i, "").trim();
+  const withoutCommand = text.trim().replace(/^\/?dusha\b/i, "").trim();
   const parts = withoutCommand.length > 0 ? withoutCommand.split(/\s+/) : [];
   return { subcommand: (parts[0] ?? "").toLowerCase(), args: parts.slice(1) };
 }
@@ -91,7 +91,7 @@ export async function handleSophiaCommand(ctx: Plugin.Context, invocation: Comma
     case "url": {
       const value = parsed.args[0];
       if (!value) {
-        await reply(ctx, sessionID, "Usage: /sophia url <url>");
+        await reply(ctx, sessionID, "Usage: /dusha url <url>");
         return;
       }
       config.baseUrl = normalizeUrl(value);
@@ -103,7 +103,7 @@ export async function handleSophiaCommand(ctx: Plugin.Context, invocation: Comma
     case "token": {
       const value = parsed.args[0];
       if (value === undefined) {
-        await reply(ctx, sessionID, "Usage: /sophia token <token>, or /sophia token clear to remove it.");
+        await reply(ctx, sessionID, "Usage: /dusha token <token>, or /dusha token clear to remove it.");
         return;
       }
       config.apiToken = value === "clear" ? "" : value;
@@ -117,7 +117,7 @@ export async function handleSophiaCommand(ctx: Plugin.Context, invocation: Comma
       const value = (parsed.args[0] ?? "").toLowerCase();
       if (value !== "on" && value !== "off") {
         const current = config.autoInject ? "on" : "off";
-        await reply(ctx, sessionID, `Auto-inject is currently ${current}. Use /sophia auto-inject <on|off>.`);
+        await reply(ctx, sessionID, `Auto-inject is currently ${current}. Use /dusha auto-inject <on|off>.`);
         return;
       }
       config.autoInject = value === "on";
@@ -128,7 +128,7 @@ export async function handleSophiaCommand(ctx: Plugin.Context, invocation: Comma
     case "harness": {
       const value = parsed.args[0];
       if (!value) {
-        await reply(ctx, sessionID, `Harness is currently ${config.harness}. Use /sophia harness <name>.`);
+        await reply(ctx, sessionID, `Harness is currently ${config.harness}. Use /dusha harness <name>.`);
         return;
       }
       config.harness = value;
@@ -140,7 +140,7 @@ export async function handleSophiaCommand(ctx: Plugin.Context, invocation: Comma
       const value = Number(parsed.args[0]);
       if (!parsed.args[0] || !Number.isFinite(value) || value <= 0) {
         const current = `${config.timeoutSeconds}s`;
-        await reply(ctx, sessionID, `Timeout is currently ${current}. Use /sophia timeout <seconds>.`);
+        await reply(ctx, sessionID, `Timeout is currently ${current}. Use /dusha timeout <seconds>.`);
         return;
       }
       config.timeoutSeconds = value;
@@ -162,8 +162,8 @@ export async function registerSophiaCommand(ctx: Plugin.Context): Promise<Regist
   return ctx.command.transform((editor) => {
     if (typeof (editor as { add?: unknown }).add !== "function") return;
     editor.add({
-      name: "sophia",
-      description: "Check, test, and configure the Dusha.",
+      name: "dusha",
+      description: "Check, test, and configure Dusha.",
       execute: async (invocation) => {
         await handleSophiaCommand(ctx, invocation);
       },
