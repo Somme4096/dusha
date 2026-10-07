@@ -1,3 +1,4 @@
+import asyncio
 import importlib.util
 import json
 import sys
@@ -101,9 +102,9 @@ def _load_main():
 async def plugin_factory():
     built = []
 
-    async def _build(handler=None, platform_id="telegram-sophia"):
+    async def _build(handler=None, platform_id="telegram-sophia", **settings):
         plugin = _load_main().CompanionGatewayPlugin(
-            context=Context(), config=AstrBotConfig(platform_id=platform_id)
+            context=Context(), config=AstrBotConfig(platform_id=platform_id, **settings)
         )
         if handler is not None:
             original = plugin.client
@@ -269,14 +270,117 @@ def test_tool_decorators_register_the_nine_gateway_tools():
     ]
 
 
-def test_proactive_tool_filter_includes_donsetch_and_fetch():
-    is_proactive = _load_main().CompanionGatewayPlugin._is_proactive_tool
-    assert is_proactive("yumecho_done") is True
-    assert is_proactive("remember_evergreen_fact") is True
-    assert is_proactive("donsetch_search") is True
-    assert is_proactive("fetch_url") is True
-    assert is_proactive("astrbot_execute_shell") is False
-    assert is_proactive("send_message_to_user") is False
+async def test_unset_settings_take_the_schema_defaults(plugin_factory):
+    schema = json.loads((_INTEGRATION_DIR / "_conf_schema.json").read_text())
+    plugin = await plugin_factory()
+    assert plugin.base_url == schema["gateway_url"]["default"]
+    assert plugin.harness == schema["harness"]["default"] == "astrbot"
+    assert plugin.poll_interval_seconds == schema["poll_interval_seconds"]["default"]
+    assert plugin.proactive_enabled is schema["proactive_enabled"]["default"]
+    assert list(plugin.proactive_tool_keywords) == schema["proactive_tool_keywords"]["default"]
+    assert plugin.headers == {}
+
+
+async def test_request_timeout_setting(plugin_factory):
+    assert (await plugin_factory()).client.timeout == httpx.Timeout(60.0)
+    assert (await plugin_factory(request_timeout_seconds=90)).client.timeout == httpx.Timeout(90.0)
+    assert (await plugin_factory(request_timeout_seconds=0)).client.timeout == httpx.Timeout(1.0)
+
+
+def _chat_event():
+    event = AstrMessageEvent()
+    event.message_obj = types.SimpleNamespace(message_id="m-1")
+    return event
+
+
+def _chat_request(prompt="hello"):
+    request = ProviderRequest()
+    request.prompt, request.system_prompt, request.func_tool = prompt, "persona", None
+    return request
+
+
+async def test_chat_turn_stores_message_then_injects_context(plugin_factory):
+    calls = []
+
+    def handler(request):
+        calls.append((request.url.path, json.loads(request.read())))
+        if request.url.path == "/state/v1/messages":
+            return httpx.Response(200, json={"id": 7})
+        return httpx.Response(200, json={"injection": "<companion_state>{}</companion_state>"})
+
+    plugin = await plugin_factory(handler=handler, harness="sophia-bot")
+    request, event = _chat_request(), _chat_event()
+    await plugin.add_state_context(event, request)
+    assert request.system_prompt == "persona\n<companion_state>{}</companion_state>"
+    assert calls == [
+        ("/state/v1/messages", {"harness": "sophia-bot", "conversation_id": "telegram:user-1",
+                                "route": "telegram:user-1", "role": "user", "content": "hello",
+                                "external_id": "user:m-1"}),
+        ("/state/v1/context", {"harness": "sophia-bot", "conversation_id": "telegram:user-1",
+                               "query": "hello", "exclude_message_ids": [7], "include_recent": True}),
+    ]
+    assert plugin.latest_source_message_ids == {"telegram:user-1": 7}
+    await plugin.add_state_context(event, request)
+    assert len(calls) == 2
+
+
+async def test_chat_turn_keeps_context_when_message_storage_times_out(plugin_factory):
+    contexts = []
+
+    def handler(request):
+        if request.url.path == "/state/v1/messages":
+            raise httpx.ReadTimeout("slow decision plugin")
+        contexts.append(json.loads(request.read()))
+        return httpx.Response(200, json={"injection": "<companion_state>{}</companion_state>"})
+
+    logger.messages.clear()
+    plugin = await plugin_factory(handler=handler)
+    plugin.latest_source_message_ids["telegram:user-1"] = 3
+    request = _chat_request()
+    await plugin.add_state_context(_chat_event(), request)
+    assert "<companion_state>" in request.system_prompt
+    assert contexts[0]["harness"] == "astrbot"
+    assert contexts[0]["exclude_message_ids"] == []
+    assert plugin.latest_source_message_ids == {}
+    assert logger.messages == ["[companion-gateway] Message archive failed: slow decision plugin"]
+
+
+async def test_chat_turn_survives_a_failed_context_call(plugin_factory):
+    def handler(request):
+        if request.url.path == "/state/v1/messages":
+            return httpx.Response(200, json={"id": 7})
+        return httpx.Response(422, json={"detail": "context budget too small"})
+
+    logger.messages.clear()
+    plugin = await plugin_factory(handler=handler)
+    request = _chat_request()
+    await plugin.add_state_context(_chat_event(), request)
+    assert request.system_prompt == "persona"
+    assert plugin.latest_source_message_ids == {"telegram:user-1": 7}
+    assert len(logger.messages) == 1 and "Context unavailable" in logger.messages[0]
+
+
+async def test_harness_setting_names_assistant_archive_and_poll(plugin_factory, monkeypatch):
+    posts, polls = [], []
+
+    def handler(request):
+        if request.method == "GET":
+            polls.append(dict(request.url.params))
+            return httpx.Response(200, json={"events": []})
+        posts.append(json.loads(request.read()))
+        return httpx.Response(200, json={"id": 8})
+
+    plugin = await plugin_factory(handler=handler, harness="sophia-bot")
+    await plugin.store_response(_chat_event(), types.SimpleNamespace(completion_text="hi"))
+    assert posts[0]["harness"] == "sophia-bot"
+
+    async def stop(seconds):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(asyncio, "sleep", stop)
+    with pytest.raises(asyncio.CancelledError):
+        await plugin._poll_loop()
+    assert polls == [{"consumer": "sophia-bot", "harness": "sophia-bot", "limit": "1"}]
 
 
 
@@ -378,7 +482,9 @@ def _install_segments():
         sys.modules[name] = module
 
 
-async def _deliver_plugin(plugin_factory, *, send_result=True, cid="cid-1", generate=None, provider_ids=None):
+async def _deliver_plugin(
+    plugin_factory, *, send_result=True, cid="cid-1", generate=None, provider_ids=None, **settings
+):
     _install_segments()
     posts = []
 
@@ -386,7 +492,7 @@ async def _deliver_plugin(plugin_factory, *, send_result=True, cid="cid-1", gene
         posts.append(json.loads(request.read()))
         return httpx.Response(200, json={"ok": True})
 
-    plugin = await plugin_factory(handler=handler, platform_id="telegram-sophia")
+    plugin = await plugin_factory(handler=handler, platform_id="telegram-sophia", **settings)
     manager = _ConversationManager(cid=cid)
     plugin.context.conversation_manager = manager
     plugin.context.persona_manager = _PersonaManager()
@@ -477,6 +583,50 @@ async def test_proactive_delivery_all_providers_fail_acks_failed(plugin_factory)
     assert posts == [
         {"consumer": "astrbot", "outcome": "failed", "error": "Connection error: backup"}
     ]
+
+
+class _ToolSet:
+    def __init__(self):
+        self.tools = []
+
+    def add_tool(self, tool):
+        self.tools.append(tool)
+
+    def empty(self):
+        return not self.tools
+
+
+AVAILABLE_TOOLS = ("yumecho_done", "remember_evergreen_fact", "donsetch_search", "Fetch_URL",
+                   "web_search", "astrbot_execute_shell")
+PROACTIVE_TOOL_CASES = [
+    ({}, ["yumecho_done", "remember_evergreen_fact", "donsetch_search", "Fetch_URL"]),
+    ({"proactive_tool_keywords": ["Search", " "]},
+     ["yumecho_done", "remember_evergreen_fact", "donsetch_search", "web_search"]),
+    ({"proactive_tool_keywords": []}, ["yumecho_done", "remember_evergreen_fact"]),
+]
+
+
+@pytest.mark.parametrize("settings, expected", PROACTIVE_TOOL_CASES,
+                         ids=["default keywords", "custom keywords", "empty list"])
+async def test_proactive_delivery_offers_gateway_tools_and_keyword_matches(
+    settings, expected, plugin_factory
+):
+    sys.modules.setdefault("astrbot.core.agent.tool", types.ModuleType("astrbot.core.agent.tool"))
+    sys.modules["astrbot.core.agent.tool"].ToolSet = _ToolSet
+    offered = []
+
+    async def generate(**kwargs):
+        offered.extend(tool.name for tool in kwargs["tools"].tools)
+        return types.SimpleNamespace(completion_text="hello proactive")
+
+    plugin, _, posts = await _deliver_plugin(plugin_factory, generate=generate, **settings)
+    full = _ToolSet()
+    for name in AVAILABLE_TOOLS:
+        full.add_tool(types.SimpleNamespace(name=name))
+    plugin.context.get_llm_tool_manager = lambda: types.SimpleNamespace(get_full_tool_set=lambda: full)
+    await plugin._deliver(_proactive_event())
+    assert offered == expected
+    assert posts[0]["outcome"] == "sent"
 
 
 def _install_exceptions():

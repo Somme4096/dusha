@@ -34,6 +34,9 @@ GATEWAY_TOOL_NAMES = (
     "yumecho_done",
 )
 
+_SCHEMA = json.loads((Path(__file__).parent / "_conf_schema.json").read_text(encoding="utf-8"))
+SETTING_DEFAULTS = {name: field["default"] for name, field in _SCHEMA.items()}
+
 PROACTIVE_YUMECHO_NOTE = (
     "Pending yumecho memos are in your context. If this message completes one, call "
     "yumecho_done with a short reason and mention the completion briefly."
@@ -44,15 +47,27 @@ class CompanionGatewayPlugin(star.Star):
     def __init__(self, context: star.Context, config: AstrBotConfig) -> None:
         super().__init__(context)
         self.config = config
-        self.base_url = str(config.get("gateway_url", "http://127.0.0.1:8765")).rstrip("/")
-        self.platform_id = str(config.get("platform_id", "")).strip()
-        self.poll_interval_seconds = max(5, int(config.get("poll_interval_seconds", 30)))
-        self.proactive_enabled = bool(config.get("proactive_enabled", True))
-        token = str(config.get("api_token", ""))
+        self.base_url = str(self._setting("gateway_url")).rstrip("/")
+        self.platform_id = str(self._setting("platform_id")).strip()
+        self.harness = str(self._setting("harness")).strip() or SETTING_DEFAULTS["harness"]
+        self.poll_interval_seconds = max(5, int(self._setting("poll_interval_seconds")))
+        self.proactive_enabled = bool(self._setting("proactive_enabled"))
+        self.request_timeout_seconds = max(1.0, float(self._setting("request_timeout_seconds")))
+        keywords = self._setting("proactive_tool_keywords")
+        if not isinstance(keywords, list):
+            keywords = SETTING_DEFAULTS["proactive_tool_keywords"]
+        # A blank keyword would match every tool name.
+        self.proactive_tool_keywords = tuple(
+            word for word in (str(item).strip().casefold() for item in keywords) if word
+        )
+        token = str(self._setting("api_token"))
         self.headers = {"X-Companion-Token": token} if token else {}
-        self.client = httpx.AsyncClient(timeout=15)
+        self.client = httpx.AsyncClient(timeout=self.request_timeout_seconds)
         self.poll_task: asyncio.Task[None] | None = None
         self.latest_source_message_ids: dict[str, int] = {}
+
+    def _setting(self, name: str) -> Any:
+        return self.config.get(name, SETTING_DEFAULTS[name])
 
     async def initialize(self) -> None:
         if not self.platform_id:
@@ -187,11 +202,12 @@ class CompanionGatewayPlugin(star.Star):
         prompt = req.prompt or event.get_message_str()
         if not prompt or self._has_context(req):
             return
+        exclude: list[int] = []
         try:
             stored = await self._post(
                 "/state/v1/messages",
                 {
-                    "harness": "astrbot",
+                    "harness": self.harness,
                     "conversation_id": event.unified_msg_origin,
                     "route": event.unified_msg_origin,
                     "role": "user",
@@ -199,16 +215,22 @@ class CompanionGatewayPlugin(star.Star):
                     "external_id": self._message_key(event, "user"),
                 },
             )
-            self.latest_source_message_ids[event.unified_msg_origin] = int(stored["id"])
+            exclude.append(int(stored["id"]))
+            self.latest_source_message_ids[event.unified_msg_origin] = exclude[0]
             if len(self.latest_source_message_ids) > 1_024:
                 self.latest_source_message_ids.pop(next(iter(self.latest_source_message_ids)))
+        except Exception as error:
+            # The previous turn's id would credit tool writes to the wrong message.
+            self.latest_source_message_ids.pop(event.unified_msg_origin, None)
+            logger.warning(f"[companion-gateway] Message archive failed: {error}")
+        try:
             context = await self._post(
                 "/state/v1/context",
                 {
-                    "harness": "astrbot",
+                    "harness": self.harness,
                     "conversation_id": event.unified_msg_origin,
                     "query": prompt,
-                    "exclude_message_ids": [stored["id"]],
+                    "exclude_message_ids": exclude,
                     "include_recent": True,
                 },
             )
@@ -518,7 +540,7 @@ class CompanionGatewayPlugin(star.Star):
             await self._post(
                 "/state/v1/messages",
                 {
-                    "harness": "astrbot",
+                    "harness": self.harness,
                     "conversation_id": event.unified_msg_origin,
                     "route": event.unified_msg_origin,
                     "role": "assistant",
@@ -540,8 +562,8 @@ class CompanionGatewayPlugin(star.Star):
                     self.base_url + "/state/v1/proactive/events",
                     headers=self.headers,
                     params={
-                        "consumer": "astrbot",
-                        "harness": "astrbot",
+                        "consumer": self.harness,
+                        "harness": self.harness,
                         "limit": 1,
                     },
                 )
@@ -616,13 +638,12 @@ class CompanionGatewayPlugin(star.Star):
                     candidate = getattr(meta(), "id", None)
         return str(candidate).strip() if candidate else ""
 
-    @staticmethod
-    def _is_proactive_tool(name: str) -> bool:
+    def _is_proactive_tool(self, name: str) -> bool:
         lowered = name.casefold()
-        return name in GATEWAY_TOOL_NAMES or "donsetch" in lowered or "fetch" in lowered
+        return name in GATEWAY_TOOL_NAMES or any(word in lowered for word in self.proactive_tool_keywords)
 
     def _gateway_tool_set(self) -> Any:
-        """Build the proactive ToolSet: gateway tools plus donsetch/fetch tools."""
+        """Build the proactive ToolSet from gateway tools and keyword matches."""
         manager = getattr(self.context, "get_llm_tool_manager", None)
         tool_manager = manager() if callable(manager) else None
         if tool_manager is None:
@@ -789,12 +810,12 @@ class CompanionGatewayPlugin(star.Star):
             await self._archive_proactive_history(route, text, event)
             await self._post(
                 f"/state/v1/proactive/events/{event['id']}/ack",
-                {"consumer": "astrbot", "outcome": "sent", "text": text},
+                {"consumer": self.harness, "outcome": "sent", "text": text},
             )
         except Exception as error:
             logger.warning(f"[companion-gateway] Proactive delivery failed: {error}")
             with contextlib.suppress(Exception):
                 await self._post(
                     f"/state/v1/proactive/events/{event['id']}/ack",
-                    {"consumer": "astrbot", "outcome": "failed", "error": str(error)},
+                    {"consumer": self.harness, "outcome": "failed", "error": str(error)},
                 )

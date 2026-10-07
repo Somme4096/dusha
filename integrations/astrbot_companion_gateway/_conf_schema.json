@@ -15,6 +15,16 @@
     "default": "",
     "obvious_hint": true
   },
+  "harness": {
+    "description": "Harness name sent to the gateway. The gateway keys stored conversations and proactive events by this name. Keep the default once conversations exist. After a rename every chat starts with empty recent history, and the plugin stops receiving proactive events queued under the old name.",
+    "type": "string",
+    "default": "astrbot"
+  },
+  "request_timeout_seconds": {
+    "description": "Seconds to wait for one gateway response. Message storage can run the decision plugin and two memory plugin calls, 15 seconds each by default. Values below 1 clamp to 1.",
+    "type": "float",
+    "default": 60.0
+  },
   "poll_interval_seconds": {
     "description": "Proactive event poll interval",
     "type": "int",
@@ -24,5 +34,10 @@
     "description": "Poll and send proactive events",
     "type": "bool",
     "default": true
+  },
+  "proactive_tool_keywords": {
+    "description": "Proactive messages can call the gateway tools plus every AstrBot tool whose name contains one of these words. Matching ignores case. With an empty list, proactive messages get the gateway tools and nothing else.",
+    "type": "list",
+    "default": ["donsetch", "fetch"]
   }
 }
