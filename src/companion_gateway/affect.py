@@ -27,21 +27,21 @@ class AffectEngine:
         database: Database,
         config: AffectConfig,
         prompts: dict[str, Any] | None = None,
-        decision_increment: float = 0.1,
+        decision_increment: float | None = None,
         appraisal: SemanticAppraisal | None = None,
     ):
         self.database = database
         self.config = config
         self.appraisal = appraisal
         self._lock = threading.RLock()
-        self.emotions = _emotions.resolve_emotions(config)
+        self.emotions = _emotions.resolve_emotions(config, decision_increment=decision_increment)
         self.emotions_version = str(self.emotions["emotion_version"])
         self.emotions_fingerprint = _emotions.fingerprint(self.emotions)
         self.spec = {name: values.copy() for name, values in self.emotions["dimensions"].items()}
         value_range = self.emotions["value_range"]
         self.value_min = float(value_range["min"])
         self.value_max = float(value_range["max"])
-        self.decision_increment = float(decision_increment)
+        self.value_span = self.value_max - self.value_min
         self.affect_presentation = dict(
             (prompts or _prompts.default_prompts())["affect_presentation"]
         )
@@ -71,8 +71,11 @@ class AffectEngine:
             for layer, defaults in neutral.items()
         }
 
-    def _clamp(self, value: float, floor: float = 0.0) -> float:
-        return min(self.value_max, max(floor, value))
+    def _clamp(self, value: float, floor: float | None = None) -> float:
+        return min(self.value_max, max(self.value_min if floor is None else floor, value))
+
+    def increment_for(self, emotion: str) -> float:
+        return float(self.spec[emotion].get("increment", self.emotions["decision"]["increment"]))
 
     def _apply_deltas(self, state: dict[str, Any], deltas: dict[str, float], scale: float = 1.0) -> None:
         base = state["base"]
@@ -89,9 +92,8 @@ class AffectEngine:
             if not math.isfinite(delta):
                 continue
             current = float(base[name])
-            effective = (
-                delta * impact * (1 - current) if delta > 0 else delta * impact * current
-            )
+            room = self.value_max - current if delta > 0 else current - self.value_min
+            effective = delta * impact * room / self.value_span
             next_value = max(current + effective, self.spec[name]["floor"])
             if delta < 0 and name in negative:
                 next_value = max(next_value, min(current, float(mood[name])))
@@ -101,7 +103,7 @@ class AffectEngine:
         spec = self.spec[emotion]
         current = float(state["base"][emotion])
         state["base"][emotion] = self._clamp(
-            current + self.decision_increment, spec["floor"]
+            current + self.increment_for(emotion), spec["floor"]
         )
 
     def _semantic_emotion(self, message: str) -> str | None:
@@ -134,7 +136,7 @@ class AffectEngine:
             mood = float(state["mood"].get(name, params["neutral"]))
             deviation = abs(base - mood)
             gain = max(
-                gain_cfg["min"], min(gain_cfg["max"], gain_cfg["factor"] * deviation)
+                gain_cfg["min"], min(gain_cfg["max"], gain_cfg["factor"] * deviation / self.value_span)
             )
             follow = 1 - math.exp(-hours * gain / mood_follow_hours)
             mood += (base - mood) * follow
@@ -160,10 +162,9 @@ class AffectEngine:
             for name, rule in self.emotions["silence"]["rules"].items():
                 if total_silence < rule["gate_hours"]:
                     continue
-                state["base"][name] = min(
-                    self.spec[name]["neutral"] + rule["cap"],
-                    state["base"][name] + rule["rate_per_hour"] * silence_hours,
-                )
+                current = float(state["base"][name])
+                drifted = current + rule["rate_per_hour"] * silence_hours
+                state["base"][name] = max(current, min(self.spec[name]["neutral"] + rule["cap"], drifted))
 
     def _save(self, db: Any, state: dict[str, Any], now: datetime, **fields: Any) -> None:
         assignments = ["state_json=?", "last_updated_at=?", "revision=revision+1"]
@@ -238,7 +239,7 @@ class AffectEngine:
                     """INSERT INTO affect_decisions
                        (source_message_id, emotion, increment, occurred_at)
                        VALUES(?,?,?,?)""",
-                    (source_message_id, emotion, self.decision_increment, isoformat(current)),
+                    (source_message_id, emotion, self.increment_for(emotion), isoformat(current)),
                 )
                 if cursor.lastrowid is not None:
                     decision_id = int(cursor.lastrowid)
@@ -271,7 +272,7 @@ class AffectEngine:
             return None
         return {
             "emotion": emotion,
-            "increment": self.decision_increment,
+            "increment": self.increment_for(emotion),
             "decision_id": decision_id,
             "state": public,
         }

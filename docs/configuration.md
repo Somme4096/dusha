@@ -78,9 +78,11 @@ The service loads the file once at startup and prepends it verbatim to every con
 
 | Section | Controls |
 | --- | --- |
-| `dimensions` | One entry per dimension with `neutral`, `floor`, and `tau` in hours. An optional `description` reaches the decision plugin. |
+| `value_range` | The `min` and `max` every value stays inside. Deltas, caps, thresholds, and increments in the file use the same units. |
+| `dimensions` | One entry per dimension with `neutral`, `floor`, and `tau` in hours. An optional `description` reaches the decision plugin. An optional `increment` replaces the default step for that dimension. |
+| `decision` | `increment`, the default step added to the dimension a decision selects. |
 | `negative_dimensions` | Dimensions that a negative delta cannot pull below the current mood. |
-| `silence.rules` | Drift while the user stays silent. Each rule names a dimension and sets `rate_per_hour`, a `cap` above neutral, and an optional `gate_hours` of silence before the rule starts. |
+| `silence.rules` | Drift while the user stays silent. Each rule names a dimension and sets `rate_per_hour`, a `cap` above neutral where the drift stops, and an optional `gate_hours` of silence before the rule starts. Drift never lowers a value that already sits above the cap. |
 | `proactive_sent_deltas` | Deltas applied after a proactive message goes out. |
 | `impact_scale`, `mood_follow_gain`, `affect` | Delta strength and the mood timing (`mood_follow_hours`, `mood_return_hours`). |
 | `prompt` | Which feelings reach the Affect line: `top_n`, `deviation_threshold`, the level cutoffs, and `always_show`, a map of dimension to the minimum value that forces it onto the line. |
@@ -104,7 +106,7 @@ Reference the copies:
 
 ```json
 {
-  "emotions": {"path": "emotions.json", "expected_version": "0.3.0"},
+  "emotions": {"path": "emotions.json", "expected_version": "0.4.0"},
   "prompts": {"path": "prompts.json"}
 }
 ```
@@ -136,13 +138,13 @@ Config overrides patch values and leave structure to `emotions.json`:
 }
 ```
 
-`affect.dimensions` patches `neutral`, `floor`, or `tau` of an existing dimension. `affect.silence` patches or adds a silence rule. `proactive.thresholds` patches the threshold of the triggers for that dimension and fails when the file defines no such trigger. Startup rewrites the legacy keys `affect.silence_<dimension>_per_hour` and `proactive.<dimension>_threshold` into these forms.
+`affect.dimensions` patches `neutral`, `floor`, `tau`, or `increment` of an existing dimension. `affect.silence` patches or adds a silence rule. `proactive.thresholds` patches the threshold of the triggers for that dimension and fails when the file defines no such trigger. Startup rewrites the legacy keys `affect.silence_<dimension>_per_hour` and `proactive.<dimension>_threshold` into these forms.
 
 An override wins over a custom file even when it equals the packaged default, so `config.example.json` carries none. The engine snapshots these values at construction. Mutating the config object later changes nothing.
 
 ## Decision plugins
 
-On each new user message the gateway can invoke one Python decision plugin. The plugin selects at most one emotion dimension from the resolved `emotions.json`. The engine then increases that dimension by `decision.increment`, clamped to the dimension range. No plugin, or a failed or invalid decision, means no decision-driven adjustment. Contact bookkeeping and proactive scheduling still run.
+On each new user message the gateway can invoke one Python decision plugin. The plugin selects at most one emotion dimension from the resolved `emotions.json`. The engine then increases that dimension by its increment from `emotions.json`, clamped to the value range. No plugin, or a failed or invalid decision, means no decision-driven adjustment. Contact bookkeeping and proactive scheduling still run.
 
 Each plugin directory requires `README.md`, `main.py`, `pyproject.toml`, and `uv.lock`. Install `uv` on the gateway's executable search path. The gateway synchronizes locked dependencies into the plugin's dedicated environment during initialization. Every exported operation in `main.py` follows `fn(request, options)`:
 
@@ -160,7 +162,7 @@ Configuration:
   "decision": {
     "module": "my_suite",
     "options": {"endpoint": "http://127.0.0.1:8000"},
-    "increment": 0.1,
+    "increment": null,
     "timeout_seconds": 15,
     "mods_dir": ""
   }
@@ -169,7 +171,7 @@ Configuration:
 
 - `module`: a plain plugin directory name, resolved only under the mods directory. Empty disables the plugin. A name containing a path separator or any non-identifier character is rejected.
 - `options`: passed through to the plugin verbatim.
-- `increment`: the bounded amount added to the selected dimension. Must be finite and in `(0, 1]`. Default `0.1`.
+- `increment`: overrides `decision.increment` from `emotions.json`. `null` keeps the file value. A number must be positive and no larger than the value range span. A per-dimension `increment` in the file still wins for that dimension.
 - `timeout_seconds`: the outer deadline for each decision process. Must be finite and positive. Default `15`. Set it above any HTTP timeout configured in `options`.
 - `mods_dir`: an optional mods directory. Empty uses `<default config dir>/mods`, that is `~/.config/companion-gateway/mods`. A relative value resolves against the config file location.
 

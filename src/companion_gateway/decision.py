@@ -258,7 +258,6 @@ class DecisionProvider:
         self.config = config
         self.decide = load_decider(config)
         decision = getattr(config, "decision", None)
-        self.increment = float(getattr(decision, "increment", 0.1))
         self.options = dict(getattr(decision, "options", {}) or {})
 
     @property

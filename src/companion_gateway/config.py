@@ -138,18 +138,18 @@ class DecisionConfig:
 
     module: str = _DECISION["module"]
     options: dict[str, Any] = field(default_factory=lambda: dict(_DECISION["options"]))
-    increment: float = _DECISION["increment"]
+    increment: float | None = _DECISION["increment"]
     mods_dir: str = _DECISION["mods_dir"]
     timeout_seconds: float = _DECISION["timeout_seconds"]
 
     def __post_init__(self) -> None:
         value = self.increment
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise ValueError("decision.increment must be a finite number in (0, 1]")
-        number = float(value)
-        if not math.isfinite(number) or not 0 < number <= 1:
-            raise ValueError("decision.increment must be a finite number in (0, 1]")
-        self.increment = number
+        if value is not None:
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError("decision.increment must be null or a finite positive number")
+            if not math.isfinite(float(value)) or value <= 0:
+                raise ValueError("decision.increment must be null or a finite positive number")
+            self.increment = float(value)
         timeout = self.timeout_seconds
         if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
             raise ValueError("decision.timeout_seconds must be a finite positive number")

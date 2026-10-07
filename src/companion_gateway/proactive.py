@@ -76,7 +76,9 @@ class ProactiveEngine:
         self.config = config
         self.rules = config.proactive
         self.timezone = ZoneInfo(config.timezone)
-        effective = _emotions.resolve_emotions(service.affect.config, config.proactive)
+        effective = _emotions.resolve_emotions(
+            service.affect.config, config.proactive, config.decision.increment
+        )
         self._emotional = effective["proactive"]
         service.affect.emotions = effective
         service.affect.emotions_fingerprint = _emotions.fingerprint(effective)

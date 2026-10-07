@@ -61,7 +61,8 @@ def test_characterization_default_spec_initial_state_and_knobs(svc, config):
     assert {name: rule["rate_per_hour"] for name, rule in rules.items()} == {
         "longing": 0.04, "anxiety": 0.02, "seeking": 0.02, "dejection": 0.01,
     }
-    assert config.decision.increment == 0.1
+    assert config.decision.increment is None
+    assert service.affect.emotions["decision"] == {"increment": 0.1}
     assert ProactiveConfig().thresholds == {}
     assert service.affect.emotions["proactive"]["triggers"] == DEFAULT_TRIGGERS
 

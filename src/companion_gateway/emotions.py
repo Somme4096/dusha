@@ -85,6 +85,13 @@ def _non_negative(value: Any, path: str) -> float:
     return number
 
 
+def _increment(value: Any, path: str, span: float) -> float:
+    number = _number(value, path)
+    if not 0 < number <= span:
+        raise EmotionsValidationError(f"{path} must be positive and no larger than the value_range span")
+    return number
+
+
 def _dimension(name: Any, path: str, dimensions: dict[str, Any]) -> str:
     if not isinstance(name, str) or name not in dimensions:
         raise EmotionsValidationError(f"{path} references unknown dimension: {name!r}")
@@ -189,6 +196,7 @@ def _upgrade_v2(snapshot: dict[str, Any]) -> dict[str, Any]:
         for name, reason in _V2_TRIGGERS
         if f"{name}_threshold" in proactive and name in dimensions
     ]
+    snapshot.setdefault("decision", default_emotions()["decision"])
     if "appraisal" not in snapshot:
         appraisal = default_emotions()["appraisal"]
         for prototype in appraisal["prototypes"].values():
@@ -214,6 +222,7 @@ def _validate(snapshot: dict[str, Any]) -> dict[str, Any]:
         "impact_scale",
         "mood_follow_gain",
         "appraisal",
+        "decision",
     }
     unknown = sorted(set(snapshot) - known)
     if unknown:
@@ -235,12 +244,13 @@ def _validate(snapshot: dict[str, Any]) -> dict[str, Any]:
         raise EmotionsValidationError("value_range must be an object")
     range_min = _number(value_range.get("min"), "value_range.min")
     range_max = _number(value_range.get("max"), "value_range.max")
-    if (range_min, range_max) != (0.0, 1.0):
-        raise EmotionsValidationError(
-            "value_range must be [0, 1] in this preserve-behavior phase. "
-            "Arbitrary ranges are not supported"
-        )
+    if range_min >= range_max:
+        raise EmotionsValidationError("value_range.min must be below value_range.max")
+    span = range_max - range_min
     snapshot["value_range"] = {"min": range_min, "max": range_max}
+
+    decision = _section(snapshot, "decision", {"increment"})
+    decision["increment"] = _increment(decision.get("increment"), "decision.increment", span)
 
     dimensions = snapshot.get("dimensions")
     if not isinstance(dimensions, dict) or not dimensions:
@@ -260,6 +270,8 @@ def _validate(snapshot: dict[str, Any]) -> dict[str, Any]:
             raise EmotionsValidationError(f"{path} values must be within value_range")
         if "description" in params:
             _string(params["description"], f"{path}.description")
+        if "increment" in params:
+            params["increment"] = _increment(params["increment"], f"{path}.increment", span)
         params["neutral"] = neutral
         params["floor"] = floor
         params["tau"] = tau
@@ -395,7 +407,7 @@ def _merge_overrides(
 
 
 def resolve_emotions(
-    affect_config: Any, proactive_config: Any | None = None
+    affect_config: Any, proactive_config: Any | None = None, decision_increment: float | None = None
 ) -> dict[str, Any]:
     snapshot = default_emotions()
     custom = bool(getattr(affect_config, "emotions_path", ""))
@@ -415,9 +427,11 @@ def resolve_emotions(
         snapshot["dimensions"],
         getattr(affect_config, "dimensions", None),
         "dimensions override",
-        {"neutral", "floor", "tau"},
+        {"neutral", "floor", "tau", "increment"},
         create=False,
     )
+    if decision_increment is not None:
+        snapshot["decision"]["increment"] = decision_increment
     _merge_overrides(
         snapshot["silence"]["rules"],
         getattr(affect_config, "silence", None),

@@ -1,6 +1,6 @@
 {
   "schema_version": 3,
-  "emotion_version": "0.3.0",
+  "emotion_version": "0.4.0",
   "description": "Emotional definitions, change rules, and tuning for the companion state gateway. This file owns every dimension name. Code names none.",
   "value_range": {
     "min": 0.0,
@@ -35,6 +35,9 @@
   },
   "proactive_sent_deltas": {"longing": -0.08, "seeking": -0.05, "anxiety": 0.03},
   "impact_scale": 2.0,
+  "decision": {
+    "increment": 0.1
+  },
   "mood_follow_gain": {
     "min": 0.25,
     "max": 2.5,

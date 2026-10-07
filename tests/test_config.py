@@ -123,7 +123,7 @@ def _custom_service(svc, tmp_path, name, mutations=None, *, version="custom", **
         ("json", '{"port": "abc"}', "port must be int"),
         ("json", '{"proactive": {"enabled": "yes"}}', "enabled must be bool"),
         ("json", '{"memory": {"recent_messages": true}}', "recent_messages must be int"),
-        ("json", '{"decision": {"increment": 2}}', "decision.increment"),
+        ("json", '{"decision": {"increment": -1}}', "decision.increment"),
         ("json", '{"decision": {"bogus": 1}}', r"unknown field\(s\) under decision"),
     ],
 )
@@ -139,7 +139,7 @@ def test_config_rejects_invalid_input(tmp_path, fmt, body, pattern):
     [
         ("json", [
             ("timezone", "Asia/Taipei"),
-            ("decision.increment", 0.1),
+            ("decision.increment", None),
             ("decision.timeout_seconds", 15.0),
             ("proactive.thresholds", {}),
             ("affect.silence", {}),
@@ -249,7 +249,7 @@ def test_decision_mods_dir_and_increment(tmp_path, write_json, monkeypatch):
     assert resolve_mods_dir(load_config(config)) == tmp_path / "env-mods"
 
 
-@pytest.mark.parametrize("increment", [0, -0.1, 1.5, True, "fast", float("inf")])
+@pytest.mark.parametrize("increment", [0, -0.1, True, "fast", float("inf")])
 def test_decision_increment_is_bounded(increment):
     with pytest.raises(ValueError, match="decision.increment"):
         DecisionConfig(increment=increment)
@@ -480,7 +480,7 @@ def test_fingerprints_differ_when_effective_behavior_differs(tmp_path, svc):
 def test_default_emotions_validate_and_fingerprint_is_stable():
     snapshot = default_emotions()
     assert snapshot["schema_version"] == SCHEMA_VERSION
-    assert snapshot["emotion_version"] == "0.3.0"
+    assert snapshot["emotion_version"] == "0.4.0"
     assert len(snapshot["dimensions"]) == 16
     assert "label_deltas" not in snapshot
     assert "label_patterns" not in snapshot
@@ -521,7 +521,10 @@ def test_default_emotions_return_fresh_copies():
         (lambda s: s["prompt"].update(top_n=0), "top_n must be positive"),
         (lambda s: s["prompt"].update(level_high=0.4, level_elevated=0.6), "level_high"),
         (lambda s: s["proactive"]["triggers"][1].update(threshold=5.0), "within value_range"),
-        (lambda s: s.update(value_range={"min": 0.0, "max": 2.0}), r"\[0, 1\]"),
+        (lambda s: s.update(value_range={"min": 1.0, "max": 1.0}), "must be below value_range.max"),
+        (lambda s: s["decision"].update(increment=1.5), "value_range span"),
+        (lambda s: s["dimensions"]["fear"].update(increment=0), "value_range span"),
+        (lambda s: s.pop("decision"), "decision must be an object"),
         (lambda s: s.update(bogus_section={}), "unknown emotions field"),
     ],
 )

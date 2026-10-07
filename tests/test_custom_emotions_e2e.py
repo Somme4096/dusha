@@ -24,6 +24,7 @@ CUSTOM = {
     "silence": {"rules": {"worry": {"rate_per_hour": 0.1, "cap": 0.5}}},
     "proactive_sent_deltas": {"worry": -0.1},
     "impact_scale": 2.0,
+    "decision": {"increment": 0.1},
     "mood_follow_gain": {"min": 0.25, "max": 2.5, "factor": 4.0},
     "prompt": {
         "top_n": 2,
@@ -172,6 +173,90 @@ async def test_http_schema_2_emotions_file_keeps_its_behavior(tmp_path, config, 
         assert affect["base"]["dejection"] == 0.15
         event = (await client.post("/state/v1/proactive/evaluate")).json()["event"]
         assert event["reason"] == "silence"
+
+
+def _scaled(value):
+    if isinstance(value, dict):
+        return {key: _scaled(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_scaled(item) for item in value]
+    return value * 100 if isinstance(value, float) else value
+
+
+async def _decide(app, emotion, now):
+    return app.state.service.affect.record_user_message(
+        message="x", source_message_id=None, decider=lambda **_: emotion, instruction="", now=now
+    )
+
+
+async def test_http_value_range_scales_the_whole_engine(tmp_path, config, write_json):
+    wide = {name: _scaled(CUSTOM[name]) for name in ("dimensions", "silence", "proactive", "decision")}
+    for name, params in CUSTOM["dimensions"].items():
+        wide["dimensions"][name]["tau"] = params["tau"]
+    wide["silence"]["rules"]["worry"] = {"rate_per_hour": 10.0, "cap": 50.0}
+    wide["prompt"] = {**_scaled(CUSTOM["prompt"]), "top_n": 2}
+    wide = {**CUSTOM, **wide, "value_range": {"min": 0.0, "max": 100.0}}
+    wide["proactive_sent_deltas"] = {"worry": -10.0}
+
+    async def run(snapshot, name):
+        config.data_dir = tmp_path / name
+        app = api.create_app(_emotions(config, tmp_path, write_json, snapshot, f"{name}.json"))
+        async with _running_client(app) as client:
+            past = utc_now() - timedelta(hours=4)
+            await _silent_since(app, client, past)
+            for _ in range(3):
+                decision = await _decide(app, "warmth", past)
+            affect = (await client.get("/state/v1/affect")).json()
+            context = (await client.post("/state/v1/context", json={"query": ""})).json()
+            event = (await client.post("/state/v1/proactive/evaluate")).json()["event"]
+            polled = await client.get("/state/v1/proactive/events", params={"consumer": "e2e"})
+            await client.post(
+                f"/state/v1/proactive/events/{polled.json()['events'][0]['id']}/ack",
+                json={"consumer": "e2e", "outcome": "sent"},
+            )
+            after = (await client.get("/state/v1/affect")).json()
+        return decision["increment"], affect, context["context"]["emotion"]["description"], event, after
+
+    unit_step, unit, unit_text, unit_event, unit_after = await run(CUSTOM, "unit")
+    wide_step, scaled, wide_text, wide_event, wide_after = await run(wide, "wide")
+    assert (unit_step, wide_step) == (0.1, 10.0)
+    assert unit_text == wide_text
+    assert unit_event["reason"] == wide_event["reason"] == "worried"
+    for layer in ("base", "mood"):
+        for name in CUSTOM["dimensions"]:
+            assert scaled[layer][name] == pytest.approx(unit[layer][name] * 100, abs=0.5)
+            assert wide_after[layer][name] == pytest.approx(unit_after[layer][name] * 100, abs=0.5)
+    assert scaled["base"]["warmth"] > 55
+
+
+async def test_http_silence_drift_never_lowers_a_raised_feeling(tmp_path, config, write_json):
+    snapshot = json.loads(json.dumps(CUSTOM))
+    snapshot["dimensions"]["worry"]["increment"] = 0.7
+    snapshot["dimensions"]["worry"]["tau"] = 10000
+    app = api.create_app(_emotions(config, tmp_path, write_json, snapshot))
+    async with _running_client(app) as client:
+        past = utc_now() - timedelta(minutes=2)
+        await _silent_since(app, client, past)
+        decision = await _decide(app, "worry", past)
+        assert decision["increment"] == 0.7
+        assert decision["state"]["base"]["worry"] == pytest.approx(0.9, abs=0.001)
+        assert (await _decide(app, "warmth", past))["increment"] == 0.1
+        affect = (await client.get("/state/v1/affect")).json()
+        assert affect["base"]["worry"] == pytest.approx(0.9, abs=0.01)
+
+
+def test_startup_rejects_config_increment_beyond_range(tmp_path, config, write_json):
+    config.decision.increment = 2.0
+    with pytest.raises(ValueError, match="decision.increment.*value_range span"):
+        api.create_app(_emotions(config, tmp_path, write_json, CUSTOM))
+
+
+def test_config_increment_overrides_file_default_but_not_dimension(tmp_path, config, write_json):
+    snapshot = json.loads(json.dumps(CUSTOM))
+    snapshot["dimensions"]["worry"]["increment"] = 0.3
+    config.decision.increment = 0.2
+    affect = api.create_app(_emotions(config, tmp_path, write_json, snapshot)).state.service.affect
+    assert (affect.increment_for("warmth"), affect.increment_for("worry")) == (0.2, 0.3)
 
 
 @pytest.mark.parametrize(

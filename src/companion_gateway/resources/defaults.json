@@ -70,7 +70,7 @@
   "decision": {
     "module": "",
     "options": {},
-    "increment": 0.1,
+    "increment": null,
     "mods_dir": "",
     "timeout_seconds": 15.0
   },
