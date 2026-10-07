@@ -5,7 +5,6 @@ import json
 import logging
 import os
 import queue
-import re
 import signal
 import subprocess
 import threading
@@ -16,7 +15,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from .config import default_config_dir
+from . import plugin_runtime as _runtime
 from .memory_plugin import (
     BackfillIndexResult,
     IndexStatusResult,
@@ -29,10 +28,6 @@ from .memory_plugin import (
 )
 
 logger = logging.getLogger("companion_gateway")
-_MODULE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_REQUIRED_FILES = ("README.md", "main.py", "pyproject.toml", "uv.lock")
-_SYNC_TIMEOUT = 120.0
-_RUN_TIMEOUT = 15.0
 _RESTART_COOLDOWN = 5.0
 _RPC_TIMEOUT_ENV = "SOPHIA_MEMORY_RPC_TIMEOUT_SECONDS"
 
@@ -52,48 +47,37 @@ class _MemoryPluginFailure(MemoryPluginError):
 
 
 def resolve_mods_dir(config: Any) -> Path:
-    env = os.getenv("COMPANION_GATEWAY_MODS_DIR", "")
-    if env:
-        return Path(env).expanduser()
-    plugin = getattr(config, "memory_plugin", None)
-    configured = str(getattr(plugin, "mods_dir", "") or "")
-    return Path(configured).expanduser() if configured else default_config_dir() / "mods"
+    return _runtime.resolve_mods_dir(config, "memory_plugin")
 
 
-def _inside(path: Path, parent: Path) -> bool:
-    try:
-        path.relative_to(parent)
-    except ValueError:
-        return False
-    return True
+_inside = _runtime.inside
 
 
 def _suite(module_name: str, mods_dir: Path) -> Path:
-    if not _MODULE_NAME.fullmatch(module_name):
+    if not _runtime.MODULE_NAME.fullmatch(module_name):
         raise MemoryPluginError(f"memory_plugin.module must contain a plain plugin name, got {module_name!r}")
     root = mods_dir.expanduser().resolve()
     suite = (root / module_name).resolve()
     if not _inside(suite, root) or not suite.is_dir():
         raise MemoryPluginError(f"memory plugin not found: {root / module_name}")
-    for name in _REQUIRED_FILES:
+    for name in _runtime.REQUIRED_FILES:
         item = suite / name
         if not item.is_file() or not _inside(item.resolve(), suite):
             raise MemoryPluginError(f"invalid memory plugin: missing or escaping {name}")
     return suite
 
 
-def _sync(suite: Path) -> None:
+def _sync(suite: Path, passthrough: Any = ()) -> None:
     venv = suite / ".venv"
     if venv.is_symlink() or (venv.exists() and not _inside(venv.resolve(), suite)):
         raise MemoryPluginError("memory plugin has an escaping .venv")
-    env = os.environ.copy()
-    env["PYTHONNOUSERSITE"] = "1"
+    env = _runtime.plugin_environment(passthrough)
     env["UV_PROJECT_ENVIRONMENT"] = str(suite / ".venv")
     try:
         result = subprocess.run(
             ["uv", "--no-config", "sync", "--locked", "--no-dev", "--project", str(suite)],
             cwd=suite, env=env, stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=_SYNC_TIMEOUT,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=_runtime.SYNC_TIMEOUT,
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -118,8 +102,15 @@ def _load(config: Any) -> _SuiteMemory:
     if not module:
         raise MemoryPluginError("memory plugin is not configured")
     suite = _suite(module, resolve_mods_dir(config))
-    _sync(suite)
-    return _SuiteMemory(suite, Path(config.database_path), float(getattr(plugin, "timeout_seconds", _RUN_TIMEOUT)), dict(getattr(plugin, "options", {}) or {}))
+    passthrough = tuple(getattr(plugin, "env_passthrough", ()) or ())
+    _sync(suite, passthrough)
+    return _SuiteMemory(
+        suite,
+        Path(config.database_path),
+        float(plugin.timeout_seconds),
+        dict(getattr(plugin, "options", {}) or {}),
+        passthrough,
+    )
 
 
 def _terminate(proc: subprocess.Popen[bytes]) -> None:
@@ -141,8 +132,16 @@ _RESULTS: dict[str, type[Any]] = {
 
 
 class _SuiteMemory:
-    def __init__(self, suite: Path, database: Path, timeout: float, options: dict[str, Any]):
+    def __init__(
+        self,
+        suite: Path,
+        database: Path,
+        timeout: float,
+        options: dict[str, Any],
+        passthrough: tuple[str, ...] = (),
+    ):
         self.suite, self.database, self.timeout, self.options = suite, database, timeout, options
+        self.passthrough = passthrough
         self.proc: subprocess.Popen[bytes] | None = None
         self.responses: queue.Queue[Any] = queue.Queue()
         self.lock = threading.Lock()
@@ -157,7 +156,7 @@ class _SuiteMemory:
                 [str(_python_path(self.suite)), "-I", str(Path(__file__).with_name("memory_worker.py")), str(self.suite), str(self.database)],
                 cwd=self.suite, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 start_new_session=os.name != "nt",
-                env={**os.environ, "PYTHONNOUSERSITE": "1", _RPC_TIMEOUT_ENV: str(self.timeout)},
+                env={**_runtime.plugin_environment(self.passthrough), _RPC_TIMEOUT_ENV: str(self.timeout)},
             )
         except OSError as exc:
             raise MemoryPluginError(f"memory plugin could not start: {exc}") from exc

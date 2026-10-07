@@ -21,18 +21,11 @@ _EMOTIONS = _emotions.default_emotions()
 _UPSTREAM = _DEFAULTS["upstream"]
 _API_OPENAI = _DEFAULTS["api_openai"]
 _MEMORY = _DEFAULTS["memory"]
-_EMBEDDING = _DEFAULTS.get("embedding", _MEMORY["embedding"])
+_EMBEDDING = _DEFAULTS["embedding"]
 _EVERGREEN = _DEFAULTS["evergreen"]
 _DECISION = _DEFAULTS["decision"]
 _STORAGE = _DEFAULTS["storage"]
-_MEMORY_PLUGIN = _DEFAULTS.get("memory_plugin", {
-    "module": "",
-    "options": {},
-    "mods_dir": "",
-    "timeout_seconds": 15.0,
-    "ingest_batch_size": 50,
-    "ingest_backfill_interval_seconds": 30,
-})
+_MEMORY_PLUGIN = _DEFAULTS["memory_plugin"]
 _AFFECT_KNOBS = _EMOTIONS["affect"]
 _LEGACY_SILENCE_RATE = re.compile(r"silence_(.+)_per_hour")
 _LEGACY_THRESHOLD = re.compile(r"(.+)_threshold")
@@ -57,6 +50,11 @@ def _fill_unset(config_obj: Any, knobs: dict[str, Any], explicit_attr: str) -> N
         else:
             explicit.add(name)
     setattr(config_obj, explicit_attr, frozenset(explicit))
+
+
+def _check_env_names(value: Any, name: str) -> None:
+    if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
+        raise ValueError(f"{name} must be an array of environment variable names")
 
 
 @dataclass(slots=True)
@@ -141,8 +139,10 @@ class DecisionConfig:
     increment: float | None = _DECISION["increment"]
     mods_dir: str = _DECISION["mods_dir"]
     timeout_seconds: float = _DECISION["timeout_seconds"]
+    env_passthrough: list[str] = field(default_factory=lambda: list(_DECISION["env_passthrough"]))
 
     def __post_init__(self) -> None:
+        _check_env_names(self.env_passthrough, "decision.env_passthrough")
         value = self.increment
         if value is not None:
             if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -167,8 +167,10 @@ class MemoryPluginConfig:
     timeout_seconds: float = _MEMORY_PLUGIN["timeout_seconds"]
     ingest_batch_size: int = _MEMORY_PLUGIN["ingest_batch_size"]
     ingest_backfill_interval_seconds: int = _MEMORY_PLUGIN["ingest_backfill_interval_seconds"]
+    env_passthrough: list[str] = field(default_factory=lambda: list(_MEMORY_PLUGIN["env_passthrough"]))
 
     def __post_init__(self) -> None:
+        _check_env_names(self.env_passthrough, "memory_plugin.env_passthrough")
         value = self.timeout_seconds
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ValueError("memory_plugin.timeout_seconds must be a finite positive number")
@@ -524,19 +526,14 @@ def _validate_packaged_defaults() -> None:
     for key in ("data_dir", "host", "port", "timezone", "api_token_env"):
         _validate_value(f"packaged defaults {key}", _DEFAULTS[key], hints[key])
     _strict_section(UpstreamConfig, _DEFAULTS["upstream"], "packaged defaults upstream")
-    _strict_section(
-        EmbeddingConfig, _DEFAULTS.get("embedding", _EMBEDDING), "packaged defaults embedding"
-    )
+    _strict_section(EmbeddingConfig, _DEFAULTS["embedding"], "packaged defaults embedding")
     _strict_section(ApiOpenAIConfig, _DEFAULTS["api_openai"], "packaged defaults api_openai")
     _memory_section(_DEFAULTS["memory"])
     _strict_section(EvergreenConfig, _DEFAULTS["evergreen"], "packaged defaults evergreen")
     _strict_section(StorageConfig, _DEFAULTS["storage"], "packaged defaults storage")
     _strict_section(ProactiveConfig, _DEFAULTS["proactive"], "packaged defaults proactive")
     _strict_section(DecisionConfig, _DEFAULTS["decision"], "packaged defaults decision")
-    _strict_section(
-        MemoryPluginConfig, _DEFAULTS.get("memory_plugin", _MEMORY_PLUGIN),
-        "packaged defaults memory_plugin",
-    )
+    _strict_section(MemoryPluginConfig, _DEFAULTS["memory_plugin"], "packaged defaults memory_plugin")
     _strict_section(
         IdentityPromptConfig, _DEFAULTS["identity_prompt"], "packaged defaults identity_prompt"
     )

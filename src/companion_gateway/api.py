@@ -95,7 +95,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         if service.memory.enabled:
             tasks.append(
                 asyncio.create_task(
-                    _index_backfill_scheduler(service, cfg.memory.embedding.backfill_interval_seconds),
+                    _index_backfill_scheduler(service, cfg.embedding.backfill_interval_seconds),
                     name="memory-plugin-backfill",
                 )
             )

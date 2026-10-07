@@ -21,7 +21,7 @@ def main() -> int:
     request = SimpleNamespace(**payload["request"])
     with contextlib.redirect_stdout(_BoundedOutput()):
         sys.path.insert(0, str(suite))
-        namespace: dict[str, object] = {"__name__": "__main__", "__file__": str(suite / "main.py")}
+        namespace: dict[str, object] = {"__name__": "companion_decision_plugin", "__file__": str(suite / "main.py")}
         exec((suite / "main.py").read_text(encoding="utf-8"), namespace)
         decide = namespace.get("decide")
         if not callable(decide):

@@ -51,7 +51,8 @@
     "timeout_seconds": 15,
     "ingest_batch_size": 50,
     "ingest_backfill_interval_seconds": 30,
-    "options": {}
+    "options": {},
+    "env_passthrough": []
   },
   "storage": {
     "enabled": true
@@ -78,6 +79,7 @@
     "options": {},
     "increment": null,
     "timeout_seconds": 15,
-    "mods_dir": ""
+    "mods_dir": "",
+    "env_passthrough": []
   }
 }

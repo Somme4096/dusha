@@ -29,17 +29,7 @@
     "lexical_candidates": 24,
     "semantic_candidates": 24,
     "rrf_k": 60,
-    "plugin_context_max_chars": 3000,
-    "embedding": {
-      "base_url": "",
-      "api_key_env": "EMBEDDING_API_KEY",
-      "model": "",
-      "dimensions": null,
-      "timeout_seconds": 10.0,
-      "batch_size": 32,
-      "backfill_interval_seconds": 10,
-      "failure_cooldown_seconds": 60
-    }
+    "plugin_context_max_chars": 3000
   },
   "embedding": {
     "base_url": "",
@@ -65,14 +55,16 @@
     "mods_dir": "",
     "timeout_seconds": 15.0,
     "ingest_batch_size": 50,
-    "ingest_backfill_interval_seconds": 30
+    "ingest_backfill_interval_seconds": 30,
+    "env_passthrough": []
   },
   "decision": {
     "module": "",
     "options": {},
     "increment": null,
     "mods_dir": "",
-    "timeout_seconds": 15.0
+    "timeout_seconds": 15.0,
+    "env_passthrough": []
   },
   "proactive": {
     "enabled": true,

@@ -4,7 +4,6 @@ import copy
 import json
 import logging
 import os
-import re
 import signal
 import threading
 import time
@@ -13,15 +12,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from .config import default_config_dir
+from . import plugin_runtime as _runtime
+from .config import default_config_dir  # noqa: F401
 
 logger = logging.getLogger("companion_gateway")
 
-_MODULE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_REQUIRED_FILES = ("README.md", "main.py", "pyproject.toml", "uv.lock")
-_SYNC_TIMEOUT = 120.0
-_RUN_TIMEOUT = 15.0
 _MAX_OUTPUT = 1_048_576
+_STDERR_LOG_LINES = 20
 
 
 @dataclass(frozen=True)
@@ -42,26 +39,14 @@ class DecisionPluginError(RuntimeError):
 
 
 def resolve_mods_dir(config: Any) -> Path:
-    env = os.getenv("COMPANION_GATEWAY_MODS_DIR", "")
-    if env:
-        return Path(env).expanduser()
-    decision = getattr(config, "decision", None)
-    configured = str(getattr(decision, "mods_dir", "") or "")
-    if configured:
-        return Path(configured).expanduser()
-    return default_config_dir() / "mods"
+    return _runtime.resolve_mods_dir(config, "decision")
 
 
-def _inside(path: Path, parent: Path) -> bool:
-    try:
-        path.relative_to(parent)
-    except ValueError:
-        return False
-    return True
+_inside = _runtime.inside
 
 
 def _suite(module_name: str, mods_dir: Path) -> Path:
-    if not _MODULE_NAME.fullmatch(module_name):
+    if not _runtime.MODULE_NAME.fullmatch(module_name):
         raise DecisionPluginError(
             f"decision.module must contain a plain plugin name, got {module_name!r}"
         )
@@ -69,19 +54,12 @@ def _suite(module_name: str, mods_dir: Path) -> Path:
     suite = (root / module_name).resolve()
     if not _inside(suite, root) or not suite.is_dir():
         raise DecisionPluginError(f"decision plugin not found: {root / module_name}")
-    for name in _REQUIRED_FILES:
+    for name in _runtime.REQUIRED_FILES:
         item = suite / name
         resolved = item.resolve()
         if not item.is_file() or not _inside(resolved, suite):
             raise DecisionPluginError(f"invalid decision plugin: missing or escaping {name}")
     return suite
-
-
-def _environment() -> dict[str, str]:
-    allowed = {"PATH", "HOME", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "LC_CTYPE", "SYSTEMROOT"}
-    result = {key: value for key, value in os.environ.items() if key in allowed}
-    result["PYTHONNOUSERSITE"] = "1"
-    return result
 
 
 def _python_path(suite: Path) -> Path:
@@ -164,21 +142,21 @@ def _run_bounded(
     return returncode, bytes(streams[0]), bytes(streams[1])
 
 
-def _sync(suite: Path) -> None:
+def _sync(suite: Path, passthrough: Any = ()) -> None:
     environment_path = suite / ".venv"
     if environment_path.exists() or environment_path.is_symlink():
         if environment_path.is_symlink() or not environment_path.is_dir():
             raise DecisionPluginError("decision plugin environment target is invalid")
         if not _inside(environment_path.resolve(), suite):
             raise DecisionPluginError("decision plugin environment escapes plugin")
-    environment = _environment()
+    environment = _runtime.plugin_environment(passthrough)
     environment["UV_PROJECT_ENVIRONMENT"] = str(environment_path)
     try:
         returncode, _, _ = _run_bounded(
             ["uv", "--no-config", "sync", "--locked", "--no-dev", "--project", str(suite)],
             cwd=suite,
             env=environment,
-            timeout=_SYNC_TIMEOUT,
+            timeout=_runtime.SYNC_TIMEOUT,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
         raise DecisionPluginError(f"decision plugin initialization failed: {exc}") from exc
@@ -190,14 +168,17 @@ def _sync(suite: Path) -> None:
         raise DecisionPluginError("decision plugin environment was not created")
 
 
-def _load_decider(module_name: str, mods_dir: Path, timeout: float) -> Callable[..., Any]:
+def _load_decider(
+    module_name: str, mods_dir: Path, timeout: float, passthrough: Any = ()
+) -> Callable[..., Any]:
     suite = _suite(module_name, mods_dir)
-    _sync(suite)
-    return _SuiteDecider(suite, timeout)
+    _sync(suite, passthrough)
+    return _SuiteDecider(suite, timeout, passthrough)
 
 
 class _SuiteDecider:
-    def __init__(self, suite: Path, timeout: float):
+    def __init__(self, suite: Path, timeout: float, passthrough: Any = ()):
+        self.passthrough = tuple(passthrough or ())
         self.suite = suite
         self.python = _python_path(suite)
         self.worker = Path(__file__).with_name("decision_worker.py").resolve()
@@ -218,13 +199,15 @@ class _SuiteDecider:
             returncode, stdout, stderr = _run_bounded(
                 [str(self.python), "-I", str(self.worker), str(self.suite)],
                 cwd=self.suite,
-                env=_environment(),
+                env=_runtime.plugin_environment(self.passthrough),
                 timeout=self.timeout,
                 input_data=payload.encode("utf-8"),
             )
         except OSError as exc:
             raise DecisionPluginError(f"decision plugin could not start: {exc}") from exc
         if len(stdout) > _MAX_OUTPUT or len(stderr) > _MAX_OUTPUT or returncode != 0:
+            for line in stderr.decode("utf-8", "replace").strip().splitlines()[-_STDERR_LOG_LINES:]:
+                logger.warning("decision plugin stderr: %s", line)
             raise DecisionPluginError("decision plugin failed")
         try:
             result = json.loads(stdout.decode("utf-8"))
@@ -246,7 +229,8 @@ def load_decider(config: Any) -> Callable[..., Any] | None:
         return _load_decider(
             module_name,
             resolve_mods_dir(config),
-            float(getattr(decision, "timeout_seconds", _RUN_TIMEOUT)),
+            float(decision.timeout_seconds),
+            getattr(decision, "env_passthrough", ()),
         )
     except Exception:
         logger.exception("failed to initialize decision plugin %r", module_name)
