@@ -46,6 +46,12 @@
     "max_items": 32,
     "max_chars": 4000
   },
+  "memo": {
+    "max_items": 10,
+    "max_chars": 2000,
+    "text_max_chars": 4000,
+    "reason_max_chars": 1000
+  },
   "storage": {
     "enabled": true
   },

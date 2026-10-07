@@ -251,3 +251,32 @@ async def test_http_openapi_version_follows_the_package(config):
     async with _running_client(app) as client:
         document = await client.get("/openapi.json")
     assert document.json()["info"]["version"] == metadata.version("companion-state-gateway")
+
+
+async def test_http_memo_limits_follow_config_and_default_data_dir_sits_beside_config(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    elsewhere = tmp_path / "cwd"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    path = home / "config.json"
+    path.write_text(
+        json.dumps({"memo": {"max_items": 1, "text_max_chars": 12, "reason_max_chars": 5}}), encoding="utf-8"
+    )
+    config = load_config(path)
+    assert config.data_dir == home / "data"
+    app = api.create_app(config)
+    async with _running_client(app) as client:
+        long = await client.post("/state/v1/memo/add", json={"text": "thirteen char"})
+        first = await client.post("/state/v1/memo/add", json={"text": "first memo"})
+        second = await client.post("/state/v1/memo/add", json={"text": "second memo"})
+        context = await client.post("/state/v1/context", json={"query": ""})
+        wordy = await client.post(
+            f"/state/v1/memo/{first.json()['memo']['id']}/done", json={"reason": "too long"}
+        )
+    assert (long.status_code, first.status_code, second.status_code) == (422, 200, 200)
+    assert "exceeds 12 characters" in long.json()["detail"]
+    assert "first memo" in context.json()["injection"]
+    assert "second memo" not in context.json()["injection"]
+    assert wordy.status_code == 422
+    assert not (elsewhere / "data").exists()

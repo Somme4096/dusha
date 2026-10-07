@@ -5,8 +5,6 @@ from typing import Any
 from .serialization import safe_json
 
 CONTEXT_VERSION = 1
-_MEMO_MAX_ITEMS = 10
-_MEMO_MAX_CHARS = 2000
 
 
 class ContextBudgetError(ValueError):
@@ -25,6 +23,8 @@ class ContextComposer:
         emotions_fingerprint: str,
         prompts_fingerprint: str,
         plugin_context_max_chars: int = 0,
+        memo_max_items: int = 0,
+        memo_max_chars: int = 0,
     ) -> None:
         self.prompts = prompts
         self.budget = int(budget)
@@ -34,6 +34,8 @@ class ContextComposer:
         self.emotions_fingerprint = emotions_fingerprint
         self.prompts_fingerprint = prompts_fingerprint
         self.plugin_context_max_chars = int(plugin_context_max_chars)
+        self.memo_max_items = int(memo_max_items)
+        self.memo_max_chars = int(memo_max_chars)
 
     def _instructions_and_emotion(
         self, affect_snapshot: dict[str, Any], affect_text: str
@@ -141,9 +143,9 @@ class ContextComposer:
                 break
 
         used_memos: list[dict[str, Any]] = []
-        for note in list(memo_notes or [])[:_MEMO_MAX_ITEMS]:
+        for note in list(memo_notes or [])[: self.memo_max_items]:
             trial = self._memo_block(used_memos + [note])
-            if len(trial) > _MEMO_MAX_CHARS:
+            if len(trial) > self.memo_max_chars:
                 break
             if mandatory_len + evergreen_len + len(trial) <= self.budget:
                 used_memos = used_memos + [note]

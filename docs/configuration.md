@@ -6,7 +6,7 @@ Copy the example and edit it:
 cp config.example.json config.json
 ```
 
-`config.example.json` at the repository root is the complete, authoritative example. Packaged defaults live in `defaults.json` and `emotions.json` inside the installed package. The runtime reads those files directly, so Python duplicates no default value. Treat the example and the packaged JSON as the full field list. This page explains the settings that change behavior.
+`config.example.json` at the repository root lists every setting with its packaged value, except the emotion overrides described below. Packaged defaults live in `defaults.json` and `emotions.json` inside the installed package. The runtime reads those files directly and Python keeps no second copy. This page explains the settings that change behavior.
 
 ## Config format, lookup, and path rules
 
@@ -22,13 +22,13 @@ Config lookup order:
 
 The loader never merges configuration files.
 
-Parsing is strict. Duplicate keys, unknown fields, `NaN`, `Infinity`, JSONC comments, and wrong types raise an actionable error.
+Parsing is strict. Duplicate keys, unknown fields, `NaN`, `Infinity`, JSONC comments, wrong types, out-of-range numbers, and an unknown `timezone` raise an actionable error.
 
 Startup migrates legacy keys once and rewrites the file as canonical JSON. The renames are `memory.child_chars` to `memory.chunk_max_chars`, `memory.child_overlap_chars` to `memory.chunk_overlap_chars`, `proactive.minimum_silence_minutes` to `proactive.min_silence_minutes`, and `proactive.failed_retry_minutes` to `proactive.retry_delay_minutes`. A `memory.embedding` block moves to the top-level `embedding`. The loader drops `semantic_enabled` and `semantic_min_similarity`. A canonical value wins when both names appear. Later starts leave the migrated file untouched.
 
 Path rules:
 
-- JSON: `data_dir`, `emotions.path`, `identity_prompt.path`, `prompts.path`, and `decision.mods_dir` resolve against the config file directory.
+- `data_dir`, `emotions.path`, `identity_prompt.path`, `prompts.path`, `decision.mods_dir`, and `memory_plugin.mods_dir` resolve against the config file directory. An omitted `data_dir` becomes `data` beside the config file.
 - Absolute paths pass through unchanged.
 
 ## Core settings
@@ -174,8 +174,9 @@ Configuration:
 - `increment`: overrides `decision.increment` from `emotions.json`. `null` keeps the file value. A number must be positive and no larger than the value range span. A per-dimension `increment` in the file still wins for that dimension.
 - `timeout_seconds`: the outer deadline for each decision process. Must be finite and positive. Default `15`. Set it above any HTTP timeout configured in `options`.
 - `mods_dir`: an optional mods directory. Empty uses `<default config dir>/mods`, that is `~/.config/companion-gateway/mods`. A relative value resolves against the config file location.
+- `env_passthrough`: names of environment variables the plugin may read, on top of the basic system set. Default empty. List a proxy or certificate variable here when the plugin needs one.
 
-Memory plugins use the same fields and an operation-based `fn(request, options)` contract. `memory_plugin.module` defaults to empty, which disables the plugin. A configured name loads that plugin directory from the mods directory:
+Memory plugins take `module`, `options`, `mods_dir`, `timeout_seconds`, and `env_passthrough` with the same meaning, and use an operation-based `fn(request, options)` contract. `memory_plugin.module` defaults to empty, which disables the plugin. A configured name loads that plugin directory from the mods directory:
 
 ```json
 {
@@ -194,9 +195,9 @@ The gateway stores messages and facts itself. A memory plugin adds retrieval and
 
 The EverOS plugin shows the intended split. It owns its outbox, sidecar delivery, and episodic extraction, and it never creates or migrates the core message or fact tables. See [examples/mods/everos-memory](../examples/mods/everos-memory/README.md) and [examples/mods/README.md](../examples/mods/README.md).
 
-`COMPANION_GATEWAY_MODS_DIR` overrides `decision.mods_dir` when set. This is the recommended way to test an isolated mods tree without touching the live configuration.
+`COMPANION_GATEWAY_MODS_DIR` overrides both `decision.mods_dir` and `memory_plugin.mods_dir` when set. This is the recommended way to test an isolated mods tree without touching the live configuration.
 
-Decision plugins are trusted child processes. The runner uses the plugin's dedicated `uv` environment, with inherited OS permissions and no container or OS sandbox. Only install plugins you wrote or reviewed. A plugin that fails to load, raises, or returns a malformed result is logged and ignored. Message ingest keeps working. HTTP adapters may define explicit options such as credentials and an optional literal-IP `allowed_ips` list. When present, every request and redirect must remain on an allowed literal address.
+Plugins are trusted child processes. The runner uses the plugin's dedicated `uv` environment, with inherited OS permissions and no container or OS sandbox. Only install plugins you wrote or reviewed. A plugin that fails to load, raises, or returns a malformed result is logged with its error output and ignored. Message ingest keeps working. HTTP adapters may define explicit options such as credentials and an optional literal-IP `allowed_ips` list. When present, every request and redirect must remain on an allowed literal address.
 
 The default `decision_instruction` asks the plugin to choose the companion's own emotional response to the message, not to classify the speaker's emotion. Replace it with the `prompts` overlay when you want different selection criteria.
 
@@ -204,7 +205,7 @@ The default `decision_instruction` asks the plugin to choose the companion's own
 
 Core retrieval is lexical. The gateway searches the built-in message store with SQLite FTS5. It loads no vector extension. `memory.recent_messages`, `memory.search_hits`, and `memory.context_messages` tune how much history and adjacent context the injection carries.
 
-These fields stay valid on read for backward compatibility, and core ignores them: `memory.retrieval_mode`, `child_chars`, `child_overlap_chars`, `lexical_candidates`, `semantic_candidates`, `rrf_k`, and `semantic_min_similarity`. The loader rewrites them to canonical names on first load. One field still matters. `embedding.backfill_interval_seconds` sets the interval for the plugin index backfill loop, which runs only when a memory plugin is configured.
+Core ignores these fields and keeps them valid on read for backward compatibility: `memory.retrieval_mode`, `chunk_max_chars`, `chunk_overlap_chars`, `lexical_candidates`, `semantic_candidates`, and `rrf_k`. The loader renames `child_chars` and `child_overlap_chars` to the `chunk_*` names and deletes `semantic_enabled` and `semantic_min_similarity`. One field still matters. `embedding.backfill_interval_seconds` sets the interval for the plugin index backfill loop, which runs only when a memory plugin is configured.
 
 ## Shared embedding and semantic affect
 
@@ -236,6 +237,8 @@ companion-gateway memory index rebuild
 With no plugin these commands report lexical status. With a plugin they call the plugin's `status`, `backfill_once`, and `rebuild_chunks` operations, and `memory index backfill` may need the `embedding.backfill_interval_seconds` cadence to catch up. `memory index rebuild` also rebuilds the core FTS5 index.
 
 `memory.injection_max_chars` caps the assembled context. Identity and the companion state block never truncate. If they exceed the budget, the context endpoint returns 422. Evergreen facts, plugin context, and session records fill the remaining space. `evergreen.enabled` toggles the fact block. `evergreen.max_items` and `evergreen.max_chars` bound it.
+
+The `memo` section bounds agent memos. `max_items` and `max_chars` cap the memo block in the injection. `text_max_chars` and `reason_max_chars` cap what the memo routes accept.
 
 ## Proactive scheduling
 

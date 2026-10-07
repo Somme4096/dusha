@@ -8,6 +8,7 @@ import stat
 import tempfile
 import types as _types
 import typing
+import zoneinfo
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,7 @@ _API_OPENAI = _DEFAULTS["api_openai"]
 _MEMORY = _DEFAULTS["memory"]
 _EMBEDDING = _DEFAULTS["embedding"]
 _EVERGREEN = _DEFAULTS["evergreen"]
+_MEMO = _DEFAULTS["memo"]
 _DECISION = _DEFAULTS["decision"]
 _STORAGE = _DEFAULTS["storage"]
 _MEMORY_PLUGIN = _DEFAULTS["memory_plugin"]
@@ -39,6 +41,7 @@ def default_config_dir() -> Path:
     return Path(base) / "companion-gateway"
 
 _UNSET: Any = _emotions.UNSET
+_EMOTIONS_FILE_FIELDS = {"emotions_path", "expected_emotion_version"}
 
 
 def _fill_unset(config_obj: Any, knobs: dict[str, Any], explicit_attr: str) -> None:
@@ -52,6 +55,56 @@ def _fill_unset(config_obj: Any, knobs: dict[str, Any], explicit_attr: str) -> N
     setattr(config_obj, explicit_attr, frozenset(explicit))
 
 
+_BOUNDS: dict[str, dict[str, tuple[float | None, float | None]]] = {
+    "upstream": {"timeout_seconds": (0, None)},
+    "embedding": {
+        "dimensions": (1, None),
+        "timeout_seconds": (0, None),
+        "batch_size": (1, None),
+        "backfill_interval_seconds": (1, None),
+        "failure_cooldown_seconds": (0, None),
+    },
+    "memory": {
+        "recent_messages": (0, None),
+        "search_hits": (0, None),
+        "context_messages": (0, None),
+        "injection_max_chars": (1, None),
+        "plugin_context_max_chars": (0, None),
+    },
+    "evergreen": {"max_items": (0, None), "max_chars": (0, None)},
+    "memo": {
+        "max_items": (0, 500),
+        "max_chars": (0, None),
+        "text_max_chars": (1, None),
+        "reason_max_chars": (1, None),
+    },
+    "proactive": {
+        "poll_interval_seconds": (1, None),
+        "min_silence_minutes": (0, None),
+        "cooldown_minutes": (0, None),
+        "max_per_day": (0, None),
+        "max_unanswered": (0, None),
+        "quiet_start_hour": (0, 23),
+        "quiet_end_hour": (0, 23),
+        "lease_seconds": (1, None),
+        "retry_delay_minutes": (0, None),
+    },
+}
+_EXCLUSIVE_ZERO = {"timeout_seconds"}
+
+
+def _check_bounds(section: Any, name: str) -> None:
+    for key, (low, high) in _BOUNDS[name].items():
+        value = getattr(section, key)
+        if value is None:
+            continue
+        below = low is not None and (value <= low if key in _EXCLUSIVE_ZERO else value < low)
+        if below or (high is not None and value > high) or not math.isfinite(value):
+            edge = "above" if key in _EXCLUSIVE_ZERO else "at least"
+            limit = f"{edge} {low}" + (f" and at most {high}" if high is not None else "")
+            raise ValueError(f"{name}.{key} must be {limit}")
+
+
 def _check_env_names(value: Any, name: str) -> None:
     if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
         raise ValueError(f"{name} must be an array of environment variable names")
@@ -62,6 +115,9 @@ class UpstreamConfig:
     base_url: str = _UPSTREAM["base_url"]
     api_key_env: str = _UPSTREAM["api_key_env"]
     timeout_seconds: float = _UPSTREAM["timeout_seconds"]
+
+    def __post_init__(self) -> None:
+        _check_bounds(self, "upstream")
 
 
 @dataclass(slots=True)
@@ -80,6 +136,9 @@ class EmbeddingConfig:
     backfill_interval_seconds: int = _EMBEDDING["backfill_interval_seconds"]
     failure_cooldown_seconds: int = _EMBEDDING["failure_cooldown_seconds"]
 
+    def __post_init__(self) -> None:
+        _check_bounds(self, "embedding")
+
 
 @dataclass(slots=True)
 class MemoryConfig:
@@ -96,6 +155,9 @@ class MemoryConfig:
     plugin_context_max_chars: int = _MEMORY["plugin_context_max_chars"]
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
 
+    def __post_init__(self) -> None:
+        _check_bounds(self, "memory")
+
     @property
     def child_chars(self) -> int:
         return self.chunk_max_chars
@@ -110,6 +172,20 @@ class EvergreenConfig:
     enabled: bool = _EVERGREEN["enabled"]
     max_items: int = _EVERGREEN["max_items"]
     max_chars: int = _EVERGREEN["max_chars"]
+
+    def __post_init__(self) -> None:
+        _check_bounds(self, "evergreen")
+
+
+@dataclass(slots=True)
+class MemoConfig:
+    max_items: int = _MEMO["max_items"]
+    max_chars: int = _MEMO["max_chars"]
+    text_max_chars: int = _MEMO["text_max_chars"]
+    reason_max_chars: int = _MEMO["reason_max_chars"]
+
+    def __post_init__(self) -> None:
+        _check_bounds(self, "memo")
 
 
 @dataclass(slots=True)
@@ -200,6 +276,9 @@ class ProactiveConfig:
     lease_seconds: int = _PROACTIVE["lease_seconds"]
     retry_delay_minutes: int = _PROACTIVE["retry_delay_minutes"]
 
+    def __post_init__(self) -> None:
+        _check_bounds(self, "proactive")
+
     @property
     def minimum_silence_minutes(self) -> int:
         return self.min_silence_minutes
@@ -235,6 +314,7 @@ class AppConfig:
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     evergreen: EvergreenConfig = field(default_factory=EvergreenConfig)
+    memo: MemoConfig = field(default_factory=MemoConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
     affect: AffectConfig = field(default_factory=lambda: AffectConfig())
     proactive: ProactiveConfig = field(default_factory=lambda: ProactiveConfig())
@@ -244,6 +324,12 @@ class AppConfig:
     def __post_init__(self) -> None:
         if self.memory_plugin.module and not self.storage.enabled:
             raise ValueError("memory_plugin.module requires storage.enabled")
+        if isinstance(self.port, bool) or not 0 <= self.port <= 65535:
+            raise ValueError("port must be at least 0 and at most 65535")
+        try:
+            zoneinfo.ZoneInfo(self.timezone)
+        except (zoneinfo.ZoneInfoNotFoundError, ValueError) as error:
+            raise ValueError(f"timezone is not a known IANA zone: {self.timezone!r}") from error
 
     @property
     def database_path(self) -> Path:
@@ -406,6 +492,12 @@ def _app_config_from_raw(raw: dict[str, Any], source_dir: Path) -> AppConfig:
     if unknown:
         raise ValueError(f"unknown top-level field(s): {unknown}")
 
+    affect_raw = raw.get("affect")
+    misplaced = sorted(set(affect_raw) & _EMOTIONS_FILE_FIELDS) if isinstance(affect_raw, dict) else []
+    if misplaced:
+        raise ValueError(
+            f"unknown field(s) under affect: {misplaced}. Use emotions.path and emotions.expected_version"
+        )
     affect = _strict_section(AffectConfig, raw.get("affect"), "affect")
     identity_prompt = _path_section(
         IdentityPromptConfig, raw.get("identity_prompt"), "identity_prompt", source_dir
@@ -455,6 +547,8 @@ def _app_config_from_raw(raw: dict[str, Any], source_dir: Path) -> AppConfig:
         if not data_dir.is_absolute():
             data_dir = source_dir / data_dir
         kwargs["data_dir"] = data_dir
+    else:
+        kwargs["data_dir"] = source_dir / Path(_DEFAULTS["data_dir"])
 
     embedding = _strict_section(EmbeddingConfig, raw.get("embedding"), "embedding")
     memory = _memory_section(raw.get("memory"))
@@ -469,6 +563,7 @@ def _app_config_from_raw(raw: dict[str, Any], source_dir: Path) -> AppConfig:
         api_openai=_strict_section(ApiOpenAIConfig, raw.get("api_openai"), "api_openai"),
         memory=memory,
         evergreen=_strict_section(EvergreenConfig, raw.get("evergreen"), "evergreen"),
+        memo=_strict_section(MemoConfig, raw.get("memo"), "memo"),
         storage=_strict_section(StorageConfig, raw.get("storage"), "storage"),
         affect=affect,
         proactive=_strict_section(ProactiveConfig, raw.get("proactive"), "proactive"),
@@ -530,6 +625,7 @@ def _validate_packaged_defaults() -> None:
     _strict_section(ApiOpenAIConfig, _DEFAULTS["api_openai"], "packaged defaults api_openai")
     _memory_section(_DEFAULTS["memory"])
     _strict_section(EvergreenConfig, _DEFAULTS["evergreen"], "packaged defaults evergreen")
+    _strict_section(MemoConfig, _DEFAULTS["memo"], "packaged defaults memo")
     _strict_section(StorageConfig, _DEFAULTS["storage"], "packaged defaults storage")
     _strict_section(ProactiveConfig, _DEFAULTS["proactive"], "packaged defaults proactive")
     _strict_section(DecisionConfig, _DEFAULTS["decision"], "packaged defaults decision")

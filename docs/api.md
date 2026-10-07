@@ -100,7 +100,7 @@ Parts 2 to 5 sit between delimiters from `prompts.json`. The `evergreen` and `co
 
 `context` mirrors the same data as fields: `version`, `identity`, `instructions`, `memory`, and `emotion`. `memory` holds `evergreen`, `session`, `memo_notes`, and, when the plugin block made it in, `plugin_context`. A harness that wants fields reads `context`. A harness that wants one string prepends `injection` to its system prompt.
 
-The whole injection must fit `memory.injection_max_chars`. The gateway keeps the identity and the companion state block whole. If those two exceed the budget, the endpoint returns `422` with a detail naming the required size. The optional content then claims the remaining space in a fixed order: evergreen facts, memos, the memory plugin block, and last the session records. Each list stops at the first item that does not fit. Memos count against the budget, up to 10 notes and 2,000 characters for the whole memo block. The gateway shrinks the memory plugin block to the space left, dropping its records before cutting its text, and `memory.plugin_context_max_chars` caps that block before the budget applies.
+The whole injection must fit `memory.injection_max_chars`. The gateway keeps the identity and the companion state block whole. If those two exceed the budget, the endpoint returns `422` with a detail naming the required size. The optional content then claims the remaining space in a fixed order: evergreen facts, memos, the memory plugin block, and last the session records. Each list stops at the first item that does not fit. Memos count against the budget, up to `memo.max_items` notes and `memo.max_chars` characters for the whole memo block (defaults 10 and 2,000). The gateway shrinks the memory plugin block to the space left, dropping its records before cutting its text, and `memory.plugin_context_max_chars` caps that block before the budget applies.
 
 ### 3. Call the provider
 
@@ -170,7 +170,7 @@ Memos are short notes the agent leaves for itself, such as a loose end to pick u
 }
 ```
 
-The gateway trims `text` and returns `422` when it is blank or longer than 4,000 characters. The response wraps the stored row:
+The gateway trims `text` and returns `422` when it is blank or longer than `memo.text_max_chars` (default 4,000). The response wraps the stored row:
 
 ```json
 {
@@ -196,7 +196,7 @@ The gateway trims `text` and returns `422` when it is blank or longer than 4,000
 }
 ```
 
-The response is `{"memo": {...}}` with `status` set to `archived`, the trimmed `reason`, and `archived_at`. An unknown `note_id` returns `404 {"detail":"memo not found"}`. A blank reason, a reason longer than 1,000 characters, or a memo that is already archived returns `422`.
+The response is `{"memo": {...}}` with `status` set to `archived`, the trimmed `reason`, and `archived_at`. An unknown `note_id` returns `404 {"detail":"memo not found"}`. A blank reason, a reason longer than `memo.reason_max_chars` (default 1,000), or a memo that is already archived returns `422`.
 
 ## Memory index status
 

@@ -31,9 +31,6 @@ logger = logging.getLogger("companion_gateway")
 _PLUGIN_BATCH_MAX_BYTES = 512 * 1024
 _PLUGIN_CONTEXT_MAX_RECORDS = 50
 _PLUGIN_CATCH_UP_BATCHES = 20
-_MEMO_CONTEXT_MAX_ITEMS = 10
-_MEMO_TEXT_MAX_CHARS = 4_000
-_MEMO_REASON_MAX_CHARS = 1_000
 
 
 class StorageUnavailableError(RuntimeError):
@@ -86,6 +83,8 @@ class CompanionService:
             emotions_fingerprint=self.affect.emotions_fingerprint,
             prompts_fingerprint=self.prompts_fingerprint,
             plugin_context_max_chars=config.memory.plugin_context_max_chars,
+            memo_max_items=config.memo.max_items,
+            memo_max_chars=config.memo.max_chars,
         )
 
     def _require_storage(self) -> None:
@@ -473,8 +472,8 @@ class CompanionService:
         value = str(reason).strip()
         if not value:
             raise ValueError("reason is required when completing a memo")
-        if len(value) > _MEMO_REASON_MAX_CHARS:
-            raise ValueError("reason exceeds 1000 characters")
+        if len(value) > self.config.memo.reason_max_chars:
+            raise ValueError(f"reason exceeds {self.config.memo.reason_max_chars} characters")
         timestamp = isoformat(now or utc_now())
         with self.database.connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -497,19 +496,20 @@ class CompanionService:
         return dict(row)
 
     def _active_memo_items(self) -> list[dict[str, Any]]:
-        notes = self.memo_list(status="active", limit=_MEMO_CONTEXT_MAX_ITEMS)
+        if self.config.memo.max_items < 1:
+            return []
+        notes = self.memo_list(status="active", limit=self.config.memo.max_items)
         return [
             {"id": note["id"], "text": note["text"], "created_at": note["created_at"]}
             for note in notes
         ]
 
-    @staticmethod
-    def _validate_memo_text(value: str) -> str:
+    def _validate_memo_text(self, value: str) -> str:
         text = str(value).strip()
         if not text:
             raise ValueError("memo text is required")
-        if len(text) > _MEMO_TEXT_MAX_CHARS:
-            raise ValueError("memo text exceeds 4000 characters")
+        if len(text) > self.config.memo.text_max_chars:
+            raise ValueError(f"memo text exceeds {self.config.memo.text_max_chars} characters")
         return text
 
     @staticmethod

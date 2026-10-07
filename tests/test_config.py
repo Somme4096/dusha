@@ -125,6 +125,14 @@ def _custom_service(svc, tmp_path, name, mutations=None, *, version="custom", **
         ("json", '{"memory": {"recent_messages": true}}', "recent_messages must be int"),
         ("json", '{"decision": {"increment": -1}}', "decision.increment"),
         ("json", '{"decision": {"bogus": 1}}', r"unknown field\(s\) under decision"),
+        ("json", '{"affect": {"emotions_path": "x.json"}}', "Use emotions.path"),
+        ("json", '{"proactive": {"quiet_start_hour": 99}}', "proactive.quiet_start_hour must be at least 0"),
+        ("json", '{"proactive": {"poll_interval_seconds": -5}}', "proactive.poll_interval_seconds"),
+        ("json", '{"evergreen": {"max_items": -3}}', "evergreen.max_items"),
+        ("json", '{"upstream": {"timeout_seconds": 0}}', "upstream.timeout_seconds must be above 0"),
+        ("json", '{"memo": {"text_max_chars": 0}}', "memo.text_max_chars"),
+        ("json", '{"port": 70000}', "port must be"),
+        ("json", '{"timezone": "Not/AZone"}', "timezone is not a known IANA zone"),
     ],
 )
 def test_config_rejects_invalid_input(tmp_path, fmt, body, pattern):

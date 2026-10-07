@@ -33,6 +33,31 @@ A user message reaches the gateway, which builds context from memory, personalit
 
 Build your harness plugin with the [API and integration guide](docs/api.md).
 
+## Plugin API
+
+A plugin is a directory under the mods directory holding `README.md`, `main.py`, `pyproject.toml`, and `uv.lock`. The gateway syncs its locked dependencies with `uv` and runs it as a child process. Every operation in `main.py` has the signature `fn(request, options)`, where `options` is the `options` object from the plugin's config section. A plugin sees a filtered environment: the basic system variables plus the names you list in `env_passthrough`.
+
+A decision plugin exports one operation.
+
+| Operation | Request fields | Returns |
+| --- | --- | --- |
+| `decide` | `message`, `emotions` (the resolved dimensions), `state` (the affect snapshot), `instruction` | `{"emotion": "<dimension>"}` or `None` |
+
+A memory plugin exports these operations. The gateway reads only the fields listed.
+
+| Operation | Request fields | Returns |
+| --- | --- | --- |
+| `ingest_messages` | `messages`, a list of stored rows with `id`, `conversation_id`, `role`, `text`, `occurred_at`, `ingested_at`, `sha256`, `harness`, `external_conversation_id` | `{"highest_id": <id of the last row>}` |
+| `inject_context` | `query`, `scope`, `max_chars`, `harness`, `conversation_id` | `{"text": "...", "records": [{"source": "...", "text": "..."}]}` |
+| `match_phrase` | `message` | `{"deltas": {"<dimension>": <number>}}` or `{"deltas": null}` |
+| `status` | none | `{"status": {...}}`, returned as the memory index status |
+| `backfill_once` | `limit`, `force` | `{"status": {...}}` |
+| `rebuild_chunks` | none | `{"status": {...}}` |
+| `rebuild_index` | none | `{"status": {...}}` |
+| `close` | none | `None` |
+
+`match_phrase` deltas use dimension names from your `emotions.json`. The gateway logs a warning for a name it does not know and skips it. See [examples/mods](examples/mods/README.md) for two working plugins.
+
 ## Documentation
 
 - [docs/configuration.md](docs/configuration.md): JSON settings, identity and prompt files.
