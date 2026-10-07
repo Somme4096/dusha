@@ -14,6 +14,8 @@ _TEXT_SLOTS = {
     "affect_presentation",
     "companion_state",
     "evergreen",
+    "context_blocks",
+    "proactive_framing",
     "proactive_generation_instruction",
     "decision_instruction",
 }
@@ -40,6 +42,20 @@ _SLOT_KEYS: dict[str, set[str]] = {
         "memory_instruction",
     },
     "evergreen": {"open_delimiter", "close_delimiter"},
+    "context_blocks": {
+        "memo_open_delimiter",
+        "memo_close_delimiter",
+        "memory_open_delimiter",
+        "memory_close_delimiter",
+    },
+    "proactive_framing": {"ruling", "ladder", "approach", "context_query"},
+}
+
+_LIST_KEYS = {("proactive_framing", "ladder")}
+
+_TEMPLATE_FIELDS: dict[tuple[str, str], dict[str, Any]] = {
+    ("proactive_framing", "ruling"): {"dimension": "", "value": 0.0, "neutral": 0.0, "deviation": 0.0},
+    ("proactive_framing", "approach"): {"variant": ""},
 }
 
 
@@ -51,6 +67,21 @@ def _string(value: Any, path: str) -> str:
     if not isinstance(value, str):
         raise PromptsValidationError(f"{path} must be a string")
     return value
+
+
+def _string_list(value: Any, path: str) -> list[str]:
+    if not isinstance(value, list) or not value:
+        raise PromptsValidationError(f"{path} must be a non-empty list")
+    return [_string(item, f"{path}[{index}]") for index, item in enumerate(value)]
+
+
+def _template(value: str, path: str, fields: dict[str, Any]) -> None:
+    try:
+        value.format(**fields)
+    except (KeyError, IndexError, ValueError) as error:
+        raise PromptsValidationError(
+            f"{path} has an invalid placeholder. Allowed: {sorted(fields)}. Double literal braces"
+        ) from error
 
 
 def _validate_proactive_slot(value: Any, *, require_complete: bool) -> dict[str, Any]:
@@ -102,7 +133,12 @@ def _validate_text_slots(snapshot: dict[str, Any], require_complete: bool) -> di
                 f"{slot} is incomplete. Missing field(s): {missing}"
             )
         for key in keys:
+            if (slot, key) in _LIST_KEYS:
+                value[key] = _string_list(value[key], f"{slot}.{key}")
+                continue
             value[key] = _string(value[key], f"{slot}.{key}")
+            if (slot, key) in _TEMPLATE_FIELDS:
+                _template(value[key], f"{slot}.{key}", _TEMPLATE_FIELDS[(slot, key)])
     return snapshot
 
 

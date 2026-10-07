@@ -28,6 +28,11 @@ SPEC = {
     "vitality": {"floor": 0.08, "neutral": 0.5, "tau": 6},
 }
 
+DEFAULT_TRIGGERS = [
+    {"dimension": "fear", "threshold": 0.55, "reason": "fear"},
+    {"dimension": "longing", "threshold": 0.48, "reason": "silence"},
+]
+
 
 def _ingest(service, *, role, content, external_id, occurred_at=NOW, conversation_id="one", **kw):
     return service.ingest_message(
@@ -52,12 +57,13 @@ def test_characterization_default_spec_initial_state_and_knobs(svc, config):
     }
     affect = config.affect
     assert (affect.mood_follow_hours, affect.mood_return_hours) == (12.0, 72.0)
-    assert (
-        affect.silence_longing_per_hour, affect.silence_anxiety_per_hour, affect.silence_seeking_per_hour
-    ) == (0.04, 0.02, 0.02)
+    rules = service.affect.emotions["silence"]["rules"]
+    assert {name: rule["rate_per_hour"] for name, rule in rules.items()} == {
+        "longing": 0.04, "anxiety": 0.02, "seeking": 0.02, "dejection": 0.01,
+    }
     assert config.decision.increment == 0.1
-    default_proactive = ProactiveConfig()
-    assert (default_proactive.longing_threshold, default_proactive.fear_threshold) == (0.48, 0.55)
+    assert ProactiveConfig().thresholds == {}
+    assert service.affect.emotions["proactive"]["triggers"] == DEFAULT_TRIGGERS
 
 
 def test_characterization_decision_increment_is_exact_and_bounded(svc):

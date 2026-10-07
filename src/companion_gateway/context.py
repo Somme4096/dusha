@@ -68,14 +68,13 @@ class ContextComposer:
         evergreen = self.prompts["evergreen"]
         return evergreen["open_delimiter"] + safe_json(facts) + evergreen["close_delimiter"]
 
-    @staticmethod
-    def _memo_block(notes: list[dict[str, Any]]) -> str:
+    def _memo_block(self, notes: list[dict[str, Any]]) -> str:
         if not notes:
             return ""
-        return "<memo_notes>" + safe_json(notes) + "</memo_notes>"
+        blocks = self.prompts["context_blocks"]
+        return blocks["memo_open_delimiter"] + safe_json(notes) + blocks["memo_close_delimiter"]
 
-    @staticmethod
-    def _plugin_block(plugin_context: dict[str, Any]) -> str:
+    def _plugin_block(self, plugin_context: dict[str, Any]) -> str:
         payload: dict[str, Any] = {
             "source": plugin_context.get("source", "memory_plugin"),
             "text": plugin_context.get("text", ""),
@@ -83,7 +82,8 @@ class ContextComposer:
         records = plugin_context.get("records") or []
         if records:
             payload["records"] = records
-        return "<memory_context>" + safe_json(payload) + "</memory_context>"
+        blocks = self.prompts["context_blocks"]
+        return blocks["memory_open_delimiter"] + safe_json(payload) + blocks["memory_close_delimiter"]
 
     def _plugin_render(
         self, plugin_context: dict[str, Any], available: int

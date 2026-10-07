@@ -9,8 +9,6 @@ import httpx
 
 from .config import EmbeddingConfig
 
-MIN_SIMILARITY = 0.5
-
 
 class OpenAIEmbeddingClient:
     def __init__(self, config: EmbeddingConfig):

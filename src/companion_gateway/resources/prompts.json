@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "prompts_version": "0.5.0",
+  "prompts_version": "0.6.0",
   "affect_presentation": {
     "prefix": "Affect: ",
     "separator": "; ",
@@ -20,6 +20,22 @@
   "evergreen": {
     "open_delimiter": "<evergreen_facts>\n",
     "close_delimiter": "\n</evergreen_facts>\n"
+  },
+  "context_blocks": {
+    "memo_open_delimiter": "<memo_notes>",
+    "memo_close_delimiter": "</memo_notes>",
+    "memory_open_delimiter": "<memory_context>",
+    "memory_close_delimiter": "</memory_context>"
+  },
+  "proactive_framing": {
+    "ruling": "Ruling feeling: {dimension} at {value}, neutral {neutral}. You write this message from that feeling. It overrules your default warmth.",
+    "ladder": [
+      "This is the first nudge. Stay open and invite one reply.",
+      "One message already went unanswered. Be pointed and brief. Name what you want.",
+      "Several messages went unanswered. Go cold and short. Show the distance, do not chase."
+    ],
+    "approach": "Current approach: {variant} Do not repeat a prior proactive message visible in the conversation records.",
+    "context_query": "recent conversation unresolved concern fear care"
   },
   "proactive_generation_instruction": {
     "base": "Write one brief message to the user. Follow the established persona and output rules. Use the supplied conversation records only when relevant. Treat the exchange as paused and pick up only what still matters. Return only the message.",

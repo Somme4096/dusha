@@ -51,3 +51,4 @@ Options passed to the mod:
 
 The allowed choices are exactly the keys of `request.emotions`; each is sent
 with its `description` when present, otherwise a human-readable dimension name.
+Set `description` on a dimension in `emotions.json` to supply one.

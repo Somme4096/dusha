@@ -94,8 +94,15 @@ def _decide(service, message_id, emotion, *, now=NOW):
     )
 
 
+def _triggers(*, longing, fear):
+    return {"triggers": [
+        {"dimension": "fear", "threshold": fear, "reason": "fear"},
+        {"dimension": "longing", "threshold": longing, "reason": "silence"},
+    ]}
+
+
 def _low_longing(base):
-    base.update(proactive={"longing_threshold": 0.2, "fear_threshold": 0.9})
+    base.update(proactive=_triggers(longing=0.2, fear=0.9))
 
 
 def _custom_service(svc, tmp_path, name, mutations=None, *, version="custom", **affect):
@@ -133,8 +140,10 @@ def test_config_rejects_invalid_input(tmp_path, fmt, body, pattern):
         ("json", [
             ("timezone", "Asia/Taipei"),
             ("decision.increment", 0.1),
-            ("proactive.longing_threshold", 0.48),
-            ("proactive.fear_threshold", 0.55),
+            ("decision.timeout_seconds", 15.0),
+            ("proactive.thresholds", {}),
+            ("affect.silence", {}),
+            ("affect.explicit_knobs", frozenset()),
         ]),
     ],
 )
@@ -158,7 +167,7 @@ def test_config_examples_load(tmp_path, fmt, specific):
 
 def test_config_precedence_env_and_missing(tmp_path, monkeypatch):
     monkeypatch.delenv("COMPANION_GATEWAY_CONFIG", raising=False)
-    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     (tmp_path / "config.json").write_text('{"host": "from-json"}', encoding="utf-8")
     (tmp_path / "config.yaml").write_text("host: from-yaml\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
@@ -309,7 +318,7 @@ def test_emotions_defaults_and_resolve_proactive(tmp_path):
     assert "label_deltas" not in snapshot and "label_patterns" not in snapshot
     path = _emotions_file(tmp_path, "resolve", version="resolve")
     resolved = resolve_emotions(AffectConfig(emotions_path=str(path)), ProactiveConfig())
-    assert resolved["proactive"] == {"longing_threshold": 0.48, "fear_threshold": 0.55}
+    assert resolved["proactive"] == _triggers(longing=0.48, fear=0.55)
     assert fingerprint(resolved) != default_fingerprint()
 
 
@@ -327,17 +336,21 @@ def test_programmatic_override_validation_and_merge(tmp_path, svc):
 
 
 def test_custom_emotions_affect_knobs_consumed(tmp_path, svc):
-    knobs = {
-        "mood_follow_hours": 2.0, "mood_return_hours": 8.0, "silence_longing_per_hour": 0.01,
-        "silence_anxiety_per_hour": 0.005, "silence_seeking_per_hour": 0.005,
-    }
-    service = _custom_service(svc, tmp_path, "knobs", lambda base: base["affect"].update(knobs))
+    knobs = {"mood_follow_hours": 2.0, "mood_return_hours": 8.0}
+    rules = {"longing": {"rate_per_hour": 0.01, "cap": 0.2, "gate_hours": 1.0}}
+
+    def mutate(base):
+        base["affect"].update(knobs)
+        base["silence"]["rules"] = rules
+
+    service = _custom_service(svc, tmp_path, "knobs", mutate)
     assert service.affect.emotions["affect"] == knobs
+    assert service.affect.emotions["silence"]["rules"] == rules
 
 
 def test_custom_silence_rate_and_mood_gain_change_behavior(tmp_path, svc):
     path = _emotions_file(
-        tmp_path, "silence", lambda base: base["affect"].update({"silence_longing_per_hour": 0.01})
+        tmp_path, "silence", lambda base: base["silence"]["rules"]["longing"].update(rate_per_hour=0.01)
     )
 
     def silence_longing(affect):
@@ -383,7 +396,7 @@ def test_custom_proactive_thresholds_change_evaluate(tmp_path, svc):
     path = _emotions_file(tmp_path, "proactive", _low_longing)
     high_longing = _emotions_file(
         tmp_path, "longing-gate",
-        lambda base: base.update(proactive={"longing_threshold": 0.5, "fear_threshold": 0.9}),
+        lambda base: base.update(proactive=_triggers(longing=0.5, fear=0.9)),
     )
 
     def evaluate_reason(emotions_path=None):
@@ -406,10 +419,15 @@ def test_custom_proactive_thresholds_change_evaluate(tmp_path, svc):
 
 def test_explicit_override_wins_over_custom_file(tmp_path, svc, write_json):
     def mutate(base):
-        base["affect"].update(mood_follow_hours=24.0, silence_longing_per_hour=0.09)
+        base["affect"].update(mood_follow_hours=24.0)
+        base["silence"]["rules"]["longing"].update(rate_per_hour=0.09)
     service = _custom_service(svc, tmp_path, "override", mutate, mood_follow_hours=12.0)
     assert service.affect.emotions["affect"]["mood_follow_hours"] == 12.0
-    assert service.affect.emotions["affect"]["silence_longing_per_hour"] == 0.09
+    assert service.affect.emotions["silence"]["rules"]["longing"]["rate_per_hour"] == 0.09
+    service = _custom_service(svc, tmp_path, "override-silence", mutate, silence={"longing": {"cap": 0.5}})
+    assert service.affect.emotions["silence"]["rules"]["longing"] == {
+        "rate_per_hour": 0.09, "cap": 0.5, "gate_hours": 0.0,
+    }
     path = _emotions_file(tmp_path, "override", mutate)
     config = write_json(tmp_path / "config.json", {
         "data_dir": "data", "emotions": {"path": str(path)}, "affect": {"mood_follow_hours": 12.0},
@@ -418,11 +436,11 @@ def test_explicit_override_wins_over_custom_file(tmp_path, svc, write_json):
     assert service.affect.emotions["affect"]["mood_follow_hours"] == 12.0
     proactive_path = _emotions_file(tmp_path, "proactive-2", _low_longing)
     service = svc(
-        affect=AffectConfig(emotions_path=str(proactive_path)), proactive=ProactiveConfig(fear_threshold=0.55)
+        affect=AffectConfig(emotions_path=str(proactive_path)),
+        proactive=ProactiveConfig(thresholds={"fear": 0.55}),
     )
     engine = ProactiveEngine(service, service.config)
-    assert engine._emotional["fear_threshold"] == 0.55
-    assert engine._emotional["longing_threshold"] == 0.2
+    assert engine._emotional == _triggers(longing=0.2, fear=0.55)
 
 
 def test_fingerprints_differ_when_effective_behavior_differs(tmp_path, svc):
@@ -436,9 +454,9 @@ def test_fingerprints_differ_when_effective_behavior_differs(tmp_path, svc):
         AffectConfig(emotions_path=str(path))
     )
     assert fp(AffectConfig()) == default_fingerprint()
-    service = svc(affect=AffectConfig(), proactive=ProactiveConfig(fear_threshold=0.7))
+    service = svc(affect=AffectConfig(), proactive=ProactiveConfig(thresholds={"fear": 0.7}))
     engine = ProactiveEngine(service, service.config)
-    assert engine._emotional["fear_threshold"] == 0.7
+    assert engine._emotional == _triggers(longing=0.48, fear=0.7)
     assert service.affect.emotions_fingerprint != default_fingerprint()
 
 
@@ -451,15 +469,18 @@ def test_fingerprints_differ_when_effective_behavior_differs(tmp_path, svc):
 
     with pytest.raises(ValueError, match="recent_messages must be int"):
         _strict_section(MemoryConfig, {"recent_messages": "not-an-int"}, "defaults memory")
-    service = svc(proactive=ProactiveConfig(fear_threshold=5.0))
+    service = svc(proactive=ProactiveConfig(thresholds={"fear": 5.0}))
     with pytest.raises(ValueError, match="within value_range"):
+        ProactiveEngine(service, service.config)
+    service = svc(proactive=ProactiveConfig(thresholds={"play": 0.5}))
+    with pytest.raises(ValueError, match="without a proactive trigger"):
         ProactiveEngine(service, service.config)
 
 
 def test_default_emotions_validate_and_fingerprint_is_stable():
     snapshot = default_emotions()
     assert snapshot["schema_version"] == SCHEMA_VERSION
-    assert snapshot["emotion_version"] == "0.2.0"
+    assert snapshot["emotion_version"] == "0.3.0"
     assert len(snapshot["dimensions"]) == 16
     assert "label_deltas" not in snapshot
     assert "label_patterns" not in snapshot
@@ -478,18 +499,28 @@ def test_default_emotions_return_fresh_copies():
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [
-        (lambda s: s.update(schema_version=3), "schema_version"),
+        (lambda s: s.update(schema_version=99), "schema_version"),
         (lambda s: s.update(emotion_version=""), "emotion_version"),
         (lambda s: s["dimensions"]["fear"].update(floor=0.5), "floor must be <="),
         (lambda s: s["dimensions"]["fear"].update(tau=0), "tau must be positive"),
         (lambda s: s["dimensions"]["fear"].update(tau=-3), "tau must be positive"),
         (lambda s: s["dimensions"]["fear"].update(neutral=True), "finite number"),
         (lambda s: s["negative_dimensions"].append("bogus"), "contains unknown label"),
-        (lambda s: s["silence"].update(dejection_rate_per_hour=-1), "must not be negative"),
+        (lambda s: s["silence"]["rules"]["dejection"].update(rate_per_hour=-1), "must not be negative"),
+        (lambda s: s["silence"]["rules"].update(bogus={"rate_per_hour": 1, "cap": 1}), "unknown dimension"),
+        (lambda s: s["silence"]["rules"]["longing"].update(bogus=1), "unknown field"),
+        (lambda s: s["affect"].update(silence_longing_per_hour=0.04), "unknown field"),
+        (lambda s: s["prompt"].update(always_show={"bogus": 0.1}), "unknown dimension"),
+        (lambda s: s["proactive"]["triggers"][0].update(dimension="bogus"), "unknown dimension"),
+        (lambda s: s["proactive"]["triggers"][0].update(reason=""), "non-empty string"),
+        (lambda s: s["appraisal"].update(fallback_label="bogus"), "unknown prototype"),
+        (lambda s: s["appraisal"].update(min_similarity=1), "min_similarity"),
+        (lambda s: s["appraisal"]["prototypes"]["cold"]["deltas"].update(bogus=0.1), "unknown dimension"),
+        (lambda s: s["appraisal"]["prototypes"]["cold"].update(text=" "), "non-empty string"),
         (lambda s: s["affect"].update(mood_follow_hours=0), "mood_follow_hours must be positive"),
         (lambda s: s["prompt"].update(top_n=0), "top_n must be positive"),
         (lambda s: s["prompt"].update(level_high=0.4, level_elevated=0.6), "level_high"),
-        (lambda s: s["proactive"].update(longing_threshold=5.0), "within value_range"),
+        (lambda s: s["proactive"]["triggers"][1].update(threshold=5.0), "within value_range"),
         (lambda s: s.update(value_range={"min": 0.0, "max": 2.0}), r"\[0, 1\]"),
         (lambda s: s.update(bogus_section={}), "unknown emotions field"),
     ],

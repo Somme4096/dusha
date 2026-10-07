@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import stat
 import tempfile
 import types as _types
@@ -33,7 +34,8 @@ _MEMORY_PLUGIN = _DEFAULTS.get("memory_plugin", {
     "ingest_backfill_interval_seconds": 30,
 })
 _AFFECT_KNOBS = _EMOTIONS["affect"]
-_PROACTIVE_EMOTIONAL = _EMOTIONS["proactive"]
+_LEGACY_SILENCE_RATE = re.compile(r"silence_(.+)_per_hour")
+_LEGACY_THRESHOLD = re.compile(r"(.+)_threshold")
 _PROACTIVE = _DEFAULTS["proactive"]
 _IDENTITY_PROMPT = _DEFAULTS["identity_prompt"]
 _PROMPTS = _DEFAULTS["prompts"]
@@ -123,10 +125,8 @@ class AffectConfig:
     expected_emotion_version: str = ""
     mood_follow_hours: float = _UNSET
     mood_return_hours: float = _UNSET
-    silence_longing_per_hour: float = _UNSET
-    silence_anxiety_per_hour: float = _UNSET
-    silence_seeking_per_hour: float = _UNSET
     dimensions: dict[str, dict[str, float]] = field(default_factory=dict)
+    silence: dict[str, dict[str, float]] = field(default_factory=dict)
     explicit_knobs: frozenset[str] = field(default=frozenset(), init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -189,8 +189,7 @@ class ProactiveConfig:
     enabled: bool = _PROACTIVE["enabled"]
     poll_interval_seconds: int = _PROACTIVE["poll_interval_seconds"]
     min_silence_minutes: int = _PROACTIVE["min_silence_minutes"]
-    longing_threshold: float = _UNSET
-    fear_threshold: float = _UNSET
+    thresholds: dict[str, float] = field(default_factory=dict)
     cooldown_minutes: int = _PROACTIVE["cooldown_minutes"]
     max_per_day: int = _PROACTIVE["max_per_day"]
     max_unanswered: int = _PROACTIVE["max_unanswered"]
@@ -198,12 +197,6 @@ class ProactiveConfig:
     quiet_end_hour: int = _PROACTIVE["quiet_end_hour"]
     lease_seconds: int = _PROACTIVE["lease_seconds"]
     retry_delay_minutes: int = _PROACTIVE["retry_delay_minutes"]
-    explicit_emotional: frozenset[str] = field(
-        default=frozenset(), init=False, repr=False, compare=False
-    )
-
-    def __post_init__(self) -> None:
-        _fill_unset(self, _PROACTIVE_EMOTIONAL, "explicit_emotional")
 
     @property
     def minimum_silence_minutes(self) -> int:
@@ -353,8 +346,23 @@ def _migrate_config(raw: dict[str, Any]) -> bool:
             if old in proactive:
                 proactive.setdefault(new, proactive.pop(old))
                 changed = True
+        for key in [key for key in proactive if isinstance(key, str)]:
+            match = _LEGACY_THRESHOLD.fullmatch(key)
+            if match:
+                thresholds = proactive.setdefault("thresholds", {})
+                if isinstance(thresholds, dict):
+                    thresholds.setdefault(match.group(1), proactive.pop(key))
+                    changed = True
     affect = raw.get("affect")
     if isinstance(affect, dict):
+        for key in [key for key in affect if isinstance(key, str)]:
+            match = _LEGACY_SILENCE_RATE.fullmatch(key)
+            if match:
+                silence = affect.setdefault("silence", {})
+                rule = silence.setdefault(match.group(1), {}) if isinstance(silence, dict) else None
+                if isinstance(rule, dict):
+                    rule.setdefault("rate_per_hour", affect.pop(key))
+                    changed = True
         for key in ("semantic_enabled", "semantic_min_similarity"):
             if key in affect:
                 del affect[key]

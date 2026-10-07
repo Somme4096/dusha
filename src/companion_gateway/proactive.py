@@ -56,27 +56,17 @@ def ruling_feeling(base: dict[str, Any], spec: dict[str, Any]) -> dict[str, Any]
     return top
 
 
-def ruling_line(feeling: dict[str, Any]) -> str:
-    return (
-        f"Ruling feeling: {feeling['dimension']} at {feeling['value']}, "
-        f"neutral {feeling['neutral']}. You write this message from that feeling. "
-        "It overrules your default warmth."
-    )
+def ladder_line(ladder: list[str], unanswered: int) -> tuple[int, str]:
+    stage = min(max(0, int(unanswered)), len(ladder) - 1)
+    return stage, ladder[stage]
 
 
-def ladder_line(unanswered: int) -> tuple[int, str]:
-    if unanswered <= 0:
-        return 0, "This is the first nudge. Stay open and invite one reply."
-    if unanswered == 1:
-        return 1, "One message already went unanswered. Be pointed and brief. Name what you want."
-    return 2, "Several messages went unanswered. Go cold and short. Show the distance, do not chase."
-
-
-def build_proactive_instruction(base: str, variant: str, ruling: str, ladder: str) -> str:
-    return (
-        f"{base.rstrip()}\n{ruling}\n{ladder}\nCurrent approach: {variant.strip()} "
-        "Do not repeat a prior proactive message visible in the conversation records."
-    )
+def build_proactive_instruction(
+    base: str, variant: str, framing: dict[str, Any], feeling: dict[str, Any], ladder: str
+) -> str:
+    ruling = framing["ruling"].format(**feeling)
+    approach = framing["approach"].format(variant=variant.strip())
+    return f"{base.rstrip()}\n{ruling}\n{ladder}\n{approach}"
 
 
 class ProactiveEngine:
@@ -87,8 +77,8 @@ class ProactiveEngine:
         self.rules = config.proactive
         self.timezone = ZoneInfo(config.timezone)
         effective = _emotions.resolve_emotions(service.affect.config, config.proactive)
-        self._emotional = dict(effective["proactive"])
-        service.affect.emotions["proactive"] = dict(self._emotional)
+        self._emotional = effective["proactive"]
+        service.affect.emotions = effective
         service.affect.emotions_fingerprint = _emotions.fingerprint(effective)
 
     def _quiet(self, now: datetime) -> bool:
@@ -144,14 +134,20 @@ class ProactiveEngine:
             if active:
                 return None
 
-        reason = "silence"
-        if state["base"]["fear"] >= self._emotional["fear_threshold"]:
-            reason = "fear"
-        elif state["base"]["longing"] < self._emotional["longing_threshold"]:
+        reason = next(
+            (
+                trigger["reason"]
+                for trigger in self._emotional["triggers"]
+                if state["base"][trigger["dimension"]] >= trigger["threshold"]
+            ),
+            None,
+        )
+        if reason is None:
             return None
 
+        framing = self.service.prompts["proactive_framing"]
         context = self.service.build_context(
-            query="recent conversation unresolved concern fear care",
+            query=str(framing["context_query"]),
             harness=route["harness"],
             conversation_id=route["external_id"],
         )
@@ -171,10 +167,8 @@ class ProactiveEngine:
         base = str(spec["base"])
         variant_index, variant = select_proactive_variant(spec, sent_today)
         feeling = ruling_feeling(state["base"], self.service.affect.spec)
-        ladder_stage, ladder = ladder_line(int(state["unanswered_proactive"]))
-        generation_instruction = build_proactive_instruction(
-            base, variant, ruling_line(feeling), ladder
-        )
+        ladder_stage, ladder = ladder_line(framing["ladder"], int(state["unanswered_proactive"]))
+        generation_instruction = build_proactive_instruction(base, variant, framing, feeling, ladder)
         payload = {
             "id": event_id,
             "target": {

@@ -1,7 +1,7 @@
 {
-  "schema_version": 2,
-  "emotion_version": "0.2.0",
-  "description": "Emotional definitions and tuning for the companion state gateway. All emotional data is owned here; algorithms live in code.",
+  "schema_version": 3,
+  "emotion_version": "0.3.0",
+  "description": "Emotional definitions, change rules, and tuning for the companion state gateway. This file owns every dimension name. Code names none.",
   "value_range": {
     "min": 0.0,
     "max": 1.0
@@ -26,9 +26,12 @@
   },
   "negative_dimensions": ["dejection", "irritability", "anxiety", "fear"],
   "silence": {
-    "caps": {"longing": 0.35, "anxiety": 0.18, "seeking": 0.12, "dejection": 0.08},
-    "dejection_gate_hours": 6,
-    "dejection_rate_per_hour": 0.01
+    "rules": {
+      "longing": {"rate_per_hour": 0.04, "cap": 0.35, "gate_hours": 0},
+      "anxiety": {"rate_per_hour": 0.02, "cap": 0.18, "gate_hours": 0},
+      "seeking": {"rate_per_hour": 0.02, "cap": 0.12, "gate_hours": 0},
+      "dejection": {"rate_per_hour": 0.01, "cap": 0.08, "gate_hours": 6}
+    }
   },
   "proactive_sent_deltas": {"longing": -0.08, "seeking": -0.05, "anxiety": 0.03},
   "impact_scale": 2.0,
@@ -40,19 +43,88 @@
   "prompt": {
     "top_n": 5,
     "deviation_threshold": 0.08,
-    "fear_minimum": 0.05,
+    "always_show": {"fear": 0.05},
     "level_high": 0.7,
     "level_elevated": 0.5
   },
   "affect": {
     "mood_follow_hours": 12.0,
-    "mood_return_hours": 72.0,
-    "silence_longing_per_hour": 0.04,
-    "silence_anxiety_per_hour": 0.02,
-    "silence_seeking_per_hour": 0.02
+    "mood_return_hours": 72.0
   },
   "proactive": {
-    "longing_threshold": 0.48,
-    "fear_threshold": 0.55
+    "triggers": [
+      {"dimension": "fear", "threshold": 0.55, "reason": "fear"},
+      {"dimension": "longing", "threshold": 0.48, "reason": "silence"}
+    ]
+  },
+  "appraisal": {
+    "min_similarity": 0.5,
+    "fallback_label": "neutral",
+    "prototypes": {
+      "affectionate": {
+        "text": "I love you and cherish spending time with you.",
+        "deltas": {"intimacy": 0.2, "contentment": 0.15, "anxiety": -0.18, "lust": 0.12, "longing": -0.1, "fear": -0.08}
+      },
+      "playful": {
+        "text": "I'm teasing you playfully, let's laugh and have fun together.",
+        "deltas": {"play": 0.2, "elation": 0.18, "contentment": 0.12, "seeking": 0.1, "irritability": -0.1, "lust": 0.1}
+      },
+      "vulnerable": {
+        "text": "I feel insecure and lonely and need your emotional support.",
+        "deltas": {"intimacy": 0.25, "protectiveness": 0.2, "anxiety": 0.12, "dejection": 0.08}
+      },
+      "reassuring": {
+        "text": "You can trust me. I am here for you and everything will be okay.",
+        "deltas": {"anxiety": -0.25, "jealousy": -0.2, "contentment": 0.15, "intimacy": 0.15, "fear": -0.15}
+      },
+      "cold": {
+        "text": "Leave me alone. I don't want to talk to you.",
+        "deltas": {"anxiety": 0.15, "dejection": 0.12, "longing": 0.1, "intimacy": -0.1}
+      },
+      "conflict": {
+        "text": "We are arguing because you hurt my feelings.",
+        "deltas": {"anxiety": 0.2, "irritability": 0.15, "dejection": 0.15, "possessiveness": 0.18, "intimacy": -0.15, "contentment": -0.15}
+      },
+      "distant": {
+        "text": "I am busy and unavailable to talk right now.",
+        "deltas": {"anxiety": 0.12, "dejection": 0.1, "longing": 0.12, "intimacy": -0.08}
+      },
+      "struggling": {
+        "text": "I am overwhelmed and exhausted and cannot cope with everything.",
+        "deltas": {"protectiveness": 0.3, "anxiety": 0.12, "dejection": 0.12, "contentment": -0.08, "fatigue": 0.12}
+      },
+      "intimate_reference": {
+        "text": "I wish I could hold you close and kiss you.",
+        "deltas": {"lust": 0.18, "intimacy": 0.1}
+      },
+      "intimate_event": {
+        "text": "We are sharing a tender kiss and holding each other close.",
+        "deltas": {"lust": 0.25, "intimacy": 0.18}
+      },
+      "neutral": {
+        "text": "I am sharing an ordinary update about my day.",
+        "deltas": {"anxiety": -0.05, "longing": -0.04, "contentment": 0.03}
+      },
+      "hostile": {
+        "text": "I hate you and want to insult and hurt you.",
+        "deltas": {"dejection": 0.22, "anxiety": 0.18, "irritability": 0.12, "intimacy": -0.22, "contentment": -0.18}
+      },
+      "fear_separation": {
+        "text": "I fear losing you, being abandoned, or never seeing you again.",
+        "deltas": {"fear": 0.2, "longing": 0.15, "possessiveness": 0.12, "anxiety": 0.15, "protectiveness": 0.1, "dejection": 0.1, "irritability": 0.08}
+      },
+      "fear_death": {
+        "text": "My life is in danger and I might die.",
+        "deltas": {"fear": 0.35, "anxiety": 0.3, "irritability": 0.2, "contentment": -0.12, "play": -0.15, "elation": -0.1}
+      },
+      "fear_concern": {
+        "text": "I am worried something has happened to you. Are you safe?",
+        "deltas": {"fear": 0.28, "longing": 0.12, "possessiveness": 0.15, "anxiety": 0.2, "protectiveness": 0.25, "contentment": -0.1}
+      },
+      "fear_general": {
+        "text": "I am frightened and afraid of what might happen.",
+        "deltas": {"fear": 0.2, "anxiety": 0.1}
+      }
+    }
   }
 }

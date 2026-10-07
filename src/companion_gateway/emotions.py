@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import math
+import re
 from pathlib import Path
 from typing import Any
 
@@ -9,9 +10,18 @@ from .resources import load_packaged, loads_strict
 from .serialization import canonical as _serialization_canonical
 from .serialization import fingerprint as _serialization_fingerprint
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 UNSET: Any = object()
+
+_SILENCE_RULE_KEYS = {"rate_per_hour", "cap", "gate_hours"}
+
+_V2_SILENCE_RATE = re.compile(r"silence_(.+)_per_hour")
+_V2_GATED_SILENCE = {
+    "dejection": {"rate_per_hour": "dejection_rate_per_hour", "gate_hours": "dejection_gate_hours"}
+}
+_V2_ALWAYS_SHOW = {"fear": "fear_minimum"}
+_V2_TRIGGERS = (("fear", "fear"), ("longing", "silence"))
 
 
 class EmotionsValidationError(ValueError):
@@ -58,6 +68,136 @@ def _labels_of(value: Any, path: str, known: set[str]) -> list[str]:
     return list(value)
 
 
+def _section(snapshot: dict[str, Any], name: str, known: set[str]) -> dict[str, Any]:
+    value = snapshot.get(name)
+    if not isinstance(value, dict):
+        raise EmotionsValidationError(f"{name} must be an object")
+    unknown = sorted(set(value) - known)
+    if unknown:
+        raise EmotionsValidationError(f"unknown field(s) under {name}: {unknown}")
+    return value
+
+
+def _non_negative(value: Any, path: str) -> float:
+    number = _number(value, path)
+    if number < 0:
+        raise EmotionsValidationError(f"{path} must not be negative")
+    return number
+
+
+def _dimension(name: Any, path: str, dimensions: dict[str, Any]) -> str:
+    if not isinstance(name, str) or name not in dimensions:
+        raise EmotionsValidationError(f"{path} references unknown dimension: {name!r}")
+    return name
+
+
+def _validate_silence(snapshot: dict[str, Any], dimensions: dict[str, Any]) -> None:
+    silence = _section(snapshot, "silence", {"rules"})
+    rules = silence.get("rules")
+    if not isinstance(rules, dict):
+        raise EmotionsValidationError("silence.rules must be an object")
+    for name, rule in rules.items():
+        path = f"silence.rules.{name}"
+        _dimension(name, path, dimensions)
+        if not isinstance(rule, dict):
+            raise EmotionsValidationError(f"{path} must be an object")
+        unknown = sorted(set(rule) - _SILENCE_RULE_KEYS)
+        if unknown:
+            raise EmotionsValidationError(f"unknown field(s) under {path}: {unknown}")
+        rules[name] = {
+            "rate_per_hour": _non_negative(rule.get("rate_per_hour"), f"{path}.rate_per_hour"),
+            "cap": _non_negative(rule.get("cap"), f"{path}.cap"),
+            "gate_hours": _non_negative(rule.get("gate_hours", 0.0), f"{path}.gate_hours"),
+        }
+
+
+def _validate_triggers(
+    snapshot: dict[str, Any], dimensions: dict[str, Any], range_min: float, range_max: float
+) -> None:
+    proactive = _section(snapshot, "proactive", {"triggers"})
+    triggers = proactive.get("triggers")
+    if not isinstance(triggers, list):
+        raise EmotionsValidationError("proactive.triggers must be an array")
+    for index, trigger in enumerate(triggers):
+        path = f"proactive.triggers[{index}]"
+        if not isinstance(trigger, dict):
+            raise EmotionsValidationError(f"{path} must be an object")
+        unknown = sorted(set(trigger) - {"dimension", "threshold", "reason"})
+        if unknown:
+            raise EmotionsValidationError(f"unknown field(s) under {path}: {unknown}")
+        name = _dimension(trigger.get("dimension"), f"{path}.dimension", dimensions)
+        threshold = _number(trigger.get("threshold"), f"{path}.threshold")
+        if not range_min <= threshold <= range_max:
+            raise EmotionsValidationError(f"{path}.threshold must be within value_range")
+        reason = _string(trigger.get("reason"), f"{path}.reason")
+        if not reason:
+            raise EmotionsValidationError(f"{path}.reason must be a non-empty string")
+        triggers[index] = {"dimension": name, "threshold": threshold, "reason": reason}
+
+
+def _validate_appraisal(snapshot: dict[str, Any], dimensions: dict[str, Any]) -> None:
+    snapshot.setdefault("appraisal", {})
+    appraisal = _section(snapshot, "appraisal", {"min_similarity", "fallback_label", "prototypes"})
+    min_similarity = _number(appraisal.get("min_similarity", 0.5), "appraisal.min_similarity")
+    if not -1 <= min_similarity < 1:
+        raise EmotionsValidationError("appraisal.min_similarity must be at least -1 and below 1")
+    prototypes = appraisal.get("prototypes", {})
+    if not isinstance(prototypes, dict):
+        raise EmotionsValidationError("appraisal.prototypes must be an object")
+    for label, prototype in prototypes.items():
+        path = f"appraisal.prototypes.{label}"
+        if not isinstance(prototype, dict):
+            raise EmotionsValidationError(f"{path} must be an object")
+        unknown = sorted(set(prototype) - {"text", "deltas"})
+        if unknown:
+            raise EmotionsValidationError(f"unknown field(s) under {path}: {unknown}")
+        if not _string(prototype.get("text"), f"{path}.text").strip():
+            raise EmotionsValidationError(f"{path}.text must be a non-empty string")
+        _deltas_map(prototype.get("deltas"), f"{path}.deltas", dimensions)
+    fallback = _string(appraisal.get("fallback_label", ""), "appraisal.fallback_label")
+    if fallback and fallback not in prototypes:
+        raise EmotionsValidationError(f"appraisal.fallback_label names unknown prototype: {fallback!r}")
+    appraisal.update(min_similarity=min_similarity, fallback_label=fallback, prototypes=prototypes)
+
+
+def _upgrade_v2(snapshot: dict[str, Any]) -> dict[str, Any]:
+    dimensions = snapshot.get("dimensions")
+    affect, silence = snapshot.get("affect"), snapshot.get("silence")
+    prompt, proactive = snapshot.get("prompt"), snapshot.get("proactive")
+    if not all(isinstance(item, dict) for item in (dimensions, affect, silence, prompt, proactive)):
+        return snapshot
+    caps = silence.pop("caps", None)
+    caps = caps if isinstance(caps, dict) else {}
+    rules: dict[str, dict[str, Any]] = {}
+    for key in list(affect):
+        match = _V2_SILENCE_RATE.fullmatch(key)
+        if match:
+            rules[match.group(1)] = {"rate_per_hour": affect.pop(key)}
+    for name, fields in _V2_GATED_SILENCE.items():
+        rules[name] = {new: silence.pop(old, None) for new, old in fields.items()}
+    for name, rule in rules.items():
+        if name in caps:
+            rule["cap"] = caps[name]
+    silence["rules"] = {name: rule for name, rule in rules.items() if name in dimensions}
+    prompt["always_show"] = {
+        name: prompt.pop(key)
+        for name, key in _V2_ALWAYS_SHOW.items()
+        if key in prompt and name in dimensions
+    }
+    proactive["triggers"] = [
+        {"dimension": name, "threshold": proactive.pop(f"{name}_threshold"), "reason": reason}
+        for name, reason in _V2_TRIGGERS
+        if f"{name}_threshold" in proactive and name in dimensions
+    ]
+    if "appraisal" not in snapshot:
+        appraisal = default_emotions()["appraisal"]
+        for prototype in appraisal["prototypes"].values():
+            prototype["deltas"] = {k: v for k, v in prototype["deltas"].items() if k in dimensions}
+        snapshot["appraisal"] = appraisal
+    snapshot["schema_version"] = SCHEMA_VERSION
+    return snapshot
+
+
 def _validate(snapshot: dict[str, Any]) -> dict[str, Any]:
     known = {
         "schema_version",
@@ -73,13 +213,16 @@ def _validate(snapshot: dict[str, Any]) -> dict[str, Any]:
         "proactive",
         "impact_scale",
         "mood_follow_gain",
+        "appraisal",
     }
     unknown = sorted(set(snapshot) - known)
     if unknown:
         raise EmotionsValidationError(f"unknown emotions field(s): {unknown}")
 
-    schema_version = _integer(snapshot["schema_version"], "schema_version")
-    if schema_version != SCHEMA_VERSION:
+    schema_version = _integer(snapshot.get("schema_version"), "schema_version")
+    if schema_version == 2:
+        snapshot = _upgrade_v2(snapshot)
+    elif schema_version != SCHEMA_VERSION:
         raise EmotionsValidationError(
             f"schema_version {schema_version} is not supported. Expected {SCHEMA_VERSION}"
         )
@@ -87,7 +230,7 @@ def _validate(snapshot: dict[str, Any]) -> dict[str, Any]:
         raise EmotionsValidationError("emotion_version must be a non-empty string")
     _string(snapshot["emotion_version"], "emotion_version")
 
-    value_range = snapshot["value_range"]
+    value_range = snapshot.get("value_range")
     if not isinstance(value_range, dict):
         raise EmotionsValidationError("value_range must be an object")
     range_min = _number(value_range.get("min"), "value_range.min")
@@ -99,7 +242,7 @@ def _validate(snapshot: dict[str, Any]) -> dict[str, Any]:
         )
     snapshot["value_range"] = {"min": range_min, "max": range_max}
 
-    dimensions = snapshot["dimensions"]
+    dimensions = snapshot.get("dimensions")
     if not isinstance(dimensions, dict) or not dimensions:
         raise EmotionsValidationError("dimensions must be a non-empty object")
     for name, params in dimensions.items():
@@ -115,6 +258,8 @@ def _validate(snapshot: dict[str, Any]) -> dict[str, Any]:
             raise EmotionsValidationError(f"{path}.floor must be <= {path}.neutral")
         if not range_min <= floor <= range_max or not range_min <= neutral <= range_max:
             raise EmotionsValidationError(f"{path} values must be within value_range")
+        if "description" in params:
+            _string(params["description"], f"{path}.description")
         params["neutral"] = neutral
         params["floor"] = floor
         params["tau"] = tau
@@ -123,27 +268,7 @@ def _validate(snapshot: dict[str, Any]) -> dict[str, Any]:
         snapshot.get("negative_dimensions") or [], "negative_dimensions", set(dimensions)
     )
 
-    silence = snapshot["silence"]
-    if not isinstance(silence, dict):
-        raise EmotionsValidationError("silence must be an object")
-    caps = silence.get("caps")
-    if not isinstance(caps, dict):
-        raise EmotionsValidationError("silence.caps must be an object")
-    for name, cap in caps.items():
-        if name not in dimensions:
-            raise EmotionsValidationError(f"silence.caps.{name} references unknown dimension")
-        cap_value = _number(cap, f"silence.caps.{name}")
-        if cap_value < 0:
-            raise EmotionsValidationError(f"silence.caps.{name} must not be negative")
-        caps[name] = cap_value
-    gate = _number(silence.get("dejection_gate_hours"), "silence.dejection_gate_hours")
-    rate = _number(silence.get("dejection_rate_per_hour"), "silence.dejection_rate_per_hour")
-    if gate < 0:
-        raise EmotionsValidationError("silence.dejection_gate_hours must not be negative")
-    if rate < 0:
-        raise EmotionsValidationError("silence.dejection_rate_per_hour must not be negative")
-    silence["dejection_gate_hours"] = gate
-    silence["dejection_rate_per_hour"] = rate
+    _validate_silence(snapshot, dimensions)
 
     _deltas_map(snapshot.get("proactive_sent_deltas") or {}, "proactive_sent_deltas", dimensions)
 
@@ -152,7 +277,7 @@ def _validate(snapshot: dict[str, Any]) -> dict[str, Any]:
         raise EmotionsValidationError("impact_scale must be positive")
     snapshot["impact_scale"] = impact_scale
 
-    gain = snapshot["mood_follow_gain"]
+    gain = snapshot.get("mood_follow_gain")
     if not isinstance(gain, dict):
         raise EmotionsValidationError("mood_follow_gain must be an object")
     gain_min = _number(gain.get("min"), "mood_follow_gain.min")
@@ -166,67 +291,41 @@ def _validate(snapshot: dict[str, Any]) -> dict[str, Any]:
         raise EmotionsValidationError("mood_follow_gain.factor must be positive")
     snapshot["mood_follow_gain"] = {"min": gain_min, "max": gain_max, "factor": gain_factor}
 
-    prompt = snapshot["prompt"]
-    if not isinstance(prompt, dict):
-        raise EmotionsValidationError("prompt must be an object")
+    prompt = _section(
+        snapshot,
+        "prompt",
+        {"top_n", "deviation_threshold", "always_show", "level_high", "level_elevated"},
+    )
     top_n = _integer(prompt.get("top_n"), "prompt.top_n")
     if top_n < 1:
         raise EmotionsValidationError("prompt.top_n must be positive")
     deviation = _number(prompt.get("deviation_threshold"), "prompt.deviation_threshold")
-    fear_min = _number(prompt.get("fear_minimum"), "prompt.fear_minimum")
     level_high = _number(prompt.get("level_high"), "prompt.level_high")
     level_elevated = _number(prompt.get("level_elevated"), "prompt.level_elevated")
     if deviation < 0:
         raise EmotionsValidationError("prompt.deviation_threshold must not be negative")
     if level_high < level_elevated:
         raise EmotionsValidationError("prompt.level_high must be >= prompt.level_elevated")
+    always_show = prompt.get("always_show", {})
+    _deltas_map(always_show, "prompt.always_show", dimensions)
     prompt["top_n"] = top_n
     prompt["deviation_threshold"] = deviation
-    prompt["fear_minimum"] = fear_min
+    prompt["always_show"] = {name: float(minimum) for name, minimum in always_show.items()}
     prompt["level_high"] = level_high
     prompt["level_elevated"] = level_elevated
 
-    affect = snapshot["affect"]
-    if not isinstance(affect, dict):
-        raise EmotionsValidationError("affect must be an object")
+    affect = _section(snapshot, "affect", {"mood_follow_hours", "mood_return_hours"})
     mood_follow = _number(affect.get("mood_follow_hours"), "affect.mood_follow_hours")
     mood_return = _number(affect.get("mood_return_hours"), "affect.mood_return_hours")
-    silence_longing = _number(
-        affect.get("silence_longing_per_hour"), "affect.silence_longing_per_hour"
-    )
-    silence_anxiety = _number(
-        affect.get("silence_anxiety_per_hour"), "affect.silence_anxiety_per_hour"
-    )
-    silence_seeking = _number(
-        affect.get("silence_seeking_per_hour"), "affect.silence_seeking_per_hour"
-    )
     if mood_follow <= 0:
         raise EmotionsValidationError("affect.mood_follow_hours must be positive")
     if mood_return <= 0:
         raise EmotionsValidationError("affect.mood_return_hours must be positive")
-    for name, value in (
-        ("longing", silence_longing),
-        ("anxiety", silence_anxiety),
-        ("seeking", silence_seeking),
-    ):
-        if value < 0:
-            raise EmotionsValidationError(f"affect.silence_{name}_per_hour must not be negative")
     affect["mood_follow_hours"] = mood_follow
     affect["mood_return_hours"] = mood_return
-    affect["silence_longing_per_hour"] = silence_longing
-    affect["silence_anxiety_per_hour"] = silence_anxiety
-    affect["silence_seeking_per_hour"] = silence_seeking
 
-    proactive = snapshot["proactive"]
-    if not isinstance(proactive, dict):
-        raise EmotionsValidationError("proactive must be an object")
-    longing_threshold = _number(proactive.get("longing_threshold"), "proactive.longing_threshold")
-    fear_threshold = _number(proactive.get("fear_threshold"), "proactive.fear_threshold")
-    for name, value in (("longing_threshold", longing_threshold), ("fear_threshold", fear_threshold)):
-        if not range_min <= value <= range_max:
-            raise EmotionsValidationError(f"proactive.{name} must be within value_range")
-    proactive["longing_threshold"] = longing_threshold
-    proactive["fear_threshold"] = fear_threshold
+    _validate_triggers(snapshot, dimensions, range_min, range_max)
+    _validate_appraisal(snapshot, dimensions)
 
     return snapshot
 
@@ -275,6 +374,26 @@ def _apply_explicit_overrides(
     return result
 
 
+def _merge_overrides(
+    target: dict[str, Any], overrides: Any, label: str, keys: set[str], *, create: bool
+) -> None:
+    if not overrides:
+        return
+    if not isinstance(overrides, dict):
+        raise EmotionsValidationError(f"{label} must be an object")
+    for name, values in overrides.items():
+        if name not in target and not create:
+            raise EmotionsValidationError(f"{label} references unknown dimension: {name!r}")
+        if not isinstance(values, dict):
+            raise EmotionsValidationError(f"{label} {name!r} must be an object")
+        unknown_keys = sorted(set(values) - keys)
+        if unknown_keys:
+            raise EmotionsValidationError(f"{label} {name!r} has unknown field(s): {unknown_keys}")
+        entry = target.setdefault(name, {})
+        for key, value in values.items():
+            entry[key] = _number(value, f"{label} {name!r}.{key}")
+
+
 def resolve_emotions(
     affect_config: Any, proactive_config: Any | None = None
 ) -> dict[str, Any]:
@@ -292,31 +411,30 @@ def resolve_emotions(
     snapshot["affect"] = _apply_explicit_overrides(
         snapshot["affect"], affect_config, "explicit_knobs", custom
     )
-    if proactive_config is not None:
-        snapshot["proactive"] = _apply_explicit_overrides(
-            snapshot["proactive"], proactive_config, "explicit_emotional", custom
-        )
-
-    overrides = getattr(affect_config, "dimensions", None) or {}
-    if overrides:
-        if not isinstance(overrides, dict):
-            raise EmotionsValidationError("dimensions override must be an object")
-        for name, values in overrides.items():
-            if name not in snapshot["dimensions"]:
-                raise EmotionsValidationError(
-                    f"dimensions override references unknown dimension: {name!r}"
-                )
-            if not isinstance(values, dict):
-                raise EmotionsValidationError(f"dimensions override {name!r} must be an object")
-            unknown_keys = sorted(set(values) - {"neutral", "floor", "tau"})
-            if unknown_keys:
-                raise EmotionsValidationError(
-                    f"dimensions override {name!r} has unknown field(s): {unknown_keys}"
-                )
-            for key in ("neutral", "floor", "tau"):
-                if key in values:
-                    snapshot["dimensions"][name][key] = _number(
-                        values[key], f"dimensions override {name!r}.{key}"
-                    )
+    _merge_overrides(
+        snapshot["dimensions"],
+        getattr(affect_config, "dimensions", None),
+        "dimensions override",
+        {"neutral", "floor", "tau"},
+        create=False,
+    )
+    _merge_overrides(
+        snapshot["silence"]["rules"],
+        getattr(affect_config, "silence", None),
+        "silence override",
+        _SILENCE_RULE_KEYS,
+        create=True,
+    )
+    thresholds = getattr(proactive_config, "thresholds", None) or {}
+    if not isinstance(thresholds, dict):
+        raise EmotionsValidationError("thresholds override must be an object")
+    for name, value in thresholds.items():
+        matched = [item for item in snapshot["proactive"]["triggers"] if item["dimension"] == name]
+        if not matched:
+            raise EmotionsValidationError(
+                f"thresholds override references a dimension without a proactive trigger: {name!r}"
+            )
+        for trigger in matched:
+            trigger["threshold"] = _number(value, f"thresholds override {name!r}")
 
     return _validate(snapshot)

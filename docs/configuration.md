@@ -74,7 +74,22 @@ Identity is raw Markdown you write. Point `identity_prompt.path` at it:
 
 The service loads the file once at startup and prepends it verbatim to every context. A configured but missing file, or invalid UTF-8, fails startup. A blank file is allowed. The identity does not change at runtime.
 
-Emotions use the current 16-dimension engine. Every dimension name, `neutral`, `floor`, `tau`, silence rate, `proactive_sent_deltas`, `impact_scale`, and threshold lives in the packaged `emotions.json`. The engine stays deterministic and calls no model. Affect knobs (`mood_follow_hours`, `mood_return_hours`, and the silence rates) and the proactive emotional thresholds (`longing_threshold`, `fear_threshold`) also live there and accept config overrides.
+`emotions.json` owns the emotion set and every rule that names a dimension. The engine reads dimension names from the file and hardcodes none, so you can rename, add, or remove dimensions. The packaged file ships 16. The engine stays deterministic and calls no model.
+
+| Section | Controls |
+| --- | --- |
+| `dimensions` | One entry per dimension with `neutral`, `floor`, and `tau` in hours. An optional `description` reaches the decision plugin. |
+| `negative_dimensions` | Dimensions that a negative delta cannot pull below the current mood. |
+| `silence.rules` | Drift while the user stays silent. Each rule names a dimension and sets `rate_per_hour`, a `cap` above neutral, and an optional `gate_hours` of silence before the rule starts. |
+| `proactive_sent_deltas` | Deltas applied after a proactive message goes out. |
+| `impact_scale`, `mood_follow_gain`, `affect` | Delta strength and the mood timing (`mood_follow_hours`, `mood_return_hours`). |
+| `prompt` | Which feelings reach the Affect line: `top_n`, `deviation_threshold`, the level cutoffs, and `always_show`, a map of dimension to the minimum value that forces it onto the line. |
+| `proactive.triggers` | An ordered list of `dimension`, `threshold`, and `reason`. The first trigger at or above its threshold starts a proactive message and sets the event `reason`. No match means no message. |
+| `appraisal` | Semantic appraisal data: `prototypes` maps a label to a `text` sentence and per-dimension `deltas`. `min_similarity` sets the cosine floor. `fallback_label` names the prototype that absorbs weak matches. |
+
+A rule that names a dimension missing from `dimensions` fails startup with the offending path. Stored state follows the file. A new dimension starts at its neutral value and a removed one drops out on the next read.
+
+Schema version 2 files still load. The gateway converts the old `silence.caps`, `affect.silence_*_per_hour`, `prompt.fear_minimum`, and `proactive.*_threshold` fields in memory and leaves your file untouched. A version 2 file has no `appraisal` section, so it inherits the packaged prototypes for the dimensions it defines.
 
 Export the packaged files, edit the copies, and reference them:
 
@@ -89,14 +104,18 @@ Reference the copies:
 
 ```json
 {
-  "emotions": {"path": "emotions.json", "expected_version": "0.2.0"},
+  "emotions": {"path": "emotions.json", "expected_version": "0.3.0"},
   "prompts": {"path": "prompts.json"}
 }
 ```
 
 `emotions.expected_version` pins the file's `emotion_version`. A mismatch fails startup. Omit it to accept any valid file.
 
-Prompts replace whole text slots. A provided slot must carry every key in that slot. A missing key fails validation. Omitted slots inherit the packaged text. Blank strings are valid replacements. The five slots are `affect_presentation`, `companion_state`, `evergreen`, `proactive_generation_instruction`, and `decision_instruction`. `proactive_generation_instruction` is an object with `base` and `variants`. The gateway picks one variant per event by send count and appends it to the base, so you control rotation by editing the list. Each instruction also names the ruling feeling for that send, with its value and neutral point, plus an escalation stage driven by the unanswered count. The first nudge stays open, the next turns pointed, later ones go cold and short. Silence timing stays in the event fields and conversation records, not in the instruction text.
+Prompts replace whole text slots. A provided slot must carry every key in that slot. A missing key fails validation. Omitted slots inherit the packaged text. Blank strings are valid replacements. The seven slots are `affect_presentation`, `companion_state`, `evergreen`, `context_blocks`, `proactive_framing`, `proactive_generation_instruction`, and `decision_instruction`. `proactive_generation_instruction` is an object with `base` and `variants`. The gateway picks one variant per event by send count and appends it to the base, so you control rotation by editing the list. Silence timing stays in the event fields and conversation records, not in the instruction text.
+
+`proactive_framing` holds the rest of the proactive instruction. `ruling` names the ruling feeling for that send and accepts the placeholders `{dimension}`, `{value}`, `{neutral}`, and `{deviation}`. `ladder` lists one escalation line per unanswered count, and the last entry covers every higher count, so you add or remove stages by editing the list. `approach` wraps the chosen variant through `{variant}`. `context_query` is the retrieval query for the records attached to the event. Write a literal brace as `{{` or `}}`. An unknown placeholder fails startup.
+
+`context_blocks` sets the delimiters around the memo block and the memory plugin block in the injection.
 
 Value precedence resolves in this order:
 
@@ -104,7 +123,22 @@ Value precedence resolves in this order:
 2. A custom file from `emotions.path`.
 3. Explicit config overrides.
 
-An explicit override wins even when it equals the packaged default. Config fields carry an `UNSET` sentinel, so resolution never guesses the source. The engine snapshots these values at construction. Mutating the config object later changes nothing.
+Config overrides patch values and leave structure to `emotions.json`:
+
+```json
+{
+  "affect": {
+    "mood_follow_hours": 12,
+    "dimensions": {"fear": {"neutral": 0.05}},
+    "silence": {"longing": {"rate_per_hour": 0.02}}
+  },
+  "proactive": {"thresholds": {"longing": 0.4}}
+}
+```
+
+`affect.dimensions` patches `neutral`, `floor`, or `tau` of an existing dimension. `affect.silence` patches or adds a silence rule. `proactive.thresholds` patches the threshold of the triggers for that dimension and fails when the file defines no such trigger. Startup rewrites the legacy keys `affect.silence_<dimension>_per_hour` and `proactive.<dimension>_threshold` into these forms.
+
+An override wins over a custom file even when it equals the packaged default, so `config.example.json` carries none. The engine snapshots these values at construction. Mutating the config object later changes nothing.
 
 ## Decision plugins
 
@@ -185,7 +219,7 @@ The top-level `embedding` block configures one OpenAI-compatible embedding endpo
 }
 ```
 
-A legacy `memory.embedding` block moves here on first load. When `base_url` and `model` are both set, affect appraisal compares each new unlabeled user message against short emotional prototypes with cosine similarity, and the strongest matching emotion dimension adjusts the affect state. When either is unset, appraisal is off and the decision plugin alone selects the emotion. A failed embedding request uses a short cooldown and the engine makes no semantic adjustment. Retrieval stays lexical either way.
+A legacy `memory.embedding` block moves here on first load. When `base_url` and `model` are both set, affect appraisal compares each new unlabeled user message against the `appraisal.prototypes` sentences in `emotions.json` with cosine similarity, and the strongest matching emotion dimension adjusts the affect state. When either is unset, appraisal is off and the decision plugin alone selects the emotion. A failed embedding request uses a short cooldown and the engine makes no semantic adjustment. Retrieval stays lexical either way.
 
 A memory plugin contributes context through `inject_context`, capped by `memory.plugin_context_max_chars`. The gateway truncates that text to the budget and counts it against the injection total. A missing or failed plugin returns no plugin context, and the injection keeps the stored recent and evergreen content.
 
@@ -203,7 +237,7 @@ With no plugin these commands report lexical status. With a plugin they call the
 
 ## Proactive scheduling
 
-`proactive.enabled` turns evaluation on. The scheduler runs every `proactive.poll_interval_seconds`. A message needs `proactive.min_silence_minutes` of silence. After a send, `cooldown_minutes` applies, `max_per_day` caps daily sends, and `max_unanswered` caps ignored messages. `quiet_start_hour` and `quiet_end_hour` block local quiet hours. The emotional gates `longing_threshold` and `fear_threshold` come from `emotions.json`. The service stores each decision before delivery, so restarts keep the limits and dedupe events.
+`proactive.enabled` turns evaluation on. The scheduler runs every `proactive.poll_interval_seconds`. A message needs `proactive.min_silence_minutes` of silence. After a send, `cooldown_minutes` applies, `max_per_day` caps daily sends, and `max_unanswered` caps ignored messages. `quiet_start_hour` and `quiet_end_hour` block local quiet hours. The emotional gates come from `proactive.triggers` in `emotions.json`. The service stores each decision before delivery, so restarts keep the limits and dedupe events.
 
 ## Related documentation
 

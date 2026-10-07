@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import threading
 from collections.abc import Callable
@@ -15,89 +16,10 @@ from .database import Database
 from .serialization import compact_json
 from .timeutil import isoformat, parse_time, utc_now
 
+logger = logging.getLogger("companion_gateway")
+
 Decider = Callable[..., "str | None"]
 PhraseMatcher = Callable[[str], dict[str, float] | None]
-
-SEMANTIC_LABEL_DIMENSIONS: dict[str, dict[str, float]] = {
-    "affectionate": {
-        "intimacy": 0.20,
-        "contentment": 0.15,
-        "anxiety": -0.18,
-        "lust": 0.12,
-        "longing": -0.10,
-        "fear": -0.08,
-    },
-    "playful": {
-        "play": 0.20,
-        "elation": 0.18,
-        "contentment": 0.12,
-        "seeking": 0.10,
-        "irritability": -0.10,
-        "lust": 0.10,
-    },
-    "vulnerable": {"intimacy": 0.25, "protectiveness": 0.20, "anxiety": 0.12, "dejection": 0.08},
-    "reassuring": {
-        "anxiety": -0.25,
-        "jealousy": -0.20,
-        "contentment": 0.15,
-        "intimacy": 0.15,
-        "fear": -0.15,
-    },
-    "cold": {"anxiety": 0.15, "dejection": 0.12, "longing": 0.10, "intimacy": -0.10},
-    "conflict": {
-        "anxiety": 0.20,
-        "irritability": 0.15,
-        "dejection": 0.15,
-        "possessiveness": 0.18,
-        "intimacy": -0.15,
-        "contentment": -0.15,
-    },
-    "distant": {"anxiety": 0.12, "dejection": 0.10, "longing": 0.12, "intimacy": -0.08},
-    "struggling": {
-        "protectiveness": 0.30,
-        "anxiety": 0.12,
-        "dejection": 0.12,
-        "contentment": -0.08,
-        "fatigue": 0.12,
-    },
-    "intimate_reference": {"lust": 0.18, "intimacy": 0.10},
-    "intimate_event": {"lust": 0.25, "intimacy": 0.18},
-    "neutral": {"anxiety": -0.05, "longing": -0.04, "contentment": 0.03},
-    "hostile": {
-        "dejection": 0.22,
-        "anxiety": 0.18,
-        "irritability": 0.12,
-        "intimacy": -0.22,
-        "contentment": -0.18,
-    },
-    "fear_separation": {
-        "fear": 0.20,
-        "longing": 0.15,
-        "possessiveness": 0.12,
-        "anxiety": 0.15,
-        "protectiveness": 0.10,
-        "dejection": 0.10,
-        "irritability": 0.08,
-    },
-    "fear_death": {
-        "fear": 0.35,
-        "anxiety": 0.30,
-        "irritability": 0.20,
-        "contentment": -0.12,
-        "play": -0.15,
-        "elation": -0.10,
-    },
-    "fear_concern": {
-        "fear": 0.28,
-        "longing": 0.12,
-        "possessiveness": 0.15,
-        "anxiety": 0.20,
-        "protectiveness": 0.25,
-        "contentment": -0.10,
-    },
-    "fear_general": {"fear": 0.20, "anxiety": 0.10},
-}
-
 
 class AffectEngine:
     def __init__(
@@ -123,6 +45,8 @@ class AffectEngine:
         self.affect_presentation = dict(
             (prompts or _prompts.default_prompts())["affect_presentation"]
         )
+        if appraisal is not None:
+            appraisal.configure(self.emotions["appraisal"])
 
     def initial_state(self) -> dict[str, Any]:
         base = {name: values["neutral"] for name, values in self.spec.items()}
@@ -140,7 +64,12 @@ class AffectEngine:
     def _load_row(self, db: Any, now: datetime) -> tuple[Any, dict[str, Any]]:
         self._ensure(db, now)
         row = db.execute("SELECT * FROM affect_state WHERE id=1").fetchone()
-        return row, json.loads(row["state_json"])
+        stored = json.loads(row["state_json"])
+        neutral = self.initial_state()
+        return row, {
+            layer: {name: stored.get(layer, {}).get(name, default) for name, default in defaults.items()}
+            for layer, defaults in neutral.items()
+        }
 
     def _clamp(self, value: float, floor: float = 0.0) -> float:
         return min(self.value_max, max(floor, value))
@@ -182,11 +111,12 @@ class AffectEngine:
             return None
         if not isinstance(weights, dict) or not weights:
             return None
+        prototypes = self.emotions["appraisal"]["prototypes"]
         blended: dict[str, float] = {}
         for label, weight in weights.items():
             if isinstance(weight, bool) or not isinstance(weight, (int, float)):
                 continue
-            for dimension, delta in SEMANTIC_LABEL_DIMENSIONS.get(label, {}).items():
+            for dimension, delta in prototypes.get(label, {}).get("deltas", {}).items():
                 blended[dimension] = blended.get(dimension, 0.0) + float(weight) * delta
         positive = {name: value for name, value in blended.items() if value > 0 and name in self.spec}
         if not positive:
@@ -226,22 +156,13 @@ class AffectEngine:
         if last_user and now > last_updated:
             silence_start = max(last_updated, last_user)
             silence_hours = max(0.0, (now - silence_start).total_seconds() / 3600)
-            caps = self.emotions["silence"]["caps"]
-            affect = self.emotions["affect"]
-            rates = {
-                "longing": affect["silence_longing_per_hour"],
-                "anxiety": affect["silence_anxiety_per_hour"],
-                "seeking": affect["silence_seeking_per_hour"],
-            }
-            for name, rate in rates.items():
-                neutral = self.spec[name]["neutral"]
-                state["base"][name] = min(neutral + caps[name], state["base"][name] + rate * silence_hours)
-            total_silence = (now - last_user).total_seconds() / 3600
-            if total_silence >= self.emotions["silence"]["dejection_gate_hours"]:
-                state["base"]["dejection"] = min(
-                    self.spec["dejection"]["neutral"] + caps["dejection"],
-                    state["base"]["dejection"]
-                    + self.emotions["silence"]["dejection_rate_per_hour"] * silence_hours,
+            total_silence = max(0.0, (now - last_user).total_seconds() / 3600)
+            for name, rule in self.emotions["silence"]["rules"].items():
+                if total_silence < rule["gate_hours"]:
+                    continue
+                state["base"][name] = min(
+                    self.spec[name]["neutral"] + rule["cap"],
+                    state["base"][name] + rule["rate_per_hour"] * silence_hours,
                 )
 
     def _save(self, db: Any, state: dict[str, Any], now: datetime, **fields: Any) -> None:
@@ -333,6 +254,9 @@ class AffectEngine:
                     deltas = None
             except Exception:
                 deltas = None
+            unknown = sorted(str(name) for name in deltas or {} if name not in self.spec)
+            if unknown:
+                logger.warning("phrase deltas name unknown emotion dimension(s): %s", unknown)
             if deltas:
                 with self._lock, self.database.connect() as db:
                     row, state = self._load_row(db, requested)
@@ -388,10 +312,9 @@ class AffectEngine:
             for deviation, name, value in deviations
             if deviation >= prompt["deviation_threshold"]
         ][: prompt["top_n"]]
-        if values["fear"] >= prompt["fear_minimum"] and not any(
-            name == "fear" for name, _ in selected
-        ):
-            selected.append(("fear", values["fear"]))
+        for name, minimum in prompt["always_show"].items():
+            if values[name] >= minimum and not any(shown == name for shown, _ in selected):
+                selected.append((name, values[name]))
         if not selected:
             return presentation["baseline"]
         labels = []

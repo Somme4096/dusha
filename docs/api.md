@@ -105,7 +105,7 @@ Call `POST /state/v1/messages` with `role: "assistant"`. The gateway stores the 
 
 ## Affect
 
-`GET /state/v1/affect` returns `base` and `mood` for all 16 dimensions, timestamps, and `unanswered_proactive`. This read advances decay and silence effects to the current time, then persists the result. Reading affect changes state.
+`GET /state/v1/affect` returns `base` and `mood` for every dimension in the resolved `emotions.json`, timestamps, and `unanswered_proactive`. This read advances decay and silence effects to the current time, then persists the result. Reading affect changes state.
 
 There are no labels. The gateway has no keyword rules, no staging, and no agent labeling endpoints. On a new user message the service calls the configured decision plugin (see [configuration.md](configuration.md#decision-plugins)). The plugin returns at most one dimension name from the resolved `emotions.json`; the engine increases that dimension by the configured bounded `decision.increment` and clamps it. A missing, failed, or invalid decision changes nothing. Every applied decision is recorded in the `affect_decisions` table.
 
