@@ -6,16 +6,18 @@ import logging
 import os
 import secrets
 from contextlib import asynccontextmanager
+from importlib import metadata as _metadata
 from typing import Any
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.responses import JSONResponse
 
 from . import schema as _schema
 from .api_openai import create_openai_router
 from .api_state import create_state_router
 from .config import AppConfig, load_config
 from .proactive import ProactiveEngine
-from .service import CompanionService
+from .service import CompanionService, StorageUnavailableError
 
 logger = logging.getLogger("companion_gateway")
 
@@ -109,7 +111,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
 
     app = FastAPI(
         title="Companion State Gateway",
-        version="0.1.0",
+        version=_metadata.version("companion-state-gateway"),
         description="https://github.com/Somme4096/sophia",
         lifespan=lifespan,
         docs_url=None if auth_enabled else "/docs",
@@ -133,13 +135,17 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         ):
             raise HTTPException(status_code=401, detail="invalid companion token")
 
+    @app.exception_handler(StorageUnavailableError)
+    async def storage_unavailable(_: Request, error: StorageUnavailableError) -> JSONResponse:
+        return JSONResponse(status_code=503, content={"detail": str(error)})
+
     @app.get("/health", tags=["health"], response_model=_schema.HealthResponse)
     async def health() -> dict[str, Any]:
         return {
             "status": "ok",
-            "database": service.database.integrity_check(),
+            "database": await asyncio.to_thread(service.database.integrity_check),
             "upstream_configured": bool(cfg.upstream.base_url),
-            "memory_index": service.memory_index_status(),
+            "memory_index": await asyncio.to_thread(service.memory_index_status),
         }
 
     app.include_router(create_state_router(service, proactive, authorized))

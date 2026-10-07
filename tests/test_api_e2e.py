@@ -225,3 +225,29 @@ def test_http_config_json_rejects_non_boolean_openai_enabled(tmp_path):
 
     with pytest.raises(ValueError, match=r"api_openai\.enabled must be bool"):
         load_config(config_path)
+
+
+async def test_http_storage_disabled_returns_503_on_state_and_proxy_routes(config):
+    config.storage.enabled = False
+    config.upstream.base_url = "https://provider.invalid/v1"
+    app = api.create_app(config)
+    async with _running_client(app) as client:
+        state = await client.post("/state/v1/context", json={"query": ""})
+        proxy = await client.post(
+            "/v1/chat/completions",
+            json={"model": "m", "messages": [{"role": "user", "content": "hello"}]},
+        )
+        health = await client.get("/health")
+        affect = await client.get("/state/v1/affect")
+    assert (state.status_code, proxy.status_code) == (503, 503)
+    assert state.json() == proxy.json() == {"detail": "built-in message storage is disabled"}
+    assert (health.status_code, affect.status_code) == (200, 200)
+
+
+async def test_http_openapi_version_follows_the_package(config):
+    from importlib import metadata
+
+    app = api.create_app(config)
+    async with _running_client(app) as client:
+        document = await client.get("/openapi.json")
+    assert document.json()["info"]["version"] == metadata.version("companion-state-gateway")
