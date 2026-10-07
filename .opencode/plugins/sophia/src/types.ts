@@ -1,4 +1,4 @@
-// Types for the Sophia Dusha API and plugin configuration.
+// Types for the Dusha API and plugin configuration.
 
 export interface SophiaConfig {
   baseUrl: string;
@@ -6,6 +6,7 @@ export interface SophiaConfig {
   autoInject: boolean;
   harness: string;
   timeoutSeconds: number;
+  companion: string;
 }
 
 export const CONFIG_KEY = "config";
@@ -16,10 +17,14 @@ export const DEFAULT_CONFIG: SophiaConfig = {
   autoInject: true,
   harness: "opencode",
   timeoutSeconds: 30,
+  companion: "",
 };
+
+export const FALLBACK_TOOL_PREFIX = "dusha";
 
 export interface HealthResponse {
   status: string;
+  companion?: string;
   database: string;
   upstream_configured: boolean;
   memory_index?: Record<string, unknown>;

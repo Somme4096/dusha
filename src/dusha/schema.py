@@ -15,6 +15,7 @@ class ErrorDetail(ExtraAllow):
 
 class HealthResponse(ExtraAllow):
     status: str
+    companion: str = ""
     database: str
     upstream_configured: bool
     memory_index: dict

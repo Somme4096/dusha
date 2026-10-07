@@ -3,6 +3,7 @@ import type { CommandInvocation } from "@opencode/plugin/promise/command";
 import type { Registration } from "@opencode/plugin/promise/registration";
 import { SophiaClient, errorMessage } from "./client";
 import { loadConfig, saveConfig } from "./config";
+import { adoptCompanion, refreshTools, toolIdentity } from "./tools";
 import type { SophiaConfig } from "./types";
 
 type SessionId = Parameters<Plugin.Context["session"]["synthetic"]>[0]["sessionID"];
@@ -11,7 +12,8 @@ const HELP_TEXT = [
   "Dusha commands",
   "/dusha status - show configuration and connection status",
   "/dusha test - test the gateway connection",
-  "/dusha url <url> - set the gateway base URL",
+  "/dusha url <url> - set the gateway base URL and adopt the companion it serves",
+  "/dusha companion <name|auto> - set the companion name that prefixes the tools",
   "/dusha token <token> - set the API token, use clear to remove it",
   "/dusha auto-inject <on|off> - toggle companion state injection",
   "/dusha harness <name> - set the harness name conversations are stored under",
@@ -38,7 +40,7 @@ function normalizeUrl(value: string): string {
 
 async function reply(ctx: Plugin.Context, sessionID: SessionId, text: string): Promise<void> {
   try {
-    await ctx.session.synthetic({ sessionID, text, description: "Sophia" });
+    await ctx.session.synthetic({ sessionID, text, description: "Dusha" });
   } catch {
     // The session can close while the command runs.
   }
@@ -58,6 +60,7 @@ function renderStatus(config: SophiaConfig, connectionLine: string): string {
   return [
     "Dusha",
     `URL: ${config.baseUrl}`,
+    `Companion: ${config.companion || "not set"} (tools: ${toolIdentity(config.companion).prefix}_*)`,
     `Auth: ${config.apiToken ? "token set" : "no token"}`,
     `Auto-inject: ${config.autoInject ? "on" : "off"}`,
     `Harness: ${config.harness}`,
@@ -77,15 +80,35 @@ export async function handleSophiaCommand(ctx: Plugin.Context, invocation: Comma
     case "":
     case "status": {
       const connection = await testConnection(config);
+      if (await adoptCompanion(ctx, config)) await refreshTools(ctx);
       await reply(ctx, sessionID, renderStatus(config, connection.line));
       return;
     }
     case "test": {
       const connection = await testConnection(config);
+      if (await adoptCompanion(ctx, config)) await refreshTools(ctx);
+      const who = config.companion || "Dusha";
       const text = connection.connected
-        ? `Sophia is reachable at ${config.baseUrl}.`
-        : `Sophia is not reachable. ${connection.line}`;
+        ? `${who} is reachable at ${config.baseUrl}.`
+        : `${who} is not reachable. ${connection.line}`;
       await reply(ctx, sessionID, text);
+      return;
+    }
+    case "companion": {
+      const value = parsed.args[0];
+      if (!value) {
+        const current = config.companion || "not set";
+        await reply(ctx, sessionID, `Companion is currently ${current}. Use /dusha companion <name|auto>.`);
+        return;
+      }
+      if (value.toLowerCase() === "auto") {
+        await adoptCompanion(ctx, config, true);
+      } else {
+        config.companion = value;
+        await saveConfig(ctx, config);
+      }
+      const identity = await refreshTools(ctx);
+      await reply(ctx, sessionID, `Companion set to ${identity.label}. Tools are named ${identity.prefix}_*.`);
       return;
     }
     case "url": {
@@ -97,7 +120,14 @@ export async function handleSophiaCommand(ctx: Plugin.Context, invocation: Comma
       config.baseUrl = normalizeUrl(value);
       await saveConfig(ctx, config);
       const connection = await testConnection(config);
-      await reply(ctx, sessionID, `Sophia URL set to ${config.baseUrl}.\nStatus: ${connection.line}`);
+      await adoptCompanion(ctx, config, true);
+      const identity = await refreshTools(ctx);
+      const lines = [
+        `URL set to ${config.baseUrl}.`,
+        `Companion: ${identity.label}. Tools are named ${identity.prefix}_*.`,
+        `Status: ${connection.line}`,
+      ];
+      await reply(ctx, sessionID, lines.join("\n"));
       return;
     }
     case "token": {

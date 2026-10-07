@@ -10,7 +10,7 @@ The state API lives under `/state/v1/*`. The optional OpenAI-compatible proxy li
 
 | Method | Path | Purpose | Statuses |
 | --- | --- | --- | --- |
-| GET | `/health` | Process, database, and index status | 200 |
+| GET | `/health` | Process, database, and index status, plus `companion`, the name of the companion home this process serves | 200 |
 | POST | `/state/v1/messages` | Store one message, update affect for a new user message | 200, 401, 422, 503 |
 | GET | `/state/v1/messages/{message_id}` | Read one stored message | 200, 401, 404, 503 |
 | POST | `/state/v1/memory/search` | Search the archive with adjacent context | 200, 401, 503 |
@@ -282,7 +282,7 @@ The plugin registers nine LLM tools when the provider supports tools:
 | `yumecho_list` | `status`, `limit` | `GET /state/v1/memo/list` |
 | `yumecho_done` | `note_id`, `reason` | `POST /state/v1/memo/{id}/done` |
 
-The nine tools read or manage memory, facts, and memos. Tools return JSON with `ok: true` on success, or `ok: false` plus `error` and, for HTTP failures, `status`. `yumecho_done` rejects an empty `reason` before it calls the gateway. The AstrBot plugin exposes no affect tool, because the gateway updates affect during message ingest. The OpenCode plugin still offers `sophia_affect_status`, which reads `GET /state/v1/affect`.
+The nine tools read or manage memory, facts, and memos. Tools return JSON with `ok: true` on success, or `ok: false` plus `error` and, for HTTP failures, `status`. `yumecho_done` rejects an empty `reason` before it calls the gateway. The AstrBot plugin exposes no affect tool, because the gateway updates affect during message ingest. The OpenCode plugin still offers an affect status tool, which reads `GET /state/v1/affect`. It prefixes its tools with the companion name it adopts from `/health`, for example `sophia_affect_status`, and falls back to `dusha_` when no name is set.
 
 ### Behavior
 

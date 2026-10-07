@@ -280,3 +280,15 @@ async def test_http_memo_limits_follow_config_and_default_data_dir_sits_beside_c
     assert "second memo" not in context.json()["injection"]
     assert wordy.status_code == 422
     assert not (elsewhere / "data").exists()
+
+
+async def test_http_health_reports_the_companion_it_serves(tmp_path, config):
+    home = tmp_path / "dusha" / "luna"
+    home.mkdir(parents=True)
+    (home / "config.json").write_text("{}", encoding="utf-8")
+    async with _running_client(api.create_app(load_config(home=home))) as client:
+        named = await client.get("/health")
+    async with _running_client(api.create_app(config)) as client:
+        unnamed = await client.get("/health")
+    assert named.json()["companion"] == "luna"
+    assert unnamed.json()["companion"] == ""

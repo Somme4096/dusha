@@ -2,8 +2,8 @@ import type { Plugin } from "@opencode/plugin";
 import type { Info, Result } from "@opencode/plugin/promise/tool";
 import type { Registration } from "@opencode/plugin/promise/registration";
 import { SophiaClient, errorMessage } from "./client";
-import { loadConfig } from "./config";
-import type { SophiaConfig } from "./types";
+import { loadConfig, saveConfig } from "./config";
+import { FALLBACK_TOOL_PREFIX, type SophiaConfig } from "./types";
 
 type Args = Record<string, unknown>;
 
@@ -88,11 +88,46 @@ async function clientFrom(ctx: Plugin.Context): Promise<{ config: SophiaConfig; 
   return { config, client: SophiaClient.fromConfig(config) };
 }
 
-function buildTools(ctx: Plugin.Context): Info[] {
+interface ToolIdentity {
+  prefix: string;
+  label: string;
+}
+
+export function toolIdentity(companion: string): ToolIdentity {
+  const name = companion.trim();
+  const prefix = name.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  return { prefix: prefix || FALLBACK_TOOL_PREFIX, label: name || "companion" };
+}
+
+let current: ToolIdentity = toolIdentity("");
+
+// Fills the companion name from the service when the stored config has none.
+export async function adoptCompanion(ctx: Plugin.Context, config: SophiaConfig, force = false): Promise<boolean> {
+  if (config.companion && !force) return false;
+  try {
+    const reported = (await SophiaClient.fromConfig(config).health()).companion;
+    if (typeof reported !== "string" || !reported || reported === config.companion) return false;
+    config.companion = reported;
+    await saveConfig(ctx, config);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function refreshTools(ctx: Plugin.Context): Promise<ToolIdentity> {
+  const next = toolIdentity((await loadConfig(ctx)).companion);
+  const changed = next.prefix !== current.prefix || next.label !== current.label;
+  current = next;
+  if (changed) await ctx.tool.reload();
+  return current;
+}
+
+function buildTools(ctx: Plugin.Context, identity: ToolIdentity): Info[] {
   return [
     {
-      name: "sophia_memory_search",
-      description: "Search the Sophia archive for relevant past exchanges.",
+      name: `${identity.prefix}_memory_search`,
+      description: `Search the ${identity.label} archive for relevant past exchanges.`,
       input: objectSchema(
         {
           query: { type: "string", description: "Search text." },
@@ -115,8 +150,8 @@ function buildTools(ctx: Plugin.Context): Info[] {
         }),
     },
     {
-      name: "sophia_context_build",
-      description: "Build the companion state injection Sophia would add to a prompt.",
+      name: `${identity.prefix}_context_build`,
+      description: `Build the companion state injection ${identity.label} would add to a prompt.`,
       input: objectSchema(
         {
           query: { type: "string", description: "Current user message." },
@@ -140,7 +175,7 @@ function buildTools(ctx: Plugin.Context): Info[] {
         }),
     },
     {
-      name: "sophia_affect_status",
+      name: `${identity.prefix}_affect_status`,
       description: "Read the current affect state for the companion.",
       input: objectSchema({}) as unknown as Info["input"],
       options: { codemode: false },
@@ -151,7 +186,7 @@ function buildTools(ctx: Plugin.Context): Info[] {
         }),
     },
     {
-      name: "sophia_evergreen_remember",
+      name: `${identity.prefix}_evergreen_remember`,
       description: "Store an evergreen fact the companion should always remember.",
       input: objectSchema(
         {
@@ -182,7 +217,7 @@ function buildTools(ctx: Plugin.Context): Info[] {
         }),
     },
     {
-      name: "sophia_evergreen_list",
+      name: `${identity.prefix}_evergreen_list`,
       description: "List the evergreen facts the companion currently holds.",
       input: objectSchema({
         include_inactive: { type: "boolean", description: "Include inactive facts." },
@@ -202,7 +237,7 @@ function buildTools(ctx: Plugin.Context): Info[] {
         }),
     },
     {
-      name: "sophia_evergreen_revise",
+      name: `${identity.prefix}_evergreen_revise`,
       description: "Revise an evergreen fact at the given revision.",
       input: objectSchema(
         {
@@ -235,7 +270,7 @@ function buildTools(ctx: Plugin.Context): Info[] {
         }),
     },
     {
-      name: "sophia_evergreen_forget",
+      name: `${identity.prefix}_evergreen_forget`,
       description: "Forget an evergreen fact at the given revision.",
       input: objectSchema(
         {
@@ -263,11 +298,14 @@ function buildTools(ctx: Plugin.Context): Info[] {
 }
 
 export async function registerSophiaTools(ctx: Plugin.Context): Promise<Registration | undefined> {
+  const config = await loadConfig(ctx);
+  await adoptCompanion(ctx, config);
+  current = toolIdentity(config.companion);
   return ctx.tool.transform((editor) => {
     if (typeof (editor as { namespace?: unknown }).namespace === "function") {
-      editor.namespace({ name: "sophia", description: "Dusha tools." });
+      editor.namespace({ name: current.prefix, description: `Dusha tools for ${current.label}.` });
     }
     if (typeof (editor as { add?: unknown }).add !== "function") return;
-    for (const tool of buildTools(ctx)) editor.add(tool);
+    for (const tool of buildTools(ctx, current)) editor.add(tool);
   });
 }

@@ -124,7 +124,7 @@ export class SophiaClient {
       case 422:
         return detail ? `Invalid request: ${detail}` : "Invalid request.";
       default:
-        return detail ? `Sophia request failed (${status}): ${detail}` : `Sophia request failed (${status}).`;
+        return detail ? `Dusha request failed (${status}): ${detail}` : `Dusha request failed (${status}).`;
     }
   }
 
@@ -150,12 +150,12 @@ export class SophiaClient {
       });
     } catch (error) {
       if (controller.signal.aborted && !options?.signal?.aborted) {
-        throw new SophiaError(`Sophia timed out after ${this.timeoutMs}ms at ${this.baseUrl}.`, { cause: error });
+        throw new SophiaError(`Dusha timed out after ${this.timeoutMs}ms at ${this.baseUrl}.`, { cause: error });
       }
       if (options?.signal?.aborted) {
-        throw new SophiaError("Sophia request was cancelled.", { cause: error });
+        throw new SophiaError("Dusha request was cancelled.", { cause: error });
       }
-      throw new SophiaError(`Sophia is not reachable at ${this.baseUrl}. Is the gateway running?`, { cause: error });
+      throw new SophiaError(`Dusha is not reachable at ${this.baseUrl}. Is the service running?`, { cause: error });
     } finally {
       clearTimeout(timer);
       options?.signal?.removeEventListener("abort", relayAbort);

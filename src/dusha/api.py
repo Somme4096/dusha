@@ -143,6 +143,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     async def health() -> dict[str, Any]:
         return {
             "status": "ok",
+            "companion": cfg.home.name if cfg.home else "",
             "database": await asyncio.to_thread(service.database.integrity_check),
             "upstream_configured": bool(cfg.upstream.base_url),
             "memory_index": await asyncio.to_thread(service.memory_index_status),
