@@ -1,37 +1,69 @@
 # Dusha
 
+> *This README.md is proudly written by a human (and a little bit by Claude (˶>⩊<˶)❤️)*
 
-`dusha` is a Python API reference implementation that combines memory, personality, and affect for LLM companions. One `dusha` process serves one companion, and each companion lives in its own home directory.
+*Dusha* (Russian: душа, [dʊˈʂa], "soul") is a small HTTP API that stores messages, identity, evergreen facts, and affect state outside your harness. Any client that can POST a message and read back an injection string can use it. (You can also use it across multiple harnesses!)
 
-The built-in SQLite store owns messages and evergreen facts, and core retrieval runs on lexical SQLite FTS5. A memory plugin can inject extra context and consume gateway-pushed message batches. A shared embedding endpoint adds semantic affect appraisal when configured.
+Every prompt, emotional vector, and threshold is configurable through JSON.
 
-Every prompt, emotional vector, and threshold is configurable through JSON. 
+<details>
+<summary>How does memory/affect/identity work?</summary>
 
-## Quickstart
+- Messages: Basic SQLite FTS5 + optional embedding search. Also `~/.config/dusha/<name>/mods/` for external memory providers integration.
+- Evergreen: Long-term facts that you edit from the CLI and your companion edits through integration tools. No automatic extraction (think of it as a USER.md that actually has good lifecycle management and duplication prevention)
+- Affect: A deterministic emotion engine with decay and silence drift. Proactive messages fire on thresholds. And hey, message intent analysis is a plugin too: drop Jev or any other classifier into `~/.config/dusha/<name>/mods/` and it picks which emotion each user message moves.
+- Identity: `identity.md`.
 
-Requires Python 3.11 or newer and uv. 
+</details>
 
-1. Create a home for your companion and copy the example config into it. This example names her `dusha`: `mkdir -p ~/.config/dusha/dusha && cp config.example.json ~/.config/dusha/dusha/config.json`
-2. Install the CLI: `uv tool install --editable .`
-3. Start the service: `dusha serve dusha`
+## How to run it
 
-The install links the CLI to this checkout on uv's tool bin path. If `dusha` is not on your `PATH`, run `uv tool update-shell`.
+You need Python 3.11 or newer and [uv](https://docs.astral.sh/uv/).
 
-A companion home is `$XDG_CONFIG_HOME/dusha/<name>/`, or `~/.config/dusha/<name>/` when `XDG_CONFIG_HOME` is unset. It holds `config.json`, your emotion and prompt files, `mods/`, and `data/` with the database. Run a second companion by adding a second home with its own `port`. `dusha list` prints the companions, and `dusha -c <name> <command>` runs any other command against one. With a single companion you can leave the name out. To run it in the background, use [deploy/dusha@.service](deploy/dusha@.service) with the [service setup steps](docs/guide.md#run-a-durable-single-instance-service).
+```sh
+mkdir -p ~/.config/dusha/dusha
+cp config.example.json ~/.config/dusha/dusha/config.json
+uv tool install --editable .
+dusha serve dusha
+```
 
-Check it is running:
+The first two lines make a folder for a companion named `dusha` and give it a config. Use any name you like. If your shell cannot find `dusha` after the install, run `uv tool update-shell`.
+
+Check that it is up:
 
 ```sh
 curl http://127.0.0.1:8765/health
 ```
 
-Success reports `"status": "ok"` and a passing `database` integrity check. If startup fails, see [docs/guide.md](docs/guide.md).
+You should see `"status": "ok"`. If you don't, look at [docs/guide.md](docs/guide.md).
+
+Everything about one companion is in `~/.config/dusha/<name>/`. Including: 
+
+- its `config.json`
+- the emotion and prompt files
+- `mods/`, and `data/` with the database.
+- It respects `XDG_CONFIG_HOME` too.
+
+### Advanced setup
+
+Want a second companion? Make a second folder and give it a different `port`. `dusha list` shows all of them, and `dusha -c <name> <command>` talks to one.
+
+Want it running in the background? Use [deploy/dusha@.service](deploy/dusha@.service) with the [service setup steps](docs/guide.md#run-a-durable-single-instance-service). (Linux only. Tell your agents to make PR for Windows, Mac, BSD or whatever, because I don't use them at all!)
 
 ## How it works
 
-A user message reaches the gateway, which builds context from memory, personality, and affect state and returns it to your harness or model. The harness gets the reply through the gateway. The built-in SQLite store owns messages and facts unless you set `storage.enabled` to false. A trusted memory plugin can inject extra context and receive message batches. A trusted decision plugin can select one emotion dimension to adjust per new user message. See [docs/configuration.md](docs/configuration.md).
+One turn of chat is four steps.
 
-Build your harness plugin with the [API and integration guide](docs/api.md).
+1. Your harness sends the user's message to `POST /state/v1/messages`. `dusha` stores it and updates the emotions.
+2. Your harness calls `POST /state/v1/context` and gets one string back. It holds the identity, the evergreen facts, memos, recalled messages, and the current emotions.
+3. Your harness puts that string in the system prompt and calls the model.
+4. Your harness sends the reply to `POST /state/v1/messages` so it is remembered too.
+
+Your harness is the one calling the chat model, so `dusha` does not care which harness or provider you use. If your client only speaks the OpenAI API, point it at `/v1/chat/completions` and `dusha` runs all four steps as a proxy.
+
+Proactive messages go the other way. `dusha` decides it is time to say something, your harness picks the event up from `GET /state/v1/proactive/events`, sends it, and reports back.
+
+The full request and response shapes are in the [API and integration guide](docs/api.md).
 
 ## Plugin API
 
@@ -63,4 +95,3 @@ A memory plugin exports these operations. The gateway reads only the fields list
 - [docs/configuration.md](docs/configuration.md): JSON settings, identity and prompt files.
 - [docs/guide.md](docs/guide.md): service setup, auth and network, backup, and troubleshooting.
 - [docs/api.md](docs/api.md): HTTP endpoints and harness integration, including AstrBot.
-- [third-party-notices.md](third-party-notices.md): licenses and adapted work.
