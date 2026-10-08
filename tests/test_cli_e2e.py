@@ -108,11 +108,12 @@ def test_cli_rejects_yaml_config_in_a_subprocess(tmp_path: Path) -> None:
     assert "unsupported configuration format" in result.stderr
 
 
-def _run_in_root(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
+def _run_in_root(root: Path, *args: str, **extra_env: str) -> subprocess.CompletedProcess[str]:
     env = {
         **os.environ,
         "PYTHONPATH": str(Path(__file__).parents[1] / "src"),
         "XDG_CONFIG_HOME": str(root),
+        **extra_env,
     }
     return subprocess.run(
         [sys.executable, "-m", "dusha.cli", *args], capture_output=True, text=True, env=env, check=False
@@ -133,7 +134,8 @@ def test_cli_companions_keep_separate_state_across_restarts(tmp_path: Path) -> N
     added = _run_in_root(tmp_path, "-c", "dusha", "memo", "add", "Only Dusha knows this.")
     assert added.returncode == 0
     dusha = json.loads(_run_in_root(tmp_path, "--companion", "dusha", "memo", "list").stdout)
-    luna = json.loads(_run_in_root(tmp_path, "--home", str(tmp_path / "dusha" / "luna"), "memo", "list").stdout)
+    luna_home = str(tmp_path / "dusha" / "luna")
+    luna = json.loads(_run_in_root(tmp_path, "--home", luna_home, "memo", "list").stdout)
     assert [memo["text"] for memo in dusha["memos"]] == ["Only Dusha knows this."]
     assert luna["memos"] == []
     assert (tmp_path / "dusha" / "dusha" / "data" / "state.sqlite3").is_file()
@@ -152,3 +154,46 @@ def test_cli_rejects_ambiguous_and_unknown_companions(tmp_path: Path) -> None:
     assert "several companions exist" in ambiguous.stderr
     assert unknown.returncode == 2
     assert "configuration file not found" in unknown.stderr
+
+
+def test_cli_companion_selection_follows_the_documented_order(tmp_path: Path) -> None:
+    homes = {name: tmp_path / "dusha" / name for name in ("dusha", "luna")}
+    homes["elsewhere"] = tmp_path / "elsewhere"
+    for name, home in homes.items():
+        home.mkdir(parents=True)
+        (home / "config.json").write_text("{}", encoding="utf-8")
+        assert _run_in_root(tmp_path, "--home", str(home), "memo", "add", name).returncode == 0
+    explicit = tmp_path / "explicit" / "config.json"
+    explicit.parent.mkdir()
+    explicit.write_text("{}", encoding="utf-8")
+    assert _run_in_root(tmp_path, "--config", str(explicit), "memo", "add", "explicit").returncode == 0
+
+    def selected(*args: str, **env: str) -> list[str]:
+        result = _run_in_root(tmp_path, *args, "memo", "list", **env)
+        assert result.returncode == 0, result.stderr
+        return [memo["text"] for memo in json.loads(result.stdout)["memos"]]
+
+    both = {"DUSHA_COMPANION": "luna", "DUSHA_HOME": str(homes["elsewhere"])}
+    assert selected(DUSHA_COMPANION="luna") == ["luna"]
+    assert selected(**both) == ["elsewhere"]
+    assert selected("-c", "dusha", **both) == ["dusha"]
+    assert selected("--home", str(homes["luna"]), "-c", "dusha", **both) == ["luna"]
+    assert selected("--config", str(explicit), "--home", str(homes["luna"]), **both) == ["explicit"]
+
+    escaped = _run_in_root(tmp_path, "-c", "../escape", "memo", "list")
+    missing = _run_in_root(tmp_path, "--config", str(tmp_path / "missing.json"), "memo", "list")
+    assert escaped.returncode == 2
+    assert "companion name" in escaped.stderr
+    assert missing.returncode == 2
+    assert "configuration file not found" in missing.stderr
+
+
+def test_cli_serves_the_only_companion_without_a_selection(tmp_path: Path) -> None:
+    home = tmp_path / "dusha" / "solo"
+    home.mkdir(parents=True)
+    (home / "config.json").write_text("{}", encoding="utf-8")
+
+    added = _run_in_root(tmp_path, "memo", "add", "Solo memo.")
+
+    assert added.returncode == 0, added.stderr
+    assert (home / "data" / "state.sqlite3").is_file()

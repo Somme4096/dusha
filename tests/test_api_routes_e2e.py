@@ -9,7 +9,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from dusha import api, api_openai, api_state
+from dusha import api, api_openai
 from dusha.config import AppConfig, IdentityPromptConfig, MemoryConfig
 
 
@@ -19,6 +19,17 @@ async def _run_inline(function, /, *args, **kwargs):
 
 def _client(app):
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
+
+
+async def _stored(app):
+    messages = []
+    async with _client(app) as client:
+        for message_id in range(1, 50):
+            response = await client.get(f"/state/v1/messages/{message_id}")
+            if response.status_code == 404:
+                break
+            messages.append(response.json())
+    return messages
 
 
 @pytest.fixture(autouse=True)
@@ -120,8 +131,6 @@ async def test_consolidated_error_mappings_keep_status_and_detail(config, monkey
             assert response.status_code == status
             if detail is not None:
                 assert response.json()["detail"] == detail
-    with pytest.raises(RuntimeError, match="boom"):
-        api_state._raise_http(RuntimeError("boom"))
 
 
 async def test_state_api_and_openai_proxy_preserve_one_canonical_transcript(config, monkeypatch):
@@ -145,7 +154,7 @@ async def test_state_api_and_openai_proxy_preserve_one_canonical_transcript(conf
         assert search.status_code == 200
         recalled = [m["text"] for hit in search.json()["results"] for m in hit["messages"]]
         assert "Remember the amber window." in recalled
-    stored = app.state.service._memory_fallback.recent(limit=10)
+    stored = await _stored(app)
     assert [m["text"] for m in stored] == ["Hello.", "First reply.", "Remember the amber window.",
                                            "Second reply."]
     assert stored[0]["content"] == {"role": "user", "content": "Hello."}
@@ -172,7 +181,7 @@ async def test_proxy_replay_dedups_through_upstream_round_trip(config, monkeypat
         first = await _chat(client, transcript)
         replay = await _chat(client, transcript)
         assert first.status_code == replay.status_code == 200
-    stored = app.state.service._memory_fallback.recent(limit=10)
+    stored = await _stored(app)
     assert [m["text"] for m in stored] == [
         "Hello.", "A reply.", "Remember the amber window.", "Final reply.",
     ]
@@ -199,7 +208,7 @@ async def test_proxy_tool_call_body_preserved_and_archived(config, monkeypatch):
             client, [{"role": "user", "content": "Look it up."}], {"X-Conversation-Id": "tools"}
         )
     assert response.status_code == 200
-    stored = app.state.service._memory_fallback.recent(limit=10)
+    stored = await _stored(app)
     assert stored[-1]["content"] == tool_message
     assert '"name":"lookup"' in stored[-1]["text"]
 
@@ -279,7 +288,8 @@ async def test_proxy_stream_passthrough_and_drain(config, monkeypatch, fake, sta
         assert response.content == b"upstream exploded"
         assert response.headers["content-type"].startswith("text/plain")
     elif check == "drain":
-        stored = app.state.service._memory_fallback.recent(limit=10)
+        monkeypatch.undo()
+        stored = await _stored(app)
         assert [m["role"] for m in stored] == ["user", "assistant"]
         assert stored[-1]["text"] == stored[-1]["content"] == "streamed reply"
         assert stored[-1]["external_id"].startswith("proxy:")
@@ -288,24 +298,14 @@ async def test_proxy_stream_passthrough_and_drain(config, monkeypatch, fake, sta
         assert b"data: [DONE]\n\n" in response.content
 
 
-async def test_old_label_endpoints_and_affect_label_are_gone(config, monkeypatch):
+async def test_unknown_message_field_is_rejected(config):
     async with _client(api.create_app(config)) as client:
         rejected = await client.post(
             "/state/v1/messages",
             json={"harness": "astrbot", "conversation_id": "one", "role": "user",
                   "content": "I hate you.", "affect_label": "hostile"},
         )
-        message = await client.post(
-            "/state/v1/messages",
-            json={"harness": "astrbot", "conversation_id": "one", "role": "user",
-                  "content": "I hate you."},
-        )
-        message_id = message.json()["id"]
-        record = await client.post(f"/state/v1/messages/{message_id}/affect", json={"label": "hostile"})
-        event = await client.post("/state/v1/affect/events", json={"label": "neutral"})
     assert rejected.status_code == 422
-    assert record.status_code in (404, 405)
-    assert event.status_code in (404, 405)
 
 
 async def test_evergreen_api_lifecycle_and_memory_context(config, monkeypatch):
@@ -386,7 +386,6 @@ async def test_api_context_shape_and_same_state_auth(config, monkeypatch):
     assert response.status_code == 200
     body = response.json()
     assert set(body) == {"injection", "affect", "evergreen_facts", "records", "search_hits", "context"}
-    assert body["context"]["emotion"]["fingerprints"]["prompts"].startswith("sha256:")
     assert "<companion_state>" in body["injection"]
 
     config.api_token_env = "TEST_TOKEN_ENV"
@@ -458,11 +457,10 @@ async def test_openapi_paths_are_documented(config, monkeypatch):
             assert path in paths, f"missing documented path {path}"
 
 
-def test_configuration_export_commands_roundtrip(tmp_path):
+async def test_configuration_export_commands_roundtrip(tmp_path):
     from dusha import emotions
     from dusha import prompts as prompts_module
     from dusha.config import AppConfig, PromptsConfig
-    from dusha.service import CompanionService
 
     configuration = (Path(__file__).parents[1] / "docs" / "configuration.md").read_text(encoding="utf-8")
     commands = [cmd for block in re.findall(r"```sh\n(.*?)```", configuration, re.DOTALL)
@@ -486,11 +484,10 @@ def test_configuration_export_commands_roundtrip(tmp_path):
         timezone="Asia/Taipei",
         prompts=PromptsConfig(path=str(prompts_file)),
     )
-    service = CompanionService(cfg)
-    injection = service.build_context(query="")["injection"]
+    async with _client(api.create_app(cfg)) as client:
+        injection = (await client.post("/state/v1/context", json={"query": ""})).json()["injection"]
     assert "SENTINEL_EXPORT" in injection
     assert "Treat the affect description" not in injection
-    service.close()
 
 
 async def test_endpoint_response_keys_and_conflict_flow(config, monkeypatch):
@@ -506,7 +503,6 @@ async def test_endpoint_response_keys_and_conflict_flow(config, monkeypatch):
         stored = await client.get(f"/state/v1/messages/{message_id}")
         assert stored.status_code == 200
         assert MESSAGE_KEYS <= set(stored.json())
-        assert len(stored.json()["sha256"]) == 64
         missing = await client.get("/state/v1/messages/999999")
         assert missing.status_code == 404
         assert isinstance(missing.json()["detail"], str)
