@@ -27,7 +27,6 @@ Rules for the file:
 
 - Plain JSON. The parser rejects comments, unknown keys, duplicate keys, wrong types, and out-of-range numbers.
 - Relative paths resolve against the config file's directory.
-- Startup renames keys from older releases once and rewrites the file.
 
 ## Server
 
@@ -87,7 +86,7 @@ The file defines the emotion dimensions and the rules that name them. Rename, ad
 | `proactive.triggers` | Ordered list of `dimension`, `threshold`, and `reason`. The first trigger at or above its threshold starts a proactive message. |
 | `appraisal` | Prototype sentences for [embedding](#embedding) appraisal: `prototypes`, `min_similarity`, `fallback_label`. |
 
-A rule that names an undefined dimension fails startup. Schema version 2 files still load.
+A rule that names an undefined dimension fails startup.
 
 ### Overrides in config.json
 
@@ -152,8 +151,6 @@ Search is lexical and uses SQLite FTS5.
 | `memo.max_chars` | `2000` | Size of the memo block. |
 | `memo.text_max_chars` | `4000` | Longest memo the API accepts. |
 | `memo.reason_max_chars` | `1000` | Longest archive reason the API accepts. |
-
-The gateway ignores `memory.retrieval_mode`, `memory.chunk_max_chars`, `memory.chunk_overlap_chars`, `memory.lexical_candidates`, `memory.semantic_candidates`, and `memory.rrf_k`. They stay valid so older files load.
 
 ## Embedding
 

@@ -105,8 +105,6 @@ To restore:
 2. Place the backup in the data directory as `state.sqlite3`.
 3. Start the service.
 
-Startup upgrades a database from an older release in place. Take a backup before you upgrade `dusha`.
-
 ## Memory index
 
 ```sh

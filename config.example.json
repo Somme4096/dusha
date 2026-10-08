@@ -37,12 +37,6 @@
     "search_hits": 4,
     "context_messages": 1,
     "injection_max_chars": 12000,
-    "retrieval_mode": "lexical",
-    "chunk_max_chars": 800,
-    "chunk_overlap_chars": 120,
-    "lexical_candidates": 24,
-    "semantic_candidates": 24,
-    "rrf_k": 60,
     "plugin_context_max_chars": 3000
   },
   "memory_plugin": {
