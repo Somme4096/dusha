@@ -15,7 +15,7 @@ uv tool install dusha
 dusha serve <name>
 ```
 
-The second line starts a companion named `<name>`. On the first run it makes the folder `~/.config/dusha/dusha/` and writes a `config.json` with every setting in it. It respects `XDG_CONFIG_HOME` too!
+The second line starts a companion named `<name>`. On the first run it makes the folder `~/.config/dusha/<name>/` and writes a `config.json` with every setting in it. It respects `XDG_CONFIG_HOME` too!
 
 ### Advanced setup
 
