@@ -8,3 +8,4 @@ config.json
 data/
 .slim/deepwork/
 integrations/*.zip
+.serena/
