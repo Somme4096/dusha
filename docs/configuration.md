@@ -1,13 +1,13 @@
 # Configuration
 
-Each companion reads one `config.json` from its home directory.
+Each companion reads one `config.json` from its home directory. `dusha serve <name>` writes the file on the first run:
 
 ```sh
-mkdir -p ~/.config/dusha/dusha
-cp config.example.json ~/.config/dusha/dusha/config.json
+dusha serve dusha
+${EDITOR:-vi} ~/.config/dusha/dusha/config.json
 ```
 
-[config.example.json](../config.example.json) lists every key. Omit a key to keep its default. Restart the service after an edit.
+The generated file matches [config.example.json](../config.example.json) and lists every key. Omit a key to keep its default. Restart the service after an edit.
 
 ## Which file loads
 

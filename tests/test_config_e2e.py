@@ -161,7 +161,7 @@ async def test_http_example_config_starts_and_serves(tmp_path):
         health = await client.get("/health")
         context = await client.post("/state/v1/context", json={"query": ""})
     assert health.json()["status"] == "ok"
-    assert health.json()["upstream_configured"] is True
+    assert health.json()["upstream_configured"] is False
     assert context.status_code == 200
 
 

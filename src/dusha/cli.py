@@ -4,12 +4,20 @@ import argparse
 import json
 import sys
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import uvicorn
 
 from .api import create_app
-from .config import config_root, list_companions, load_config
+from .config import (
+    CONFIG_FILE,
+    companion_home,
+    config_root,
+    create_default_config,
+    list_companions,
+    load_config,
+)
 from .proactive import ProactiveEngine
 from .service import CompanionService
 
@@ -358,6 +366,10 @@ def main() -> None:
         return
     companion = args.companion or getattr(args, "serve_companion", None)
     try:
+        if args.command == "serve" and args.config is None and (args.home or companion):
+            home = Path(args.home).expanduser() if args.home else companion_home(companion)
+            if not (home / CONFIG_FILE).exists():
+                print(f"created {create_default_config(home)}", file=sys.stderr)
         cfg = load_config(args.config, home=args.home, companion=companion)
     except (FileNotFoundError, ValueError) as error:
         print(error, file=sys.stderr)

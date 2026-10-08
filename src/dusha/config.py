@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 import os
 import re
@@ -46,6 +47,14 @@ def companion_home(name: str) -> Path:
     if not _COMPANION_NAME.fullmatch(name):
         raise ValueError(f"companion name must be letters, digits, dot, dash, or underscore, got {name!r}")
     return config_root() / name
+
+
+def create_default_config(home: Path) -> Path:
+    raw = {"emotions": {"path": "", "expected_version": ""}, **all_defaults(), "data_dir": "data"}
+    home.mkdir(parents=True, exist_ok=True)
+    path = home / CONFIG_FILE
+    path.write_text(json.dumps(raw, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    return path
 
 
 def list_companions() -> list[str]:

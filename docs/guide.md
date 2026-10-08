@@ -9,16 +9,16 @@ These steps name the companion `dusha`. Swap in your own name.
 1. Install the CLI. The unit expects the binary at `~/.local/bin/dusha`.
 
 ```sh
-uv tool install --editable .
+uv tool install dusha
 command -v dusha
 ```
 
-2. Create the companion home and install the unit.
+2. Install the unit. The first start creates the companion home and its `config.json`.
 
 ```sh
 mkdir -p ~/.config/dusha/dusha ~/.config/systemd/user
-cp config.example.json ~/.config/dusha/dusha/config.json
-cp deploy/dusha@.service ~/.config/systemd/user/
+curl -o ~/.config/systemd/user/dusha@.service \
+  https://raw.githubusercontent.com/Somme4096/dusha/main/deploy/dusha@.service
 ```
 
 3. Add secrets, if you use an upstream key or an API token. The config stores variable names and this file stores the values.
@@ -33,6 +33,8 @@ ${EDITOR:-vi} ~/.config/dusha/dusha/environment
 UPSTREAM_API_KEY=replace-me
 COMPANION_TOKEN=replace-with-a-long-random-value
 ```
+
+The unit sets `PATH` to `~/.local/bin:/usr/local/bin:/usr/bin:/bin`. Add a `PATH=` line to this file when `uv` lives elsewhere.
 
 4. Start the service and check it.
 

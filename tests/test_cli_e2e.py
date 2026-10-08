@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import subprocess
 import sys
+import time
 from pathlib import Path
 
+import httpx
 import pytest
 
 
@@ -197,3 +200,69 @@ def test_cli_serves_the_only_companion_without_a_selection(tmp_path: Path) -> No
 
     assert added.returncode == 0, added.stderr
     assert (home / "data" / "state.sqlite3").is_file()
+
+
+def _free_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def _serve(root: Path, *args: str) -> subprocess.Popen[str]:
+    env = {**os.environ, "PYTHONPATH": str(Path(__file__).parents[1] / "src"), "XDG_CONFIG_HOME": str(root)}
+    return subprocess.Popen(
+        [sys.executable, "-m", "dusha.cli", "serve", *args], env=env, text=True,
+        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+    )
+
+
+def _wait_for(check, seconds: float = 15.0):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        result = check()
+        if result:
+            return result
+        time.sleep(0.1)
+    raise AssertionError("condition not met in time")
+
+
+def test_cli_serve_creates_the_config_once_and_serves_it_after_restart(tmp_path: Path) -> None:
+    config = tmp_path / "dusha" / "nova" / "config.json"
+    example = json.loads((Path(__file__).parents[1] / "config.example.json").read_text(encoding="utf-8"))
+
+    first = _serve(tmp_path, "nova")
+    try:
+        _wait_for(config.is_file)
+    finally:
+        first.terminate()
+        _, stderr = first.communicate(timeout=10)
+    assert f"created {config}" in stderr
+    generated = json.loads(config.read_text(encoding="utf-8"))
+    assert generated == example
+
+    port = _free_port()
+    config.write_text(json.dumps({**generated, "port": port}), encoding="utf-8")
+    second = _serve(tmp_path, "nova")
+    try:
+        def healthy():
+            try:
+                return httpx.get(f"http://127.0.0.1:{port}/health", timeout=1).json()
+            except httpx.HTTPError:
+                return None
+
+        health = _wait_for(healthy)
+    finally:
+        second.terminate()
+        _, stderr = second.communicate(timeout=10)
+    assert health["status"] == "ok"
+    assert health["companion"] == "nova"
+    assert "created" not in stderr
+    assert json.loads(config.read_text(encoding="utf-8"))["port"] == port
+
+
+def test_cli_serve_rejects_a_bad_companion_name_without_creating_anything(tmp_path: Path) -> None:
+    result = _serve(tmp_path, "../escape")
+    _, stderr = result.communicate(timeout=10)
+    assert result.returncode == 2
+    assert "companion name" in stderr
+    assert not (tmp_path / "dusha").exists()

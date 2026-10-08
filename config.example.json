@@ -18,7 +18,7 @@
     "path": ""
   },
   "upstream": {
-    "base_url": "https://api.openai.com/v1",
+    "base_url": "",
     "api_key_env": "UPSTREAM_API_KEY",
     "timeout_seconds": 120
   },
