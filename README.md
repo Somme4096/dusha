@@ -48,7 +48,7 @@ Everything about one companion is in `~/.config/dusha/<name>/`. Including:
 
 Want a second companion? Make a second folder and give it a different `port`. `dusha list` shows all of them, and `dusha -c <name> <command>` talks to one.
 
-Want it running in the background? Use [deploy/dusha@.service](deploy/dusha@.service) with the [service setup steps](docs/guide.md#run-a-durable-single-instance-service). (Linux only. Tell your agents to make PR for Windows, Mac, BSD or whatever, because I don't use them at all!)
+Want it running in the background? Use [deploy/dusha@.service](deploy/dusha@.service) with the [service setup steps](docs/guide.md#run-as-a-systemd-service). (Linux only. Tell your agents to make PR for Windows, Mac, BSD or whatever, because I don't use them at all!)
 
 ## How it works
 
