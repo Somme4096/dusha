@@ -25,6 +25,9 @@ dusha = "dusha.cli:main"
 packages = ["src/dusha"]
 artifacts = ["src/dusha/resources/*.json"]
 
+[tool.hatch.build.targets.sdist]
+include = ["/src", "/docs", "/deploy", "/config.example.json", "/README.md", "/LICENSE"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"

@@ -276,7 +276,7 @@ Restart AstrBot or reload the plugin from its manager. Keep AstrBot's chat provi
 
 Tools return JSON with `ok: true`, or `ok: false` plus `error` and, for HTTP failures, `status`.
 
-The OpenCode plugin adds an affect status tool and prefixes its tools with the companion name from `/health`, for example `dusha_affect_status`.
+The OpenCode plugin in `integrations/opencode_dusha` adds an affect status tool and prefixes its tools with the companion name from `/health`, for example `dusha_affect_status`.
 
 ### Behavior
 
