@@ -3,8 +3,8 @@
 Copy the example into a companion home and edit it:
 
 ```sh
-mkdir -p ~/.config/dusha/sophia
-cp config.example.json ~/.config/dusha/sophia/config.json
+mkdir -p ~/.config/dusha/dusha
+cp config.example.json ~/.config/dusha/dusha/config.json
 ```
 
 `config.example.json` at the repository root lists every setting with its packaged value, except the emotion overrides described below. Packaged defaults live in `defaults.json` and `emotions.json` inside the installed package. The runtime reads those files directly and Python keeps no second copy. This page explains the settings that change behavior.
@@ -158,7 +158,7 @@ def decide(request, options):
     ...
 ```
 
-The runner passes sanitized request data and options to the child plugin. Decision plugins return `{"emotion": "<dimension>"}` or `None`. Memory operation names and result schemas are documented in the [project README](https://github.com/Somme4096/sophia).
+The runner passes sanitized request data and options to the child plugin. Decision plugins return `{"emotion": "<dimension>"}` or `None`. Memory operation names and result schemas are documented in the [project README](https://github.com/Somme4096/dusha).
 
 Configuration:
 
@@ -178,7 +178,7 @@ Configuration:
 - `options`: passed through to the plugin verbatim.
 - `increment`: overrides `decision.increment` from `emotions.json`. `null` keeps the file value. A number must be positive and no larger than the value range span. A per-dimension `increment` in the file still wins for that dimension.
 - `timeout_seconds`: the outer deadline for each decision process. Must be finite and positive. Default `15`. Set it above any HTTP timeout configured in `options`.
-- `mods_dir`: an optional mods directory. Empty uses `mods` inside the companion home, for example `~/.config/dusha/sophia/mods`. A relative value resolves against the config file location. Point two companions at one absolute path to share plugins.
+- `mods_dir`: an optional mods directory. Empty uses `mods` inside the companion home, for example `~/.config/dusha/dusha/mods`. A relative value resolves against the config file location. Point two companions at one absolute path to share plugins.
 - `env_passthrough`: names of environment variables the plugin may read, on top of the basic system set. Default empty. List a proxy or certificate variable here when the plugin needs one.
 
 Memory plugins take `module`, `options`, `mods_dir`, `timeout_seconds`, and `env_passthrough` with the same meaning, and use an operation-based `fn(request, options)` contract. `memory_plugin.module` defaults to empty, which disables the plugin. A configured name loads that plugin directory from the mods directory:
@@ -196,7 +196,7 @@ Memory plugins take `module`, `options`, `mods_dir`, `timeout_seconds`, and `env
 }
 ```
 
-The gateway stores messages and facts itself. A memory plugin adds retrieval and derived context. On each new message the gateway pushes committed `user` and `assistant` rows to the plugin through `ingest_messages`, then records the returned `highest_id` in the `plugin_ingest_state` cursor. After an outage the scheduler retries from that cursor every `ingest_backfill_interval_seconds`, so catch-up is at-least-once and a failed push never blocks message ingest. When a harness builds context, the gateway calls `inject_context` with the query, the harness, the conversation id, and a `memory.plugin_context_max_chars` budget. A plugin can also answer `match_phrase`, `status`, `backfill_once`, `rebuild_chunks`, and `rebuild_index`. Operation names and result schemas live in the [project README](https://github.com/Somme4096/sophia).
+The gateway stores messages and facts itself. A memory plugin adds retrieval and derived context. On each new message the gateway pushes committed `user` and `assistant` rows to the plugin through `ingest_messages`, then records the returned `highest_id` in the `plugin_ingest_state` cursor. After an outage the scheduler retries from that cursor every `ingest_backfill_interval_seconds`, so catch-up is at-least-once and a failed push never blocks message ingest. When a harness builds context, the gateway calls `inject_context` with the query, the harness, the conversation id, and a `memory.plugin_context_max_chars` budget. A plugin can also answer `match_phrase`, `status`, `backfill_once`, `rebuild_chunks`, and `rebuild_index`. Operation names and result schemas live in the [project README](https://github.com/Somme4096/dusha).
 
 The EverOS plugin shows the intended split. It owns its outbox, sidecar delivery, and episodic extraction, and it never creates or migrates the core message or fact tables. See [examples/mods/everos-memory](../examples/mods/everos-memory/README.md) and [examples/mods/README.md](../examples/mods/README.md).
 

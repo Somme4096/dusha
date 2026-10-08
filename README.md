@@ -11,9 +11,9 @@ Every prompt, emotional vector, and threshold is configurable through JSON.
 
 Requires Python 3.11 or newer and uv. 
 
-1. Create a home for your companion and copy the example config into it. This example names her `sophia`: `mkdir -p ~/.config/dusha/sophia && cp config.example.json ~/.config/dusha/sophia/config.json`
+1. Create a home for your companion and copy the example config into it. This example names her `dusha`: `mkdir -p ~/.config/dusha/dusha && cp config.example.json ~/.config/dusha/dusha/config.json`
 2. Install the CLI: `uv tool install --editable .`
-3. Start the service: `dusha serve sophia`
+3. Start the service: `dusha serve dusha`
 
 The install links the CLI to this checkout on uv's tool bin path. If `dusha` is not on your `PATH`, run `uv tool update-shell`.
 

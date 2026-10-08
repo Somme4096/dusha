@@ -17,7 +17,7 @@ defaults to empty, which disables the plugin. Every exported operation has the
 Python contract `fn(request, options)`. The gateway stores messages and
 evergreen facts itself, pushes committed message batches to the plugin with
 scheduled catch-up, and calls the plugin for context injection. See the
-[project README](https://github.com/Somme4096/sophia) for the public API.
+[project README](https://github.com/Somme4096/dusha) for the public API.
 
 The [EverOS plugin](everos-memory/README.md) is the shipped memory plugin. It
 owns the EverOS sidecar delivery path, the outbox, and episodic extraction, and
@@ -35,8 +35,8 @@ with decision-model support (`POST /v1/systemone`). No `torch` dependency.
 Install the plugin directory into the gateway's mods directory:
 
 ```sh
-mkdir -p ~/.config/dusha/sophia/mods
-cp -R examples/mods/system_one ~/.config/dusha/sophia/mods/system_one
+mkdir -p ~/.config/dusha/dusha/mods
+cp -R examples/mods/system_one ~/.config/dusha/dusha/mods/system_one
 ```
 
 Options passed to the mod:

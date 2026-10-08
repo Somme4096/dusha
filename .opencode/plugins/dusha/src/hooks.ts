@@ -1,6 +1,6 @@
 import type { Plugin } from "@opencode/plugin";
 import type { Registration } from "@opencode/plugin/promise/registration";
-import { SophiaClient } from "./client";
+import { DushaClient } from "./client";
 import { loadConfig } from "./config";
 
 function contentToText(content: unknown): string {
@@ -79,7 +79,7 @@ export async function registerContextHook(ctx: Plugin.Context): Promise<Registra
       if (query.trim().length === 0) return;
       const sessionID = String(event.sessionID);
       const storedId = await latestIngest.get(sessionID);
-      const client = SophiaClient.fromConfig(config);
+      const client = DushaClient.fromConfig(config);
       const response = await client.buildContext({
         query,
         harness: config.harness,
@@ -102,7 +102,7 @@ async function ingestUserMessage(
   text: string,
 ): Promise<number | undefined> {
   const config = await loadConfig(ctx);
-  const stored = await SophiaClient.fromConfig(config).ingestMessage({
+  const stored = await DushaClient.fromConfig(config).ingestMessage({
     harness: config.harness,
     conversation_id: sessionID,
     role: "user",
@@ -135,7 +135,7 @@ async function archiveReply(
   try {
     if (typeof data.text !== "string" || data.text.trim().length === 0) return;
     const config = await loadConfig(ctx);
-    await SophiaClient.fromConfig(config).ingestMessage({
+    await DushaClient.fromConfig(config).ingestMessage({
       harness: config.harness,
       conversation_id: String(data.sessionID),
       role: "assistant",

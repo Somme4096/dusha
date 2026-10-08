@@ -36,7 +36,7 @@ ProviderRequest = type("ProviderRequest", (), {})
 
 
 class AstrMessageEvent:
-    def __init__(self, platform_id="telegram-sophia", unified_msg_origin="telegram:user-1"):
+    def __init__(self, platform_id="telegram-dusha", unified_msg_origin="telegram:user-1"):
         self._platform_id = platform_id
         self.unified_msg_origin = unified_msg_origin
 
@@ -102,7 +102,7 @@ def _load_main():
 async def plugin_factory():
     built = []
 
-    async def _build(handler=None, platform_id="telegram-sophia", **settings):
+    async def _build(handler=None, platform_id="telegram-dusha", **settings):
         plugin = _load_main().DushaPlugin(
             context=Context(), config=AstrBotConfig(platform_id=platform_id, **settings)
         )
@@ -145,8 +145,8 @@ TOOLS = [
 async def test_routing_guard_and_success(call, fallback, handler, expected, plugin_factory):
     def recording(request):
         raise AssertionError("no request expected")
-    rejected = await plugin_factory(handler=recording, platform_id="telegram-sophia")
-    assert await call(rejected, AstrMessageEvent("discord-sophia")) == ROUTING_ERROR
+    rejected = await plugin_factory(handler=recording, platform_id="telegram-dusha")
+    assert await call(rejected, AstrMessageEvent("discord-dusha")) == ROUTING_ERROR
     plugin = await plugin_factory(handler=handler)
     plugin.latest_source_message_ids[AstrMessageEvent().unified_msg_origin] = 7
     assert await call(plugin, AstrMessageEvent()) == expected
@@ -180,7 +180,7 @@ async def test_validation_ordering(call, expected, plugin_factory):
     else:
         with pytest.raises(expected, match="has no attribute 'strip'"):
             await call(plugin, AstrMessageEvent())
-        assert await call(plugin, AstrMessageEvent("discord-sophia")) == ROUTING_ERROR
+        assert await call(plugin, AstrMessageEvent("discord-dusha")) == ROUTING_ERROR
 
 
 async def test_http_status_error_mapping(plugin_factory):
@@ -308,15 +308,15 @@ async def test_chat_turn_stores_message_then_injects_context(plugin_factory):
             return httpx.Response(200, json={"id": 7})
         return httpx.Response(200, json={"injection": "<companion_state>{}</companion_state>"})
 
-    plugin = await plugin_factory(handler=handler, harness="sophia-bot")
+    plugin = await plugin_factory(handler=handler, harness="dusha-bot")
     request, event = _chat_request(), _chat_event()
     await plugin.add_state_context(event, request)
     assert request.system_prompt == "persona\n<companion_state>{}</companion_state>"
     assert calls == [
-        ("/state/v1/messages", {"harness": "sophia-bot", "conversation_id": "telegram:user-1",
+        ("/state/v1/messages", {"harness": "dusha-bot", "conversation_id": "telegram:user-1",
                                 "route": "telegram:user-1", "role": "user", "content": "hello",
                                 "external_id": "user:m-1"}),
-        ("/state/v1/context", {"harness": "sophia-bot", "conversation_id": "telegram:user-1",
+        ("/state/v1/context", {"harness": "dusha-bot", "conversation_id": "telegram:user-1",
                                "query": "hello", "exclude_message_ids": [7], "include_recent": True}),
     ]
     assert plugin.latest_source_message_ids == {"telegram:user-1": 7}
@@ -370,9 +370,9 @@ async def test_harness_setting_names_assistant_archive_and_poll(plugin_factory, 
         posts.append(json.loads(request.read()))
         return httpx.Response(200, json={"id": 8})
 
-    plugin = await plugin_factory(handler=handler, harness="sophia-bot")
+    plugin = await plugin_factory(handler=handler, harness="dusha-bot")
     await plugin.store_response(_chat_event(), types.SimpleNamespace(completion_text="hi"))
-    assert posts[0]["harness"] == "sophia-bot"
+    assert posts[0]["harness"] == "dusha-bot"
 
     async def stop(seconds):
         raise asyncio.CancelledError
@@ -380,7 +380,7 @@ async def test_harness_setting_names_assistant_archive_and_poll(plugin_factory, 
     monkeypatch.setattr(asyncio, "sleep", stop)
     with pytest.raises(asyncio.CancelledError):
         await plugin._poll_loop()
-    assert polls == [{"consumer": "sophia-bot", "harness": "sophia-bot", "limit": "1"}]
+    assert polls == [{"consumer": "dusha-bot", "harness": "dusha-bot", "limit": "1"}]
 
 
 
@@ -394,10 +394,10 @@ def _load_routing():
 
 def test_routing_helpers():
     routing = _load_routing()
-    assert routing.accepts_platform("discord-sophia", "discord-sophia") is True
-    assert routing.accepts_platform("discord-sophia", "discord-sophia-backup") is False
-    assert routing.accepts_platform("", "discord-sophia") is False
-    assert routing.platform_id_from_umo("discord-sophia:FriendMessage:user-42") == "discord-sophia"
+    assert routing.accepts_platform("discord-dusha", "discord-dusha") is True
+    assert routing.accepts_platform("discord-dusha", "discord-dusha-backup") is False
+    assert routing.accepts_platform("", "discord-dusha") is False
+    assert routing.platform_id_from_umo("discord-dusha:FriendMessage:user-42") == "discord-dusha"
 
 
 def test_the_affect_tool_is_removed():
@@ -448,7 +448,7 @@ class _ProviderManager:
         return list(self.providers)
 
 
-def _proactive_event(route="telegram-sophia:FriendMessage:user-1"):
+def _proactive_event(route="telegram-dusha:FriendMessage:user-1"):
     return {
         "id": "evt-1",
         "target": {"route": route},
@@ -492,7 +492,7 @@ async def _deliver_plugin(
         posts.append(json.loads(request.read()))
         return httpx.Response(200, json={"ok": True})
 
-    plugin = await plugin_factory(handler=handler, platform_id="telegram-sophia", **settings)
+    plugin = await plugin_factory(handler=handler, platform_id="telegram-dusha", **settings)
     manager = _ConversationManager(cid=cid)
     plugin.context.conversation_manager = manager
     plugin.context.persona_manager = _PersonaManager()
@@ -542,7 +542,7 @@ async def test_proactive_send_failure_skips_history_and_acks_failed(plugin_facto
 async def test_proactive_delivery_creates_conversation_when_missing(plugin_factory):
     plugin, manager, posts = await _deliver_plugin(plugin_factory, cid=None)
     await plugin._deliver(_proactive_event())
-    assert manager.created == ["telegram-sophia:FriendMessage:user-1"]
+    assert manager.created == ["telegram-dusha:FriendMessage:user-1"]
     assert manager.pairs[0][0] == "cid-new"
     assert posts[0]["outcome"] == "sent"
 

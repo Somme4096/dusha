@@ -1,8 +1,8 @@
 import { Plugin } from "@opencode/plugin";
 import type { Registration } from "@opencode/plugin/promise/registration";
-import { registerSophiaCommand } from "./commands";
+import { registerDushaCommand } from "./commands";
 import { registerContextHook, registerPromptHook, registerReplyArchive } from "./hooks";
-import { registerSophiaTools } from "./tools";
+import { registerDushaTools } from "./tools";
 
 async function registerSafely(
   registrations: Registration[],
@@ -12,16 +12,16 @@ async function registerSafely(
     const registration = await setup();
     if (registration) registrations.push(registration);
   } catch (error) {
-    console.warn("[sophia] registration failed", error);
+    console.warn("[dusha] registration failed", error);
   }
 }
 
 export default Plugin.define({
-  id: "sophia",
+  id: "dusha",
   setup: async (ctx) => {
     const registrations: Registration[] = [];
-    await registerSafely(registrations, () => registerSophiaCommand(ctx));
-    await registerSafely(registrations, () => registerSophiaTools(ctx));
+    await registerSafely(registrations, () => registerDushaCommand(ctx));
+    await registerSafely(registrations, () => registerDushaTools(ctx));
     await registerSafely(registrations, () => registerContextHook(ctx));
     await registerSafely(registrations, () => registerPromptHook(ctx));
     await registerSafely(registrations, () => registerReplyArchive(ctx));

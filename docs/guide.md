@@ -19,11 +19,11 @@ command -v dusha
 
 Success check: `command -v` prints a path ending in `/dusha`.
 
-2. Create a companion home, copy the example config into it, and install the shipped template unit. These steps name the companion `sophia`.
+2. Create a companion home, copy the example config into it, and install the shipped template unit. These steps name the companion `dusha`.
 
 ```sh
-mkdir -p ~/.config/dusha/sophia ~/.config/systemd/user
-cp config.example.json ~/.config/dusha/sophia/config.json
+mkdir -p ~/.config/dusha/dusha ~/.config/systemd/user
+cp config.example.json ~/.config/dusha/dusha/config.json
 cp deploy/dusha@.service ~/.config/systemd/user/
 ```
 
@@ -33,14 +33,14 @@ cp deploy/dusha@.service ~/.config/systemd/user/
 systemctl --user daemon-reload
 ```
 
-The unit is a template. `dusha@sophia` runs `dusha serve sophia` and reads the home `~/.config/dusha/sophia/`. A second companion needs a second home with its own `port`, then `dusha@<name>`.
+The unit is a template. `dusha@dusha` runs `dusha serve dusha` and reads the home `~/.config/dusha/dusha/`. A second companion needs a second home with its own `port`, then `dusha@<name>`.
 
 4. Prepare the optional secrets file. Skip this step when you use no upstream key and no companion token. The `touch` command keeps an existing file's contents.
 
 ```sh
-touch ~/.config/dusha/sophia/environment
-chmod 600 ~/.config/dusha/sophia/environment
-${EDITOR:-vi} ~/.config/dusha/sophia/environment
+touch ~/.config/dusha/dusha/environment
+chmod 600 ~/.config/dusha/dusha/environment
+${EDITOR:-vi} ~/.config/dusha/dusha/environment
 ```
 
 The file holds only the keys you need. Config stores variable names, never values.
@@ -54,8 +54,8 @@ COMPANION_TOKEN=replace-with-a-long-random-value
 
 ```sh
 systemctl --user daemon-reload
-systemctl --user enable --now dusha@sophia
-systemctl --user is-active dusha@sophia
+systemctl --user enable --now dusha@dusha
+systemctl --user is-active dusha@dusha
 curl http://127.0.0.1:8765/health
 ```
 
@@ -64,7 +64,7 @@ Success check: `is-active` prints `active` and `/health` returns `"status":"ok"`
 Read recent logs without blocking:
 
 ```sh
-journalctl --user -u dusha@sophia --no-pager -n20
+journalctl --user -u dusha@dusha --no-pager -n20
 ```
 
 ## Auth and network
@@ -81,7 +81,7 @@ Set `api_token_env` to the name of an environment variable holding a long random
 
 ```sh
 export COMPANION_TOKEN="$(openssl rand -hex 32)"
-dusha serve sophia
+dusha serve dusha
 ```
 
 In another terminal, set `COMPANION_TOKEN` to the same value (do not generate a new one), then test:

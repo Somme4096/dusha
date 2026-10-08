@@ -19,7 +19,7 @@ from .serialization import canonical
 from .service import CompanionService
 
 _ERROR_DOCS = {
-    401: {"description": "https://github.com/Somme4096/sophia"},
+    401: {"description": "https://github.com/Somme4096/dusha"},
 }
 
 

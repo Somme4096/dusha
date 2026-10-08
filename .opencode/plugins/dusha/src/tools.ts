@@ -1,9 +1,9 @@
 import type { Plugin } from "@opencode/plugin";
 import type { Info, Result } from "@opencode/plugin/promise/tool";
 import type { Registration } from "@opencode/plugin/promise/registration";
-import { SophiaClient, errorMessage } from "./client";
+import { DushaClient, errorMessage } from "./client";
 import { loadConfig, saveConfig } from "./config";
-import { FALLBACK_TOOL_PREFIX, type SophiaConfig } from "./types";
+import { FALLBACK_TOOL_PREFIX, type DushaConfig } from "./types";
 
 type Args = Record<string, unknown>;
 
@@ -83,9 +83,9 @@ async function runTool<T>(operation: () => Promise<T>): Promise<Result> {
   }
 }
 
-async function clientFrom(ctx: Plugin.Context): Promise<{ config: SophiaConfig; client: SophiaClient }> {
+async function clientFrom(ctx: Plugin.Context): Promise<{ config: DushaConfig; client: DushaClient }> {
   const config = await loadConfig(ctx);
-  return { config, client: SophiaClient.fromConfig(config) };
+  return { config, client: DushaClient.fromConfig(config) };
 }
 
 interface ToolIdentity {
@@ -102,10 +102,10 @@ export function toolIdentity(companion: string): ToolIdentity {
 let current: ToolIdentity = toolIdentity("");
 
 // Fills the companion name from the service when the stored config has none.
-export async function adoptCompanion(ctx: Plugin.Context, config: SophiaConfig, force = false): Promise<boolean> {
+export async function adoptCompanion(ctx: Plugin.Context, config: DushaConfig, force = false): Promise<boolean> {
   if (config.companion && !force) return false;
   try {
-    const reported = (await SophiaClient.fromConfig(config).health()).companion;
+    const reported = (await DushaClient.fromConfig(config).health()).companion;
     if (typeof reported !== "string" || !reported || reported === config.companion) return false;
     config.companion = reported;
     await saveConfig(ctx, config);
@@ -297,7 +297,7 @@ function buildTools(ctx: Plugin.Context, identity: ToolIdentity): Info[] {
   ];
 }
 
-export async function registerSophiaTools(ctx: Plugin.Context): Promise<Registration | undefined> {
+export async function registerDushaTools(ctx: Plugin.Context): Promise<Registration | undefined> {
   const config = await loadConfig(ctx);
   await adoptCompanion(ctx, config);
   current = toolIdentity(config.companion);

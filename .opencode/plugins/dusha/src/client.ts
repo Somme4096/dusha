@@ -15,7 +15,7 @@ import type {
   MemorySearchResponse,
   RememberFactRequest,
   ReviseFactRequest,
-  SophiaConfig,
+  DushaConfig,
 } from "./types";
 import { DEFAULT_CONFIG } from "./types";
 
@@ -24,19 +24,19 @@ function timeoutMsFrom(seconds: unknown): number {
   return (valid ? seconds : DEFAULT_CONFIG.timeoutSeconds) * 1_000;
 }
 
-export interface SophiaClientOptions {
+export interface DushaClientOptions {
   baseUrl: string;
   apiToken?: string;
   timeoutMs?: number;
 }
 
-export class SophiaError extends Error {
+export class DushaError extends Error {
   readonly status?: number;
   readonly detail?: unknown;
 
   constructor(message: string, options?: { status?: number; detail?: unknown; cause?: unknown }) {
     super(message, options?.cause === undefined ? undefined : { cause: options.cause });
-    this.name = "SophiaError";
+    this.name = "DushaError";
     this.status = options?.status;
     this.detail = options?.detail;
   }
@@ -45,7 +45,7 @@ export class SophiaError extends Error {
 type QueryValue = string | number | boolean | undefined;
 
 export function errorMessage(error: unknown): string {
-  if (error instanceof SophiaError) return error.message;
+  if (error instanceof DushaError) return error.message;
   if (error instanceof Error) return error.message;
   return String(error);
 }
@@ -82,19 +82,19 @@ function extractDetail(payload: unknown): string {
   }
 }
 
-export class SophiaClient {
+export class DushaClient {
   private readonly baseUrl: string;
   private readonly apiToken: string;
   private readonly timeoutMs: number;
 
-  constructor(options: SophiaClientOptions) {
+  constructor(options: DushaClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, "");
     this.apiToken = options.apiToken ?? "";
     this.timeoutMs = options.timeoutMs ?? timeoutMsFrom(undefined);
   }
 
-  static fromConfig(config: SophiaConfig): SophiaClient {
-    return new SophiaClient({
+  static fromConfig(config: DushaConfig): DushaClient {
+    return new DushaClient({
       baseUrl: config.baseUrl,
       apiToken: config.apiToken,
       timeoutMs: timeoutMsFrom(config.timeoutSeconds),
@@ -150,12 +150,12 @@ export class SophiaClient {
       });
     } catch (error) {
       if (controller.signal.aborted && !options?.signal?.aborted) {
-        throw new SophiaError(`Dusha timed out after ${this.timeoutMs}ms at ${this.baseUrl}.`, { cause: error });
+        throw new DushaError(`Dusha timed out after ${this.timeoutMs}ms at ${this.baseUrl}.`, { cause: error });
       }
       if (options?.signal?.aborted) {
-        throw new SophiaError("Dusha request was cancelled.", { cause: error });
+        throw new DushaError("Dusha request was cancelled.", { cause: error });
       }
-      throw new SophiaError(`Dusha is not reachable at ${this.baseUrl}. Is the service running?`, { cause: error });
+      throw new DushaError(`Dusha is not reachable at ${this.baseUrl}. Is the service running?`, { cause: error });
     } finally {
       clearTimeout(timer);
       options?.signal?.removeEventListener("abort", relayAbort);
@@ -178,7 +178,7 @@ export class SophiaClient {
     }
 
     if (!response.ok) {
-      throw new SophiaError(this.describeError(response.status, payload), {
+      throw new DushaError(this.describeError(response.status, payload), {
         status: response.status,
         detail: payload,
       });

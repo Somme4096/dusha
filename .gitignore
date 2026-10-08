@@ -9,3 +9,4 @@ data/
 .slim/deepwork/
 integrations/*.zip
 .serena/
+.claude.json

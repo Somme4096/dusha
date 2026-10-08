@@ -1,7 +1,7 @@
 # EverOS memory plugin
 
 The plugin directory identifier is `everos_memory`. Configure it under
-`memory_plugin.module`. See the [Sophia project README](https://github.com/Somme4096/sophia)
+`memory_plugin.module`. See the [Dusha project README](https://github.com/Somme4096/dusha)
 for public API descriptions.
 
 ## Install
@@ -9,8 +9,8 @@ for public API descriptions.
 Copy the plugin directory into the gateway's configured mods directory.
 
 ```sh
-mkdir -p ~/.config/dusha/sophia/mods
-cp -R examples/mods/everos-memory ~/.config/dusha/sophia/mods/everos_memory
+mkdir -p ~/.config/dusha/dusha/mods
+cp -R examples/mods/everos-memory ~/.config/dusha/dusha/mods/everos_memory
 ```
 
 The gateway creates an isolated `uv` environment from `pyproject.toml` and
@@ -25,9 +25,9 @@ The gateway creates an isolated `uv` environment from `pyproject.toml` and
     "options": {
       "everos": {
         "url": "http://127.0.0.1:8000",
-        "app_id": "sophia",
+        "app_id": "dusha",
         "project_id": "default",
-        "instance_namespace": "sophia-local",
+        "instance_namespace": "dusha-local",
         "user_sender_id": "user",
         "assistant_sender_id": "assistant",
         "timeout_seconds": 5,
@@ -80,7 +80,7 @@ context and the gateway keeps its core recent and evergreen context.
 ## Flush behavior
 
 `flush_after_ingest` defaults to `false`. Set it to `true` to send one deferred
-add during Sophia ingest, then let the scheduler flush it through EverOS.
+add during Dusha ingest, then let the scheduler flush it through EverOS.
 The flush runs on a background thread so a slow sidecar never blocks the
 plugin RPC; completion lands in `everos_flush_state` and surfaces through
 `status`. At most one flush runs per session at a time.

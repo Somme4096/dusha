@@ -112,15 +112,15 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     app = FastAPI(
         title="Dusha",
         version=_metadata.version("dusha"),
-        description="https://github.com/Somme4096/sophia",
+        description="https://github.com/Somme4096/dusha",
         lifespan=lifespan,
         docs_url=None if auth_enabled else "/docs",
         redoc_url=None if auth_enabled else "/redoc",
         openapi_url=None if auth_enabled else "/openapi.json",
         openapi_tags=[
-            {"name": "health", "description": "https://github.com/Somme4096/sophia"},
-            {"name": "state", "description": "https://github.com/Somme4096/sophia"},
-            {"name": "proxy", "description": "https://github.com/Somme4096/sophia"},
+            {"name": "health", "description": "https://github.com/Somme4096/dusha"},
+            {"name": "state", "description": "https://github.com/Somme4096/dusha"},
+            {"name": "proxy", "description": "https://github.com/Somme4096/dusha"},
         ],
     )
     app.state.config = cfg

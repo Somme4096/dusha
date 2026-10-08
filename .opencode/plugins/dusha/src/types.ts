@@ -1,6 +1,6 @@
 // Types for the Dusha API and plugin configuration.
 
-export interface SophiaConfig {
+export interface DushaConfig {
   baseUrl: string;
   apiToken: string;
   autoInject: boolean;
@@ -11,7 +11,7 @@ export interface SophiaConfig {
 
 export const CONFIG_KEY = "config";
 
-export const DEFAULT_CONFIG: SophiaConfig = {
+export const DEFAULT_CONFIG: DushaConfig = {
   baseUrl: "http://127.0.0.1:8765",
   apiToken: "",
   autoInject: true,

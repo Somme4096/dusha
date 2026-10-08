@@ -14,11 +14,11 @@ from .proactive import ProactiveEngine
 from .service import CompanionService
 
 _ERROR_DOCS = {
-    401: {"model": _schema.ErrorDetail, "description": "https://github.com/Somme4096/sophia"},
-    404: {"model": _schema.ErrorDetail, "description": "https://github.com/Somme4096/sophia"},
-    409: {"model": _schema.ErrorDetail, "description": "https://github.com/Somme4096/sophia"},
-    422: {"model": _schema.ErrorDetail, "description": "https://github.com/Somme4096/sophia"},
-    503: {"model": _schema.ErrorDetail, "description": "https://github.com/Somme4096/sophia"},
+    401: {"model": _schema.ErrorDetail, "description": "https://github.com/Somme4096/dusha"},
+    404: {"model": _schema.ErrorDetail, "description": "https://github.com/Somme4096/dusha"},
+    409: {"model": _schema.ErrorDetail, "description": "https://github.com/Somme4096/dusha"},
+    422: {"model": _schema.ErrorDetail, "description": "https://github.com/Somme4096/dusha"},
+    503: {"model": _schema.ErrorDetail, "description": "https://github.com/Somme4096/dusha"},
 }
 
 _STORAGE_DISABLED = "built-in message storage is disabled"
@@ -141,7 +141,7 @@ def create_state_router(service: CompanionService, proactive: ProactiveEngine, a
         responses={
             401: _ERROR_DOCS[401],
             503: _ERROR_DOCS[503],
-            200: {"model": _schema.MemoryIndexStatus, "description": "https://github.com/Somme4096/sophia"},
+            200: {"model": _schema.MemoryIndexStatus, "description": "https://github.com/Somme4096/dusha"},
         },
     )
     async def memory_index_status() -> dict[str, Any]:
@@ -176,7 +176,7 @@ def create_state_router(service: CompanionService, proactive: ProactiveEngine, a
             401: _ERROR_DOCS[401],
             404: _ERROR_DOCS[404],
             503: _ERROR_DOCS[503],
-            200: {"model": _schema.MessageResponse, "description": "https://github.com/Somme4096/sophia"},
+            200: {"model": _schema.MessageResponse, "description": "https://github.com/Somme4096/dusha"},
         },
     )
     async def get_message(message_id: int) -> dict[str, Any]:

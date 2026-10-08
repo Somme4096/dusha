@@ -127,28 +127,28 @@ def _run_in_root(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
 
 
 def test_cli_companions_keep_separate_state_across_restarts(tmp_path: Path) -> None:
-    for name in ("sophia", "luna"):
+    for name in ("dusha", "luna"):
         home = tmp_path / "dusha" / name
         home.mkdir(parents=True)
         (home / "config.json").write_text("{}", encoding="utf-8")
 
     listed = _run_in_root(tmp_path, "list")
     assert json.loads(listed.stdout) == {
-        "root": str(tmp_path / "dusha"), "companions": ["luna", "sophia"],
+        "root": str(tmp_path / "dusha"), "companions": ["luna", "dusha"],
     }
 
-    added = _run_in_root(tmp_path, "-c", "sophia", "memo", "add", "Only Sophia knows this.")
+    added = _run_in_root(tmp_path, "-c", "dusha", "memo", "add", "Only Dusha knows this.")
     assert added.returncode == 0
-    sophia = json.loads(_run_in_root(tmp_path, "--companion", "sophia", "memo", "list").stdout)
+    dusha = json.loads(_run_in_root(tmp_path, "--companion", "dusha", "memo", "list").stdout)
     luna = json.loads(_run_in_root(tmp_path, "--home", str(tmp_path / "dusha" / "luna"), "memo", "list").stdout)
-    assert [memo["text"] for memo in sophia["memos"]] == ["Only Sophia knows this."]
+    assert [memo["text"] for memo in dusha["memos"]] == ["Only Dusha knows this."]
     assert luna["memos"] == []
-    assert (tmp_path / "dusha" / "sophia" / "data" / "state.sqlite3").is_file()
+    assert (tmp_path / "dusha" / "dusha" / "data" / "state.sqlite3").is_file()
     assert (tmp_path / "dusha" / "luna" / "data" / "state.sqlite3").is_file()
 
 
 def test_cli_rejects_ambiguous_and_unknown_companions(tmp_path: Path) -> None:
-    for name in ("sophia", "luna"):
+    for name in ("dusha", "luna"):
         home = tmp_path / "dusha" / name
         home.mkdir(parents=True)
         (home / "config.json").write_text("{}", encoding="utf-8")

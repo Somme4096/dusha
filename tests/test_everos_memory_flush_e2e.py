@@ -195,7 +195,7 @@ def _config(data_dir: Path, mods_dir: Path, sidecar: str, *, enabled: bool) -> A
             ingest_backfill_interval_seconds=1,
             options={"everos": {
                 "url": sidecar,
-                "app_id": "sophia-e2e",
+                "app_id": "dusha-e2e",
                 "project_id": "phase2",
                 "instance_namespace": "flush-e2e",
                 "user_sender_id": "flush-user",
@@ -212,7 +212,7 @@ async def _client(config: AppConfig):
     application = api.create_app(config)
     async with application.router.lifespan_context(application):
         transport = httpx.ASGITransport(app=application, raise_app_exceptions=False)
-        async with httpx.AsyncClient(transport=transport, base_url="http://sophia") as client:
+        async with httpx.AsyncClient(transport=transport, base_url="http://dusha") as client:
             yield client
 
 
@@ -248,7 +248,7 @@ async def _search(url: str, session_id: str) -> dict:
     async with httpx.AsyncClient(base_url=url, timeout=10, trust_env=False) as client:
         response = await client.post("/api/v2/memory/search", json={
             "user_id": "flush-user",
-            "app_id": "sophia-e2e",
+            "app_id": "dusha-e2e",
             "project_id": "phase2",
             "query": "cobalt-orchid",
             "method": "keyword",
@@ -280,18 +280,18 @@ def _mods(request, tmp_path: Path) -> Path:
 @pytest.mark.asyncio
 async def test_flush_extracts_two_messages_and_preserves_session(tmp_path: Path, everos_server, llm_stub, request):
     sidecar, _, _, restart = everos_server
-    data_dir = tmp_path / "sophia-data"
+    data_dir = tmp_path / "dusha-data"
     async with _client(_config(data_dir, _mods(request, tmp_path), sidecar, enabled=True)) as client:
         first = await _add(client, "conversation", "Remember cobalt-orchid from the first message.")
         await _add(client, "conversation", "The second message confirms cobalt-orchid.", role="assistant")
         status = await _wait_status(client, lambda value: value.get("processed", 0) >= 2)
         assert status.get("processed", 0) >= 2
     restart()
-    result = await _search(sidecar, "flush-e2e-sophia-" + str(first["conversation_id"]))
+    result = await _search(sidecar, "flush-e2e-dusha-" + str(first["conversation_id"]))
     episodes = result.get("data", {}).get("episodes", [])
     assert episodes
     assert any("cobalt-orchid" in repr(episode) for episode in episodes)
-    assert all(episode.get("session_id") == "flush-e2e-sophia-" + str(first["conversation_id"]) for episode in episodes)
+    assert all(episode.get("session_id") == "flush-e2e-dusha-" + str(first["conversation_id"]) for episode in episodes)
 
 
 @pytest.mark.asyncio
@@ -343,7 +343,7 @@ async def test_dropped_flush_response_retries_without_readding_messages(tmp_path
         (200, "extracted"),
         (200, "no_extraction"),
     ]
-    result = await _wait_search(real_url, "flush-e2e-sophia-" + str(message["conversation_id"]))
+    result = await _wait_search(real_url, "flush-e2e-dusha-" + str(message["conversation_id"]))
     assert any("cobalt-orchid" in repr(episode) for episode in result.get("data", {}).get("episodes", [])), result
 
 
@@ -360,7 +360,7 @@ async def test_enabling_flush_processes_existing_buffer(tmp_path: Path, everos_s
     async with _client(_config(data_dir, mods, sidecar, enabled=True)) as client:
         processed = await _wait_status(client, lambda value: value.get("processed", 0) >= 1)
         assert processed.get("processed", 0) >= 1
-    result = await _wait_search(sidecar, "flush-e2e-sophia-" + str(message["conversation_id"]))
+    result = await _wait_search(sidecar, "flush-e2e-dusha-" + str(message["conversation_id"]))
     assert any("cobalt-orchid" in repr(episode) for episode in result.get("data", {}).get("episodes", [])), result
 
 
@@ -382,8 +382,8 @@ async def test_due_flush_and_pending_add_progress_together(tmp_path: Path, evero
         progressed = await _wait_status(client, lambda value: value.get("pending", 0) == 0 and value.get("processed", 0) >= 2)
         assert progressed.get("pending", 0) == 0
         assert progressed.get("processed", 0) >= 2
-    first_result = await _wait_search(sidecar, "flush-e2e-sophia-" + str(first["conversation_id"]))
-    second_result = await _wait_search(sidecar, "flush-e2e-sophia-" + str(second["conversation_id"]))
+    first_result = await _wait_search(sidecar, "flush-e2e-dusha-" + str(first["conversation_id"]))
+    second_result = await _wait_search(sidecar, "flush-e2e-dusha-" + str(second["conversation_id"]))
     assert any("cobalt-orchid" in repr(episode) for episode in first_result.get("data", {}).get("episodes", []))
     assert any("cobalt-orchid" in repr(episode) for episode in second_result.get("data", {}).get("episodes", []))
 
@@ -393,13 +393,13 @@ async def test_flush_context_projects_source_labeled_episode_and_falls_back(
     tmp_path: Path, everos_server, request
 ):
     sidecar, _, stop, _ = everos_server
-    data_dir = tmp_path / "sophia-data"
+    data_dir = tmp_path / "dusha-data"
     async with _client(_config(data_dir, _mods(request, tmp_path), sidecar, enabled=True)) as client:
         first = await _add(client, "context", "Remember cobalt-orchid from the context message.")
         await _add(client, "context", "The assistant confirms the cobalt-orchid context.", role="assistant")
         processed = await _wait_status(client, lambda value: value.get("processed", 0) >= 2)
         assert processed.get("processed", 0) >= 2
-        await _wait_search(sidecar, "flush-e2e-sophia-" + str(first["conversation_id"]))
+        await _wait_search(sidecar, "flush-e2e-dusha-" + str(first["conversation_id"]))
 
         response = await client.post(
             "/state/v1/context",

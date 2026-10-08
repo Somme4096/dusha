@@ -112,7 +112,7 @@ class EverOSMirror:
         if legacy:
             session_id = str(legacy["session_id"])
         else:
-            session_id = f"{self.instance_namespace}-sophia-{conversation_id}"
+            session_id = f"{self.instance_namespace}-dusha-{conversation_id}"
             if len(session_id) > 128:
                 raise ValueError("EverOS session identifier is too long")
             db.execute(

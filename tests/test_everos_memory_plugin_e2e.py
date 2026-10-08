@@ -231,9 +231,9 @@ def _config(
     mods_dir: Path,
     sidecar_url: str,
     *,
-    instance_namespace: str = "sophia-e2e",
-    user_sender_id: str = "user-sophia-e2e",
-    assistant_sender_id: str = "assistant-sophia-e2e",
+    instance_namespace: str = "dusha-e2e",
+    user_sender_id: str = "user-dusha-e2e",
+    assistant_sender_id: str = "assistant-dusha-e2e",
     timeout_seconds: float = 1,
     gateway_timeout_seconds: float = 5,
 ) -> AppConfig:
@@ -256,7 +256,7 @@ def _config(
             options={
                 "everos": {
                     "url": sidecar_url,
-                    "app_id": "sophia-e2e",
+                    "app_id": "dusha-e2e",
                     "project_id": "phase1",
                     "instance_namespace": instance_namespace,
                     "user_sender_id": user_sender_id,
@@ -273,7 +273,7 @@ async def _client(config: AppConfig):
     application = api.create_app(config)
     async with application.router.lifespan_context(application):
         transport = httpx.ASGITransport(app=application, raise_app_exceptions=False)
-        async with httpx.AsyncClient(transport=transport, base_url="http://sophia") as client:
+        async with httpx.AsyncClient(transport=transport, base_url="http://dusha") as client:
             yield client
 
 
@@ -305,13 +305,13 @@ async def _ingest_with(
     return response.json()
 
 
-async def _everos_search(url: str, session_id: str, query: str, user_id: str = "user-sophia-e2e") -> dict:
+async def _everos_search(url: str, session_id: str, query: str, user_id: str = "user-dusha-e2e") -> dict:
     async with httpx.AsyncClient(base_url=url, timeout=10, trust_env=False) as client:
         response = await client.post(
             "/api/v2/memory/search",
             json={
                 "user_id": user_id,
-                "app_id": "sophia-e2e",
+                "app_id": "dusha-e2e",
                 "project_id": "phase1",
                 "query": query,
                 "method": "keyword",
@@ -356,7 +356,7 @@ async def test_real_everos_projection_failure_retry_isolation_and_restart(tmp_pa
     sidecar_url, _, stop_everos, restart_everos = everos_server
     mods_dir = Path(request.config.rootpath) / "examples" / "mods"
     plugin_mods = _plugin_mods(tmp_path, mods_dir)
-    data_dir = tmp_path / "sophia-data"
+    data_dir = tmp_path / "dusha-data"
 
     async with _client(_config(data_dir, plugin_mods, sidecar_url)) as client:
         first = await _ingest(client, "one", "Conversation one keeps the amber lantern.")
@@ -406,14 +406,14 @@ async def test_real_everos_projection_failure_retry_isolation_and_restart(tmp_pa
         assert delivered["pending"] == 0
 
     restart_everos()
-    session_one = f"sophia-e2e-sophia-{first['conversation_id']}"
-    session_two = f"sophia-e2e-sophia-{second['conversation_id']}"
+    session_one = f"dusha-e2e-dusha-{first['conversation_id']}"
+    session_two = f"dusha-e2e-dusha-{second['conversation_id']}"
     one = await _everos_search(sidecar_url, session_one, "amber lantern")
     two = await _everos_search(sidecar_url, session_two, "amber lantern")
     assistant_search = await _everos_search(
-        sidecar_url, session_one, "copper answer", user_id="assistant-sophia-e2e"
+        sidecar_url, session_one, "copper answer", user_id="assistant-dusha-e2e"
     )
-    tool_search = await _everos_search(sidecar_url, session_one, "Tool output", user_id="user-sophia-e2e")
+    tool_search = await _everos_search(sidecar_url, session_one, "Tool output", user_id="user-dusha-e2e")
     assert "Conversation one keeps the amber lantern." in repr(one)
     assert "Conversation one keeps the amber lantern." not in repr(two)
     assert "Assistant records the copper answer." in repr(assistant_search)
@@ -483,7 +483,7 @@ async def test_real_everos_projection_failure_retry_isolation_and_restart(tmp_pa
         assert all(item["fact_id"] != fact_id for item in facts.json()["facts"])
 
     restart_everos()
-    session_three = f"sophia-e2e-sophia-{outage['conversation_id']}"
+    session_three = f"dusha-e2e-dusha-{outage['conversation_id']}"
     one = await _everos_search(sidecar_url, session_one, "amber lantern")
     two = await _everos_search(sidecar_url, session_two, "amber lantern")
     three = await _everos_search(sidecar_url, session_three, "silver key")
@@ -511,8 +511,8 @@ async def test_real_everos_instance_namespaces_and_backfill_without_ingest(tmp_p
         await _pending_status(client, expected=0)
 
     restart_everos()
-    alpha_session = f"instance-a-sophia-{alpha_message['conversation_id']}"
-    beta_session = f"instance-b-sophia-{beta_message['conversation_id']}"
+    alpha_session = f"instance-a-dusha-{alpha_message['conversation_id']}"
+    beta_session = f"instance-b-dusha-{beta_message['conversation_id']}"
     alpha = await _everos_search(sidecar_url, alpha_session, "instance alpha", user_id="user-a")
     beta = await _everos_search(sidecar_url, beta_session, "instance alpha", user_id="user-b")
     assert "Only instance alpha owns this record." in repr(alpha)
@@ -527,7 +527,7 @@ async def test_real_everos_instance_namespaces_and_backfill_without_ingest(tmp_p
     async with _client(_config(first_data, plugin_mods, sidecar_url, instance_namespace="instance-a", user_sender_id="user-a", assistant_sender_id="assistant-a")) as client:
         recovered = await _pending_status(client)
         assert recovered["pending"] == 0
-    buffered_session = f"instance-a-sophia-{buffered_message['conversation_id']}"
+    buffered_session = f"instance-a-dusha-{buffered_message['conversation_id']}"
     buffered = await _everos_search(sidecar_url, buffered_session, "Buffered alpha", user_id="user-a")
     assert "Buffered alpha survives sidecar outage." in repr(buffered)
 
@@ -536,7 +536,7 @@ async def test_real_everos_instance_namespaces_and_backfill_without_ingest(tmp_p
 async def test_external_malformed_and_slow_sidecars_keep_worker_alive(tmp_path: Path, external_sidecar, request):
     sidecar, sidecar_url = external_sidecar
     plugin_mods = _plugin_mods(tmp_path, Path(request.config.rootpath) / "examples" / "mods")
-    data_dir = tmp_path / "sophia-data"
+    data_dir = tmp_path / "dusha-data"
 
     async with _client(_config(data_dir, plugin_mods, sidecar_url, timeout_seconds=0.2, gateway_timeout_seconds=2)) as client:
         malformed = await _ingest(client, "malformed", "Malformed sidecar response remains pending.")
@@ -570,7 +570,7 @@ async def test_real_everos_rejection_does_not_block_later_delivery(tmp_path: Pat
     sidecar, sidecar_url = selective_sidecar
     real_url = sidecar.upstream
     plugin_mods = _plugin_mods(tmp_path, Path(request.config.rootpath) / "examples" / "mods")
-    data_dir = tmp_path / "sophia-data"
+    data_dir = tmp_path / "dusha-data"
     config = _config(data_dir, plugin_mods, sidecar_url, instance_namespace="rejection-e2e")
 
     async with _client(config) as client:
@@ -585,9 +585,9 @@ async def test_real_everos_rejection_does_not_block_later_delivery(tmp_path: Pat
         assert status["pending"] == 1
         assert (await client.get(f"/state/v1/messages/{later['id']}")).status_code == 200
 
-    later_session = f"rejection-e2e-sophia-{later['conversation_id']}"
+    later_session = f"rejection-e2e-dusha-{later['conversation_id']}"
     delivered = await _everos_search(real_url, later_session, "later message")
-    rejected_search = await _everos_search(real_url, f"rejection-e2e-sophia-{rejected['conversation_id']}", "permanently rejected")
+    rejected_search = await _everos_search(real_url, f"rejection-e2e-dusha-{rejected['conversation_id']}", "permanently rejected")
     assert "This later message is delivered." in repr(delivered)
     assert "This message is permanently rejected." not in repr(rejected_search)
 
@@ -596,23 +596,23 @@ async def test_real_everos_rejection_does_not_block_later_delivery(tmp_path: Pat
 async def test_pre_epoch_message_is_local_but_not_projected(tmp_path: Path, everos_server, request):
     sidecar_url, _, _, _ = everos_server
     plugin_mods = _plugin_mods(tmp_path, Path(request.config.rootpath) / "examples" / "mods")
-    data_dir = tmp_path / "sophia-data"
+    data_dir = tmp_path / "dusha-data"
     async with _client(_config(data_dir, plugin_mods, sidecar_url)) as client:
         message = await _ingest_with(
             client,
             "pre-epoch",
-            "This pre-1970 record stays in Sophia.",
+            "This pre-1970 record stays in Dusha.",
             external_id="pre-epoch",
             occurred_at="1960-01-01T00:00:00Z",
         )
         persisted = await client.get(f"/state/v1/messages/{message['id']}")
         assert persisted.status_code == 200
-        assert persisted.json()["text"] == "This pre-1970 record stays in Sophia."
+        assert persisted.json()["text"] == "This pre-1970 record stays in Dusha."
         status = await _pending_status(client, expected=0)
         assert status["pending"] == 0
     search = await _everos_search(
         sidecar_url,
-        f"sophia-e2e-sophia-{message['conversation_id']}",
+        f"dusha-e2e-dusha-{message['conversation_id']}",
         "pre-1970 record",
     )
-    assert "This pre-1970 record stays in Sophia." not in repr(search)
+    assert "This pre-1970 record stays in Dusha." not in repr(search)

@@ -181,7 +181,7 @@ def test_config_selection_order_and_missing(tmp_path, monkeypatch):
     assert load_config().host == "127.0.0.1"
     assert load_config().home is None
 
-    for name in ("sophia", "luna", "elsewhere"):
+    for name in ("dusha", "luna", "elsewhere"):
         home = tmp_path / name if name == "elsewhere" else root / name
         home.mkdir(parents=True)
         (home / "config.json").write_text(json.dumps({"host": name}), encoding="utf-8")
@@ -194,9 +194,9 @@ def test_config_selection_order_and_missing(tmp_path, monkeypatch):
     assert load_config().host == "luna"
     monkeypatch.setenv("DUSHA_HOME", str(tmp_path / "elsewhere"))
     assert load_config().host == "elsewhere"
-    assert load_config(companion="sophia").host == "sophia"
-    assert load_config(companion="sophia").home == root / "sophia"
-    assert load_config(home=root / "luna", companion="sophia").host == "luna"
+    assert load_config(companion="dusha").host == "dusha"
+    assert load_config(companion="dusha").home == root / "dusha"
+    assert load_config(home=root / "luna", companion="dusha").host == "luna"
     assert load_config(explicit, home=root / "luna").host == "explicit"
 
     with pytest.raises(FileNotFoundError, match="configuration file not found"):
@@ -218,23 +218,23 @@ def test_yaml_config_is_rejected_and_not_discovered(tmp_path, monkeypatch):
 
 def test_sole_companion_is_selected_and_owns_its_data_and_mods(tmp_path, monkeypatch):
     home = tmp_path / "home"
-    companion = home / ".config" / "dusha" / "sophia"
+    companion = home / ".config" / "dusha" / "dusha"
     companion.mkdir(parents=True)
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     cwd = tmp_path / "cwd"
     cwd.mkdir()
     monkeypatch.chdir(cwd)
-    (companion / "config.json").write_text('{"host": "from-sophia"}', encoding="utf-8")
+    (companion / "config.json").write_text('{"host": "from-dusha"}', encoding="utf-8")
 
     from dusha.config import companion_home, config_root, list_companions
     from dusha.decision import resolve_mods_dir
 
     assert config_root() == home / ".config" / "dusha"
-    assert list_companions() == ["sophia"]
-    assert companion_home("sophia") == companion
+    assert list_companions() == ["dusha"]
+    assert companion_home("dusha") == companion
     cfg = load_config()
-    assert (cfg.host, cfg.home, cfg.data_dir) == ("from-sophia", companion, companion / "data")
+    assert (cfg.host, cfg.home, cfg.data_dir) == ("from-dusha", companion, companion / "data")
     assert resolve_mods_dir(cfg) == companion / "mods"
     assert resolve_mods_dir(AppConfig()) == cwd / "mods"
 

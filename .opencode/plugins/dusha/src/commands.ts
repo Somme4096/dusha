@@ -1,10 +1,10 @@
 import type { Plugin } from "@opencode/plugin";
 import type { CommandInvocation } from "@opencode/plugin/promise/command";
 import type { Registration } from "@opencode/plugin/promise/registration";
-import { SophiaClient, errorMessage } from "./client";
+import { DushaClient, errorMessage } from "./client";
 import { loadConfig, saveConfig } from "./config";
 import { adoptCompanion, refreshTools, toolIdentity } from "./tools";
-import type { SophiaConfig } from "./types";
+import type { DushaConfig } from "./types";
 
 type SessionId = Parameters<Plugin.Context["session"]["synthetic"]>[0]["sessionID"];
 
@@ -46,8 +46,8 @@ async function reply(ctx: Plugin.Context, sessionID: SessionId, text: string): P
   }
 }
 
-async function testConnection(config: SophiaConfig): Promise<{ connected: boolean; line: string }> {
-  const client = SophiaClient.fromConfig(config);
+async function testConnection(config: DushaConfig): Promise<{ connected: boolean; line: string }> {
+  const client = DushaClient.fromConfig(config);
   try {
     const health = await client.health();
     return { connected: true, line: `connected (status: ${health.status}, database: ${health.database})` };
@@ -56,7 +56,7 @@ async function testConnection(config: SophiaConfig): Promise<{ connected: boolea
   }
 }
 
-function renderStatus(config: SophiaConfig, connectionLine: string): string {
+function renderStatus(config: DushaConfig, connectionLine: string): string {
   return [
     "Dusha",
     `URL: ${config.baseUrl}`,
@@ -71,7 +71,7 @@ function renderStatus(config: SophiaConfig, connectionLine: string): string {
   ].join("\n");
 }
 
-export async function handleSophiaCommand(ctx: Plugin.Context, invocation: CommandInvocation): Promise<void> {
+export async function handleDushaCommand(ctx: Plugin.Context, invocation: CommandInvocation): Promise<void> {
   const { sessionID } = invocation;
   const parsed = parseInvocation(invocation.prompt?.text ?? "");
   const config = await loadConfig(ctx);
@@ -188,14 +188,14 @@ export async function handleSophiaCommand(ctx: Plugin.Context, invocation: Comma
   }
 }
 
-export async function registerSophiaCommand(ctx: Plugin.Context): Promise<Registration | undefined> {
+export async function registerDushaCommand(ctx: Plugin.Context): Promise<Registration | undefined> {
   return ctx.command.transform((editor) => {
     if (typeof (editor as { add?: unknown }).add !== "function") return;
     editor.add({
       name: "dusha",
       description: "Check, test, and configure Dusha.",
       execute: async (invocation) => {
-        await handleSophiaCommand(ctx, invocation);
+        await handleDushaCommand(ctx, invocation);
       },
     });
   });
