@@ -24,9 +24,9 @@ curl -o ~/.config/systemd/user/dusha@.service \
 3. Add secrets, if you use an upstream key or an API token. The config stores variable names and this file stores the values.
 
 ```sh
-touch ~/.config/dusha/dusha/environment
-chmod 600 ~/.config/dusha/dusha/environment
-${EDITOR:-vi} ~/.config/dusha/dusha/environment
+touch ~/.config/dusha/dusha/.env
+chmod 600 ~/.config/dusha/dusha/.env
+${EDITOR:-vi} ~/.config/dusha/dusha/.env
 ```
 
 ```ini

@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
-EnvironmentFile=-%E/dusha/%i/environment
+EnvironmentFile=-%E/dusha/%i/.env
 ExecStart=%h/.local/bin/dusha serve %i
 Restart=on-failure
 RestartSec=5
