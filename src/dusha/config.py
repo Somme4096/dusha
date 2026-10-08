@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-import json
 import math
 import os
 import re
-import stat
-import tempfile
 import types as _types
 import typing
 import zoneinfo
@@ -29,8 +26,6 @@ _DECISION = _DEFAULTS["decision"]
 _STORAGE = _DEFAULTS["storage"]
 _MEMORY_PLUGIN = _DEFAULTS["memory_plugin"]
 _AFFECT_KNOBS = _EMOTIONS["affect"]
-_LEGACY_SILENCE_RATE = re.compile(r"silence_(.+)_per_hour")
-_LEGACY_THRESHOLD = re.compile(r"(.+)_threshold")
 _PROACTIVE = _DEFAULTS["proactive"]
 _IDENTITY_PROMPT = _DEFAULTS["identity_prompt"]
 _PROMPTS = _DEFAULTS["prompts"]
@@ -166,25 +161,10 @@ class MemoryConfig:
     search_hits: int = _MEMORY["search_hits"]
     context_messages: int = _MEMORY["context_messages"]
     injection_max_chars: int = _MEMORY["injection_max_chars"]
-    retrieval_mode: str = _MEMORY["retrieval_mode"]
-    chunk_max_chars: int = _MEMORY["chunk_max_chars"]
-    chunk_overlap_chars: int = _MEMORY["chunk_overlap_chars"]
-    lexical_candidates: int = _MEMORY["lexical_candidates"]
-    semantic_candidates: int = _MEMORY["semantic_candidates"]
-    rrf_k: int = _MEMORY["rrf_k"]
     plugin_context_max_chars: int = _MEMORY["plugin_context_max_chars"]
-    embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
 
     def __post_init__(self) -> None:
         _check_bounds(self, "memory")
-
-    @property
-    def child_chars(self) -> int:
-        return self.chunk_max_chars
-
-    @property
-    def child_overlap_chars(self) -> int:
-        return self.chunk_overlap_chars
 
 
 @dataclass(slots=True)
@@ -299,14 +279,6 @@ class ProactiveConfig:
     def __post_init__(self) -> None:
         _check_bounds(self, "proactive")
 
-    @property
-    def minimum_silence_minutes(self) -> int:
-        return self.min_silence_minutes
-
-    @property
-    def failed_retry_minutes(self) -> int:
-        return self.retry_delay_minutes
-
 
 @dataclass(slots=True)
 class IdentityPromptConfig:
@@ -409,92 +381,6 @@ def _strict_section(cls: type[Any], raw: Any, name: str) -> Any:
     return cls(**raw)
 
 
-def _memory_section(raw: Any) -> MemoryConfig:
-    if raw is None:
-        raw = {}
-    if not isinstance(raw, dict):
-        raise ValueError("memory must be an object")
-    hints = typing.get_type_hints(MemoryConfig)
-    unknown = sorted(set(raw) - set(hints))
-    if unknown:
-        raise ValueError(f"unknown field(s) under memory: {unknown}")
-    kwargs: dict[str, Any] = {}
-    for key, value in raw.items():
-        if key == "embedding":
-            kwargs["embedding"] = _strict_section(EmbeddingConfig, value, "memory.embedding")
-        else:
-            _validate_value(f"memory.{key}", value, hints[key])
-            kwargs[key] = value
-    return MemoryConfig(**kwargs)
-
-
-def _migrate_config(raw: dict[str, Any]) -> bool:
-    changed = False
-    memory = raw.get("memory")
-    if isinstance(memory, dict):
-        for old, new in (
-            ("child_chars", "chunk_max_chars"),
-            ("child_overlap_chars", "chunk_overlap_chars"),
-        ):
-            if old in memory:
-                memory.setdefault(new, memory.pop(old))
-                changed = True
-        if "embedding" in memory:
-            raw.setdefault("embedding", memory.pop("embedding"))
-            changed = True
-        for key in ("semantic_enabled", "semantic_min_similarity"):
-            if key in memory:
-                del memory[key]
-                changed = True
-    proactive = raw.get("proactive")
-    if isinstance(proactive, dict):
-        for old, new in (
-            ("minimum_silence_minutes", "min_silence_minutes"),
-            ("failed_retry_minutes", "retry_delay_minutes"),
-        ):
-            if old in proactive:
-                proactive.setdefault(new, proactive.pop(old))
-                changed = True
-        for key in [key for key in proactive if isinstance(key, str)]:
-            match = _LEGACY_THRESHOLD.fullmatch(key)
-            if match:
-                thresholds = proactive.setdefault("thresholds", {})
-                if isinstance(thresholds, dict):
-                    thresholds.setdefault(match.group(1), proactive.pop(key))
-                    changed = True
-    affect = raw.get("affect")
-    if isinstance(affect, dict):
-        for key in [key for key in affect if isinstance(key, str)]:
-            match = _LEGACY_SILENCE_RATE.fullmatch(key)
-            if match:
-                silence = affect.setdefault("silence", {})
-                rule = silence.setdefault(match.group(1), {}) if isinstance(silence, dict) else None
-                if isinstance(rule, dict):
-                    rule.setdefault("rate_per_hour", affect.pop(key))
-                    changed = True
-        for key in ("semantic_enabled", "semantic_min_similarity"):
-            if key in affect:
-                del affect[key]
-                changed = True
-    return changed
-
-
-def _save_migrated_config(path: Path, raw: dict[str, Any]) -> None:
-    path = path.resolve()
-    mode = stat.S_IMODE(path.stat().st_mode)
-    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            os.fchmod(stream.fileno(), mode)
-            json.dump(raw, stream, indent=2, ensure_ascii=False)
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-    finally:
-        Path(temporary).unlink(missing_ok=True)
-
-
 def _read_config_file(path: Path) -> dict:
     text = path.read_text(encoding="utf-8")
     return loads_strict(text, source=str(path))
@@ -571,18 +457,14 @@ def _app_config_from_raw(raw: dict[str, Any], source_dir: Path) -> AppConfig:
     else:
         kwargs["data_dir"] = source_dir / Path(_DEFAULTS["data_dir"])
 
-    embedding = _strict_section(EmbeddingConfig, raw.get("embedding"), "embedding")
-    memory = _memory_section(raw.get("memory"))
-    memory.embedding = embedding
-
     return AppConfig(
         **kwargs,
         identity_prompt=identity_prompt,
         prompts=prompts,
         upstream=_strict_section(UpstreamConfig, raw.get("upstream"), "upstream"),
-        embedding=embedding,
+        embedding=_strict_section(EmbeddingConfig, raw.get("embedding"), "embedding"),
         api_openai=_strict_section(ApiOpenAIConfig, raw.get("api_openai"), "api_openai"),
-        memory=memory,
+        memory=_strict_section(MemoryConfig, raw.get("memory"), "memory"),
         evergreen=_strict_section(EvergreenConfig, raw.get("evergreen"), "evergreen"),
         memo=_strict_section(MemoConfig, raw.get("memo"), "memo"),
         storage=_strict_section(StorageConfig, raw.get("storage"), "storage"),
@@ -630,11 +512,7 @@ def load_config(
         if selected is None:
             return AppConfig()
         config_path = _config_file(selected / CONFIG_FILE)
-    raw = _read_config_file(config_path)
-    migrated = _migrate_config(raw)
-    cfg = _app_config_from_raw(raw, config_path.parent)
-    if migrated:
-        _save_migrated_config(config_path, raw)
+    cfg = _app_config_from_raw(_read_config_file(config_path), config_path.parent)
     cfg.home = config_path.parent
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
     return cfg
@@ -647,7 +525,7 @@ def _validate_packaged_defaults() -> None:
     _strict_section(UpstreamConfig, _DEFAULTS["upstream"], "packaged defaults upstream")
     _strict_section(EmbeddingConfig, _DEFAULTS["embedding"], "packaged defaults embedding")
     _strict_section(ApiOpenAIConfig, _DEFAULTS["api_openai"], "packaged defaults api_openai")
-    _memory_section(_DEFAULTS["memory"])
+    _strict_section(MemoryConfig, _DEFAULTS["memory"], "packaged defaults memory")
     _strict_section(EvergreenConfig, _DEFAULTS["evergreen"], "packaged defaults evergreen")
     _strict_section(MemoConfig, _DEFAULTS["memo"], "packaged defaults memo")
     _strict_section(StorageConfig, _DEFAULTS["storage"], "packaged defaults storage")

@@ -165,7 +165,6 @@ def test_config_examples_load(tmp_path, fmt, specific):
     cfg = load_config(config)
     assert cfg.port == 8765
     assert cfg.upstream.base_url == "https://api.openai.com/v1"
-    assert cfg.memory.retrieval_mode == "lexical"
     for field, expected in specific:
         value = cfg
         for part in field.split("."):
@@ -556,9 +555,7 @@ def test_emotions_file_raw_content_errors(tmp_path):
     with pytest.raises(ValueError, match="duplicate key"):
         load_emotions(write('{"emotion_version": "a", "emotion_version": "b"}'))
     with pytest.raises(ValueError, match="non-finite"):
-        load_emotions(write('{"schema_version": 2, "emotion_version": "x", "dimensions": {}, '
-                            '"negative_dimensions": ["fear"], "silence": ' +
-                            '{"caps": {}, "dejection_gate_hours": 1, "dejection_rate_per_hour": NaN}}'))
+        load_emotions(write('{"schema_version": 3, "emotion_version": "x", "impact_scale": NaN}'))
     with pytest.raises(ValueError, match="emotions file not found"):
         load_emotions(tmp_path / "absent.json")
 
@@ -903,86 +900,3 @@ def test_missing_explicit_path_is_an_error(tmp_path, monkeypatch):
 
     with pytest.raises(FileNotFoundError):
         load_config("~/missing-dusha.json")
-
-
-def test_startup_migrates_configuration_once(tmp_path):
-    from dataclasses import asdict
-
-    legacy = {
-        "data_dir": str(tmp_path / "data"),
-        "memory": {
-            "child_chars": 900,
-            "child_overlap_chars": 80,
-            "embedding": {"base_url": "http://localhost/v1", "model": "local"},
-        },
-        "proactive": {"minimum_silence_minutes": 90, "failed_retry_minutes": 12},
-    }
-    canonical = {
-        "data_dir": str(tmp_path / "data"),
-        "embedding": legacy["memory"]["embedding"],
-        "memory": {"chunk_max_chars": 900, "chunk_overlap_chars": 80},
-        "proactive": {"min_silence_minutes": 90, "retry_delay_minutes": 12},
-    }
-    old_path, new_path = tmp_path / "old.json", tmp_path / "new.json"
-    old_path.write_text(json.dumps(legacy), encoding="utf-8")
-    new_path.write_text(json.dumps(canonical), encoding="utf-8")
-    old_path.chmod(0o600)
-    assert asdict(load_config(old_path)) == asdict(load_config(new_path))
-    assert json.loads(old_path.read_text()) == canonical
-    assert old_path.stat().st_mode & 0o777 == 0o600
-    first_write = old_path.stat().st_mtime_ns
-    load_config(old_path)
-    assert old_path.stat().st_mtime_ns == first_write
-
-
-def test_migration_keeps_canonical_keys_and_removes_semantic_controls(tmp_path):
-    path = tmp_path / "config.json"
-    path.write_text(
-        json.dumps(
-            {
-                "data_dir": str(tmp_path / "data"),
-                "embedding": {"base_url": "http://localhost/v1", "model": "canonical"},
-                "memory": {
-                    "embedding": {"model": "legacy"},
-                    "child_chars": 900,
-                    "chunk_max_chars": 1000,
-                    "semantic_min_similarity": 0.99,
-                },
-                "affect": {"semantic_enabled": False, "semantic_min_similarity": 0.99},
-                "proactive": {"minimum_silence_minutes": 90, "min_silence_minutes": 100},
-            }
-        ),
-        encoding="utf-8",
-    )
-    config = load_config(path)
-    assert config.embedding.model == "canonical"
-    assert config.memory.chunk_max_chars == 1000
-    assert config.proactive.min_silence_minutes == 100
-
-    from dusha.service import CompanionService
-
-    service = CompanionService(config)
-    assert service.affect.appraisal is not None
-    assert not hasattr(config.affect, "semantic_enabled")
-    assert not hasattr(config.memory, "semantic_min_similarity")
-
-    saved = json.loads(path.read_text())
-    assert saved["affect"] == {}
-    assert saved["memory"] == {"chunk_max_chars": 1000}
-    assert saved["proactive"] == {"min_silence_minutes": 100}
-    service.close()
-
-
-def test_failed_migration_write_preserves_original(tmp_path, monkeypatch):
-    path = tmp_path / "config.json"
-    original = json.dumps({"data_dir": str(tmp_path / "data"), "memory": {"child_chars": 900}})
-    path.write_text(original, encoding="utf-8")
-
-    def fail_replace(*args):
-        raise OSError("write failed")
-
-    monkeypatch.setattr("dusha.config.os.replace", fail_replace)
-    with pytest.raises(OSError, match="write failed"):
-        load_config(path)
-    assert path.read_text() == original
-    assert list(tmp_path.iterdir()) == [path]

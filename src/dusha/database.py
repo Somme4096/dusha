@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import sqlite3
 from pathlib import Path
 
@@ -165,68 +164,6 @@ ON memo_notes(status, created_at);
 PRAGMA user_version = 5;
 """
 
-MIGRATE_2_TO_3 = """
-PRAGMA foreign_keys = ON;
-BEGIN IMMEDIATE;
-
-CREATE TABLE IF NOT EXISTS affect_classifications (
-    source_message_id INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
-    automatic_label TEXT NOT NULL,
-    agent_label TEXT,
-    chosen_label TEXT,
-    decision_source TEXT CHECK(decision_source IN ('agent', 'automatic', 'provided')),
-    status TEXT NOT NULL CHECK(status IN ('pending', 'applied')),
-    occurred_at TEXT NOT NULL,
-    finalize_after TEXT NOT NULL,
-    resolved_at TEXT,
-    affect_event_id INTEGER REFERENCES affect_events(id) ON DELETE SET NULL
-);
-CREATE INDEX IF NOT EXISTS affect_classifications_pending
-ON affect_classifications(status, finalize_after, source_message_id);
-
-PRAGMA user_version = 3;
-COMMIT;
-"""
-
-MIGRATE_3_TO_4 = """
-PRAGMA foreign_keys = ON;
-BEGIN IMMEDIATE;
-
-CREATE TABLE IF NOT EXISTS affect_decisions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    source_message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
-    emotion TEXT NOT NULL,
-    increment REAL NOT NULL,
-    occurred_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS affect_decisions_message
-ON affect_decisions(source_message_id, id);
-
-PRAGMA user_version = 4;
-COMMIT;
-"""
-
-MIGRATE_4_TO_5 = """
-PRAGMA foreign_keys = ON;
-BEGIN IMMEDIATE;
-
-CREATE TABLE IF NOT EXISTS memo_notes (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    text TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'archived')),
-    reason TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    archived_at TEXT
-);
-CREATE INDEX IF NOT EXISTS memo_notes_status_created
-ON memo_notes(status, created_at);
-
-PRAGMA user_version = 5;
-COMMIT;
-"""
-
-
 class _ClosingConnection:
     """Commits or rolls back like sqlite3's context manager, then closes the connection."""
 
@@ -263,48 +200,10 @@ class Database:
             initialized = db.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages'"
             ).fetchone()
-        if not initialized or version == SCHEMA_VERSION:
-            return
-        if version in (2, 3, 4):
-            with self.connect() as db:
-                if version == 2:
-                    db.executescript(MIGRATE_2_TO_3)
-                if version in (2, 3):
-                    self._archive_legacy_label_tables(db)
-                    db.executescript(MIGRATE_3_TO_4)
-                    self._strip_recent_labels(db)
-                db.executescript(MIGRATE_4_TO_5)
-            return
-        if initialized:
+        if initialized and version != SCHEMA_VERSION:
             raise RuntimeError(
                 f"database schema version {version} is incompatible. "
-                "Use an empty data directory or restore a schema version 2, 3, 4, or 5 backup"
-            )
-
-    @staticmethod
-    def _archive_legacy_label_tables(db: sqlite3.Connection) -> None:
-        tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        for old, new in (
-            ("affect_events", "legacy_affect_events"),
-            ("affect_classifications", "legacy_affect_classifications"),
-        ):
-            if old in tables and new not in tables:
-                db.execute(f"ALTER TABLE {old} RENAME TO {new}")
-
-    @staticmethod
-    def _strip_recent_labels(db: sqlite3.Connection) -> None:
-        row = db.execute("SELECT state_json FROM affect_state WHERE id=1").fetchone()
-        if row is None:
-            return
-        try:
-            state = json.loads(row[0])
-        except (TypeError, ValueError):
-            return
-        if isinstance(state, dict) and "recent_labels" in state:
-            state.pop("recent_labels")
-            db.execute(
-                "UPDATE affect_state SET state_json=? WHERE id=1",
-                (json.dumps(state, ensure_ascii=True, separators=(",", ":")),),
+                f"Use an empty data directory or restore a schema version {SCHEMA_VERSION} backup"
             )
 
     def connect(self) -> _ClosingConnection:

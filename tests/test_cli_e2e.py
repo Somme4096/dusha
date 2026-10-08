@@ -99,20 +99,13 @@ def test_cli_commands_run_in_a_subprocess(
 
 
 def test_cli_rejects_yaml_config_in_a_subprocess(tmp_path: Path) -> None:
-    source = tmp_path / "legacy.yaml"
+    source = tmp_path / "config.yaml"
     source.write_text("host: example-host\n", encoding="utf-8")
 
     result = _run(source, "health")
 
     assert result.returncode != 0
     assert "unsupported configuration format" in result.stderr
-
-
-def test_cli_migration_command_is_unavailable(cli_config: Path) -> None:
-    result = _run(cli_config, "migrate-config", "old.yaml", "new.json")
-
-    assert result.returncode == 2
-    assert "invalid choice" in result.stderr
 
 
 def _run_in_root(root: Path, *args: str) -> subprocess.CompletedProcess[str]:

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import copy
 import math
-import re
 from pathlib import Path
 from typing import Any
 
@@ -15,13 +14,6 @@ SCHEMA_VERSION = 3
 UNSET: Any = object()
 
 _SILENCE_RULE_KEYS = {"rate_per_hour", "cap", "gate_hours"}
-
-_V2_SILENCE_RATE = re.compile(r"silence_(.+)_per_hour")
-_V2_GATED_SILENCE = {
-    "dejection": {"rate_per_hour": "dejection_rate_per_hour", "gate_hours": "dejection_gate_hours"}
-}
-_V2_ALWAYS_SHOW = {"fear": "fear_minimum"}
-_V2_TRIGGERS = (("fear", "fear"), ("longing", "silence"))
 
 
 class EmotionsValidationError(ValueError):
@@ -167,45 +159,6 @@ def _validate_appraisal(snapshot: dict[str, Any], dimensions: dict[str, Any]) ->
     appraisal.update(min_similarity=min_similarity, fallback_label=fallback, prototypes=prototypes)
 
 
-def _upgrade_v2(snapshot: dict[str, Any]) -> dict[str, Any]:
-    dimensions = snapshot.get("dimensions")
-    affect, silence = snapshot.get("affect"), snapshot.get("silence")
-    prompt, proactive = snapshot.get("prompt"), snapshot.get("proactive")
-    if not all(isinstance(item, dict) for item in (dimensions, affect, silence, prompt, proactive)):
-        return snapshot
-    caps = silence.pop("caps", None)
-    caps = caps if isinstance(caps, dict) else {}
-    rules: dict[str, dict[str, Any]] = {}
-    for key in list(affect):
-        match = _V2_SILENCE_RATE.fullmatch(key)
-        if match:
-            rules[match.group(1)] = {"rate_per_hour": affect.pop(key)}
-    for name, fields in _V2_GATED_SILENCE.items():
-        rules[name] = {new: silence.pop(old, None) for new, old in fields.items()}
-    for name, rule in rules.items():
-        if name in caps:
-            rule["cap"] = caps[name]
-    silence["rules"] = {name: rule for name, rule in rules.items() if name in dimensions}
-    prompt["always_show"] = {
-        name: prompt.pop(key)
-        for name, key in _V2_ALWAYS_SHOW.items()
-        if key in prompt and name in dimensions
-    }
-    proactive["triggers"] = [
-        {"dimension": name, "threshold": proactive.pop(f"{name}_threshold"), "reason": reason}
-        for name, reason in _V2_TRIGGERS
-        if f"{name}_threshold" in proactive and name in dimensions
-    ]
-    snapshot.setdefault("decision", default_emotions()["decision"])
-    if "appraisal" not in snapshot:
-        appraisal = default_emotions()["appraisal"]
-        for prototype in appraisal["prototypes"].values():
-            prototype["deltas"] = {k: v for k, v in prototype["deltas"].items() if k in dimensions}
-        snapshot["appraisal"] = appraisal
-    snapshot["schema_version"] = SCHEMA_VERSION
-    return snapshot
-
-
 def _validate(snapshot: dict[str, Any]) -> dict[str, Any]:
     known = {
         "schema_version",
@@ -229,9 +182,7 @@ def _validate(snapshot: dict[str, Any]) -> dict[str, Any]:
         raise EmotionsValidationError(f"unknown emotions field(s): {unknown}")
 
     schema_version = _integer(snapshot.get("schema_version"), "schema_version")
-    if schema_version == 2:
-        snapshot = _upgrade_v2(snapshot)
-    elif schema_version != SCHEMA_VERSION:
+    if schema_version != SCHEMA_VERSION:
         raise EmotionsValidationError(
             f"schema_version {schema_version} is not supported. Expected {SCHEMA_VERSION}"
         )

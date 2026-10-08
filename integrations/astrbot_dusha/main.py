@@ -14,13 +14,8 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 from astrbot.api.provider import LLMResponse, ProviderRequest
 from astrbot.core.config.astrbot_config import AstrBotConfig
-from astrbot.core.utils.astrbot_path import get_astrbot_config_path
 
-from .config_migration import migrate_config
 from .routing import accepts_platform, platform_id_from_umo
-
-# Plugin modules load before AstrBotConfig applies the new schema.
-migrate_config(Path(get_astrbot_config_path()) / f"{Path(__file__).parent.name}_config.json")
 
 GATEWAY_TOOL_NAMES = (
     "remember_evergreen_fact",

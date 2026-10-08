@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import json
 import sqlite3
 from datetime import UTC, datetime
 
 import pytest
 
-from dusha.config import load_config
 from dusha.database import Database
 from dusha.evergreen import EvergreenConflict
 
@@ -18,7 +16,7 @@ def _ingest(service, *, harness="api", conversation_id="one", role="user", conte
     )
 
 
-def test_database_schema_and_upgrade_path(svc, tmp_path):
+def test_database_schema_and_version_check(svc, tmp_path):
     path = tmp_path / "old.sqlite3"
     with sqlite3.connect(path) as db:
         db.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY)")
@@ -49,85 +47,12 @@ def test_database_schema_and_upgrade_path(svc, tmp_path):
         assert db.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='affect_classifications'"
         ).fetchone() is None
-    stored = _ingest(
-        service, conversation_id="migration", content="Keep this exact text through the schema upgrade.",
-        external_id="migration-message",
-    )
-
-    with service.database.connect() as db:
-        db.execute(
-            "CREATE TABLE affect_events (id INTEGER PRIMARY KEY AUTOINCREMENT, label TEXT NOT NULL, "
-            "source_message_id INTEGER, deltas_json TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', "
-            "occurred_at TEXT NOT NULL, follow_up_at TEXT, follow_up_expires_at TEXT, "
-            "follow_up_consumed_at TEXT)"
-        )
-        db.execute(
-            "CREATE INDEX affect_events_follow_up "
-            "ON affect_events(follow_up_at, follow_up_consumed_at)"
-        )
-        db.execute(
-            "CREATE TABLE affect_classifications (source_message_id INTEGER PRIMARY KEY, "
-            "automatic_label TEXT NOT NULL, agent_label TEXT, chosen_label TEXT, "
-            "decision_source TEXT, status TEXT NOT NULL, occurred_at TEXT NOT NULL, "
-            "finalize_after TEXT NOT NULL, resolved_at TEXT, affect_event_id INTEGER)"
-        )
-        db.execute(
-            "CREATE INDEX affect_classifications_pending "
-            "ON affect_classifications(status, finalize_after, source_message_id)"
-        )
-        db.execute(
-            "INSERT INTO affect_classifications VALUES"
-            "(?, 'hostile', NULL, NULL, NULL, 'pending', ?, ?, NULL, NULL)",
-            (stored["id"], "2026-01-01T00:00:00+00:00", "2026-01-01T00:02:00+00:00"),
-        )
-        state_json = db.execute("SELECT state_json FROM affect_state WHERE id=1").fetchone()[0]
-        data = json.loads(state_json)
-        data["recent_labels"] = [{"label": "hostile", "at": "2026-01-01T00:00:00+00:00"}]
-        db.execute("UPDATE affect_state SET state_json=?", (json.dumps(data),))
-        db.execute("PRAGMA user_version=3")
     service.close()
-    upgraded = svc()
-    restored = upgraded._memory_fallback.get(stored["id"])
-    assert restored["text"] == "Keep this exact text through the schema upgrade."
-    with upgraded.database.connect() as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 5
-        assert db.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='legacy_affect_events'"
-        ).fetchone()
-        assert db.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='legacy_affect_classifications'"
-        ).fetchone()
-        assert db.execute("SELECT status FROM legacy_affect_classifications").fetchone()[0] == "pending"
-        assert db.execute("SELECT COUNT(*) FROM affect_decisions").fetchone()[0] == 0
-        state_json = db.execute("SELECT state_json FROM affect_state WHERE id=1").fetchone()[0]
-        assert "recent_labels" not in state_json
-        assert json.loads(state_json)["base"]["fear"] == 0.0
-        assert json.loads(state_json)["base"]["contentment"] == 0.35
-
-
-def test_database_upgrades_version_two_through_the_chain(svc):
-    service = svc()
-    stored = _ingest(service, conversation_id="v2", content="Keep this exact text.",
-                     external_id="v2-message")
-    with service.database.connect() as db:
-        db.execute("CREATE TABLE affect_events (id INTEGER PRIMARY KEY, label TEXT)")
-        db.execute(
-            "INSERT INTO affect_events (id, label) VALUES(1, 'affectionate')"
-        )
-        db.execute("PRAGMA user_version=2")
-    service.close()
-    upgraded = svc()
-    assert upgraded._memory_fallback.get(stored["id"])["text"] == "Keep this exact text."
-    with upgraded.database.connect() as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 5
-        assert db.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='legacy_affect_events'"
-        ).fetchone()
-        assert db.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='legacy_affect_classifications'"
-        ).fetchone()
-        assert db.execute("SELECT label FROM legacy_affect_events").fetchone()[0] == "affectionate"
-        assert db.execute("SELECT COUNT(*) FROM affect_decisions").fetchone()[0] == 0
+    for version in (4, 6):
+        with sqlite3.connect(service.database.path) as db:
+            db.execute(f"PRAGMA user_version={version}")
+        with pytest.raises(RuntimeError, match=f"schema version {version} is incompatible"):
+            svc()
 
 
 def test_content_is_preserved_exactly(svc):
@@ -334,36 +259,3 @@ def test_active_memos_are_injected_and_archived_memos_are_not(svc):
         {"id": active["id"], "text": "Draft the yumecho phase one report.",
          "created_at": active["created_at"]}
     ]
-
-
-def test_memo_migration_from_version_four(svc):
-    service = svc()
-    with service.database.connect() as db:
-        db.execute("DROP TABLE memo_notes")
-        db.execute("PRAGMA user_version=4")
-    service.close()
-
-    upgraded = svc()
-    with upgraded.database.connect() as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 5
-        assert db.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='memo_notes'"
-        ).fetchone()
-    assert upgraded.memo_add("Created after migration.")["status"] == "active"
-
-
-def test_nested_embedding_configuration_loads_from_json(tmp_path):
-    path = tmp_path / "config.json"
-    path.write_text(
-        '{"memory": {"retrieval_mode": "hybrid", "child_chars": 900, '
-        '"embedding": {"base_url": "https://embedding.invalid/v1", '
-        '"api_key_env": "CUSTOM_KEY", "model": "chosen-model", "dimensions": 768}}}',
-        encoding="utf-8",
-    )
-    config = load_config(path)
-    assert config.memory.retrieval_mode == "hybrid"
-    assert config.memory.child_chars == 900
-    assert config.memory.embedding.base_url == "https://embedding.invalid/v1"
-    assert config.memory.embedding.api_key_env == "CUSTOM_KEY"
-    assert config.memory.embedding.model == "chosen-model"
-    assert config.memory.embedding.dimensions == 768

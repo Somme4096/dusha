@@ -37,44 +37,6 @@ CUSTOM = {
     "proactive": {"triggers": [{"dimension": "worry", "threshold": 0.4, "reason": "worried"}]},
 }
 
-V2 = {
-    "schema_version": 2,
-    "emotion_version": "0.2.0",
-    "value_range": {"min": 0.0, "max": 1.0},
-    "dimensions": {
-        "longing": {"neutral": 0.3, "floor": 0.15, "tau": 6.0},
-        "anxiety": {"neutral": 0.2, "floor": 0.02, "tau": 5.0},
-        "seeking": {"neutral": 0.25, "floor": 0.12, "tau": 4.0},
-        "fear": {"neutral": 0.0, "floor": 0.0, "tau": 7.0},
-        "dejection": {"neutral": 0.15, "floor": 0.0, "tau": 8.0},
-    },
-    "negative_dimensions": ["dejection", "anxiety", "fear"],
-    "silence": {
-        "caps": {"longing": 0.35, "anxiety": 0.18, "seeking": 0.12, "dejection": 0.08},
-        "dejection_gate_hours": 6.0,
-        "dejection_rate_per_hour": 0.01,
-    },
-    "proactive_sent_deltas": {"longing": -0.08},
-    "impact_scale": 2.0,
-    "mood_follow_gain": {"min": 0.25, "max": 2.5, "factor": 4.0},
-    "prompt": {
-        "top_n": 5,
-        "deviation_threshold": 0.08,
-        "fear_minimum": 0.05,
-        "level_high": 0.7,
-        "level_elevated": 0.5,
-    },
-    "affect": {
-        "mood_follow_hours": 12.0,
-        "mood_return_hours": 72.0,
-        "silence_longing_per_hour": 0.04,
-        "silence_anxiety_per_hour": 0.02,
-        "silence_seeking_per_hour": 0.02,
-    },
-    "proactive": {"longing_threshold": 0.38, "fear_threshold": 0.35},
-}
-
-
 @asynccontextmanager
 async def _running_client(app):
     async with app.router.lifespan_context(app):
@@ -156,23 +118,9 @@ async def test_http_proactive_stays_quiet_below_every_trigger(tmp_path, config, 
         assert evaluated.json()["event"] is None
 
 
-async def test_http_schema_2_emotions_file_keeps_its_behavior(tmp_path, config, write_json):
-    app = api.create_app(_emotions(config, tmp_path, write_json, V2))
-    emotions = app.state.service.affect.emotions
-    assert emotions["silence"]["rules"]["dejection"] == {
-        "rate_per_hour": 0.01, "cap": 0.08, "gate_hours": 6.0,
-    }
-    assert emotions["prompt"]["always_show"] == {"fear": 0.05}
-    assert all(
-        set(item["deltas"]) <= set(V2["dimensions"]) for item in emotions["appraisal"]["prototypes"].values()
-    )
-    async with _running_client(app) as client:
-        await _silent_since(app, client, utc_now() - timedelta(hours=4))
-        affect = (await client.get("/state/v1/affect")).json()
-        assert affect["base"]["longing"] == pytest.approx(0.46, abs=0.01)
-        assert affect["base"]["dejection"] == 0.15
-        event = (await client.post("/state/v1/proactive/evaluate")).json()["event"]
-        assert event["reason"] == "silence"
+def test_startup_rejects_schema_2_emotions_file(tmp_path, config, write_json):
+    with pytest.raises(ValueError, match="schema_version 2 is not supported"):
+        api.create_app(_emotions(config, tmp_path, write_json, {**CUSTOM, "schema_version": 2}))
 
 
 def _scaled(value):
@@ -274,16 +222,13 @@ def test_startup_rejects_rule_for_missing_dimension(tmp_path, config, write_json
         api.create_app(_emotions(config, tmp_path, write_json, broken))
 
 
-async def test_http_legacy_config_keys_migrate_to_generic_overrides(tmp_path, write_json):
+async def test_http_config_overrides_patch_silence_and_thresholds(tmp_path, write_json):
     path = write_json(tmp_path / "config.json", {
         "data_dir": "data",
-        "affect": {"silence_longing_per_hour": 0.2},
-        "proactive": {"fear_threshold": 0.9, "longing_threshold": 0.31, "poll_interval_seconds": 3600},
+        "affect": {"silence": {"longing": {"rate_per_hour": 0.2}}},
+        "proactive": {"thresholds": {"fear": 0.9, "longing": 0.31}, "poll_interval_seconds": 3600},
     })
     config = load_config(path)
-    rewritten = json.loads(path.read_text(encoding="utf-8"))
-    assert rewritten["affect"] == {"silence": {"longing": {"rate_per_hour": 0.2}}}
-    assert rewritten["proactive"]["thresholds"] == {"fear": 0.9, "longing": 0.31}
     app = api.create_app(config)
     triggers = app.state.service.affect.emotions["proactive"]["triggers"]
     assert [item["threshold"] for item in triggers] == [0.9, 0.31]

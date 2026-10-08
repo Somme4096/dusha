@@ -15,7 +15,7 @@ import httpx
 import pytest
 
 from dusha import api
-from dusha.config import AppConfig, EmbeddingConfig, EvergreenConfig, MemoryConfig, MemoryPluginConfig
+from dusha.config import AppConfig, EvergreenConfig, MemoryConfig, MemoryPluginConfig
 
 
 def _port() -> int:
@@ -184,7 +184,6 @@ def _config(data_dir: Path, mods_dir: Path, sidecar: str, *, enabled: bool) -> A
             search_hits=8,
             context_messages=1,
             injection_max_chars=20_000,
-            embedding=EmbeddingConfig(backfill_interval_seconds=1),
         ),
         evergreen=EvergreenConfig(enabled=True, max_items=32, max_chars=4_000),
         memory_plugin=MemoryPluginConfig(
