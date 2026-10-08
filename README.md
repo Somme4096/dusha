@@ -2,70 +2,49 @@
 
 > *This README.md is proudly written by a human (and a little bit by Claude (˶>⩊<˶)❤️)*
 
-*Dusha* (Russian: душа, [dʊˈʂa], "soul") is a small HTTP API that stores messages, identity, evergreen facts, and affect state outside your harness. Any client that can POST a message and read back an injection string can use it. (You can also use it across multiple harnesses!)
+*Dusha* (Russian: душа, [dʊˈʂa], "soul") is a small HTTP API that stores messages, identity, facts, and affect state outside your harness. Any client that can POST a message and read back an injection string can use it, so you can hop between harnesses (or even use multiple at once!) and still get the same soul on the other side.
 
-Every prompt, emotional vector, and threshold is configurable through JSON.
+Every prompt, emotional vector, and threshold is configurable through JSON. Dusha also has an *extensible plugin system* that lets you wire any external memory provider easily!
 
-<details>
-<summary>How does memory/affect/identity work?</summary>
-
-- Messages: Basic SQLite FTS5 + optional embedding search. Also `~/.config/dusha/<name>/mods/` for external memory providers integration.
-- Evergreen: Long-term facts that you edit from the CLI and your companion edits through integration tools. No automatic extraction (think of it as a USER.md that actually has good lifecycle management and duplication prevention)
-- Affect: A deterministic emotion engine with decay and silence drift. Proactive messages fire on thresholds. And hey, message intent analysis is a plugin too: drop Jev or any other classifier into `~/.config/dusha/<name>/mods/` and it picks which emotion each user message moves.
-- Identity: `identity.md`.
-
-</details>
-
-## How to run it
+## Quickstart
 
 You need Python 3.11 or newer and [uv](https://docs.astral.sh/uv/).
 
 ```sh
 uv tool install dusha
-dusha serve dusha
+dusha serve <name>
 ```
 
-The second line starts a companion named `dusha`. On the first run it makes the folder `~/.config/dusha/dusha/` and writes a `config.json` with every setting in it. Use any name you like. If your shell cannot find `dusha` after the install, run `uv tool update-shell`.
-
-Check that it is up:
-
-```sh
-curl http://127.0.0.1:8765/health
-```
-
-You should see `"status": "ok"`. If you don't, look at [docs/guide.md](https://github.com/Somme4096/dusha/blob/main/docs/guide.md).
-
-Everything about one companion is in `~/.config/dusha/<name>/`. Including: 
-
-- its `config.json`
-- the emotion and prompt files
-- `mods/`, and `data/` with the database.
-- It respects `XDG_CONFIG_HOME` too.
+The second line starts a companion named `<name>`. On the first run it makes the folder `~/.config/dusha/dusha/` and writes a `config.json` with every setting in it. It respects `XDG_CONFIG_HOME` too!
 
 ### Advanced setup
 
 Want a second companion? Make a second folder and give it a different `port`. `dusha list` shows all of them, and `dusha -c <name> <command>` talks to one.
 
-Want it running in the background? Use [deploy/dusha@.service](https://github.com/Somme4096/dusha/blob/main/deploy/dusha@.service) with the [service setup steps](https://github.com/Somme4096/dusha/blob/main/docs/guide.md#run-as-a-systemd-service). (Linux only. Tell your agents to make PR for Windows, Mac, BSD or whatever, because I don't use them at all!)
+Want it running in the background? Use [deploy/dusha@.service](https://github.com/Somme4096/dusha/blob/main/deploy/dusha@.service) with the [service setup steps](https://github.com/Somme4096/dusha/blob/main/docs/guide.md#run-as-a-systemd-service).  *(Linux only. Tell your agents to make PR for it if you use something else!)*
 
 ## How it works
 
-One turn of chat is four steps.
+`user message → dusha → injects context → your model → reply → (harness, dusha)`
 
-1. Your harness sends the user's message to `POST /state/v1/messages`. `dusha` stores it and updates the emotions.
-2. Your harness calls `POST /state/v1/context` and gets one string back. It holds the identity, the evergreen facts, memos, recalled messages, and the current emotions.
-3. Your harness puts that string in the system prompt and calls the model.
-4. Your harness sends the reply to `POST /state/v1/messages` so it is remembered too.
+Integrations (e.g. opencode-dusha) send each message to `dusha` and add its context to the system prompt before calling your model. That's it, so it works with any harness or provider. If your client only supports the OpenAI API, use `dusha` as a proxy at `/v1/chat/completions` instead.
 
-Your harness is the one calling the chat model, so `dusha` does not care which harness or provider you use. If your client only speaks the OpenAI API, point it at `/v1/chat/completions` and `dusha` runs all four steps as a proxy.
+<details>
+<summary>How does memory/affect/identity work in Dusha?</summary>
 
-Proactive messages go the other way. `dusha` decides it is time to say something, your harness picks the event up from `GET /state/v1/proactive/events`, sends it, and reports back.
 
-The full request and response shapes are in the [API and integration guide](https://github.com/Somme4096/dusha/blob/main/docs/api.md).
+- Messages: Basic SQLite FTS5 + optional embedding search. Also `~/.config/dusha/<name>/mods/` for external memory providers integration.
+- Evergreen: Long-term facts that you edit from the CLI and your companion edits through integration tools. No automatic extraction 
+	* think of it as a USER.md that actually has good lifecycle management and duplication prevention
+- Affect: A deterministic emotion engine with decay and silence drift. Proactive messages fire on thresholds. 
+	* And yeah, message intent analysis can be a plugin too: drop Jev or any other classifier into `~/.config/dusha/<name>/mods/` and it picks which emotion each user message moves.
+- Identity: `identity.md`, or name one your own.
+
+</details>
 
 ## Plugin API
 
-A plugin is a directory under the mods directory holding `README.md`, `main.py`, `pyproject.toml`, and `uv.lock`. The gateway syncs its locked dependencies with `uv` and runs it as a child process. Every operation in `main.py` has the signature `fn(request, options)`, where `options` is the `options` object from the plugin's config section. A plugin sees a filtered environment: the basic system variables plus the names you list in `env_passthrough`.
+A plugin is a directory under the mods directory holding `README.md`, `main.py`, `pyproject.toml`, and `uv.lock`. 
 
 A decision plugin exports one operation.
 
@@ -73,7 +52,7 @@ A decision plugin exports one operation.
 | --- | --- | --- |
 | `decide` | `message`, `emotions` (the resolved dimensions), `state` (the affect snapshot), `instruction` | `{"emotion": "<dimension>"}` or `None` |
 
-A memory plugin exports these operations. The gateway reads only the fields listed.
+A memory plugin exports these operations. The API reads only the fields listed.
 
 | Operation | Request fields | Returns |
 | --- | --- | --- |
@@ -86,10 +65,17 @@ A memory plugin exports these operations. The gateway reads only the fields list
 | `rebuild_index` | none | `{"status": {...}}` |
 | `close` | none | `None` |
 
-`match_phrase` deltas use dimension names from your `emotions.json`. The gateway logs a warning for a name it does not know and skips it. See [examples/mods](https://github.com/Somme4096/dusha/blob/main/examples/mods/README.md) for two working plugins.
+`match_phrase` deltas use dimension names from your `emotions.json`. 
 
 ## Documentation
 
 - [docs/configuration.md](https://github.com/Somme4096/dusha/blob/main/docs/configuration.md): JSON settings, identity and prompt files.
 - [docs/guide.md](https://github.com/Somme4096/dusha/blob/main/docs/guide.md): service setup, auth and network, backup, and troubleshooting.
 - [docs/api.md](https://github.com/Somme4096/dusha/blob/main/docs/api.md): HTTP endpoints and harness integration, including AstrBot.
+
+## Acknowledgement
+
+Sincere gratitude to:
+
+- [Drivesoid](https://github.com/A1batr055/Drivesoid) for their 16-emotion system and `base/mood` cycle.
+- [Omemo](https://github.com/OmniDimen/omemo) for their gateway-as-memory-layer idea.
