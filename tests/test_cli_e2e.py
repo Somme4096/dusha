@@ -127,7 +127,7 @@ def test_cli_companions_keep_separate_state_across_restarts(tmp_path: Path) -> N
 
     listed = _run_in_root(tmp_path, "list")
     assert json.loads(listed.stdout) == {
-        "root": str(tmp_path / "dusha"), "companions": ["luna", "dusha"],
+        "root": str(tmp_path / "dusha"), "companions": ["dusha", "luna"],
     }
 
     added = _run_in_root(tmp_path, "-c", "dusha", "memo", "add", "Only Dusha knows this.")
