@@ -139,9 +139,13 @@ class UpstreamConfig:
     base_url: str = _UPSTREAM["base_url"]
     api_key_env: str = _UPSTREAM["api_key_env"]
     timeout_seconds: float = _UPSTREAM["timeout_seconds"]
+    allowed_hosts: list[str] = field(default_factory=lambda: list(_UPSTREAM["allowed_hosts"]))
 
     def __post_init__(self) -> None:
         _check_bounds(self, "upstream")
+        hosts = self.allowed_hosts
+        if not isinstance(hosts, list) or not all(isinstance(item, str) and item for item in hosts):
+            raise ValueError("upstream.allowed_hosts must be an array of host patterns")
 
 
 @dataclass(slots=True)

@@ -272,6 +272,121 @@ async def test_proxy_models_503_and_passthrough(config, monkeypatch):
     assert response.headers["content-type"] == "application/json"
 
 
+@pytest.fixture
+def provider_stub():
+    # Stands in for an external chat provider.
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    seen: list[dict] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def _record(self, body):
+            seen.append({"path": self.path, "headers": {k.lower(): v for k, v in self.headers.items()},
+                         "body": body})
+
+        def _send(self, payload, content_type):
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def do_GET(self):
+            self._record(None)
+            self._send(b'{"data":[{"id":"stub-model"}]}', "application/json")
+
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            self._record(body)
+            if body.get("stream"):
+                self._send(b"".join(STREAM_CHUNKS), "text/event-stream")
+            else:
+                reply = {"choices": [{"index": 0, "message": {"role": "assistant", "content": "stub reply"}}]}
+                self._send(json.dumps(reply).encode(), "application/json")
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield f"127.0.0.1:{server.server_address[1]}", seen
+    server.shutdown()
+    server.server_close()
+
+
+async def test_passthrough_forwards_to_the_upstream_named_in_the_path(config, monkeypatch, provider_stub):
+    host, seen = provider_stub
+    monkeypatch.setenv("UPSTREAM_API_KEY", "fixed-upstream-key")
+    config.upstream.allowed_hosts = ["127.0.0.1"]
+    app = api.create_app(config)
+    base = f"/v1/to/http/{host}/v1"
+    headers = {
+        "Authorization": "Bearer caller-oauth-token",
+        "X-Provider-Extra": "kept",
+        "X-Conversation-Id": "passthrough",
+        "X-Harness": "e2e",
+        "X-Companion-Route": "return-address",
+    }
+    async with _client(app) as client:
+        models = await client.get(f"{base}/models?api-version=7", headers=headers)
+        chat = await client.post(
+            f"{base}/chat/completions", headers=headers,
+            json={"model": "any-model", "messages": [{"role": "user", "content": "Passthrough hello."}]},
+        )
+        stream = await client.post(
+            f"{base}/chat/completions", headers=headers,
+            json={"model": "any-model", "stream": True,
+                  "messages": [{"role": "user", "content": "Passthrough stream."}]},
+        )
+    assert models.json() == {"data": [{"id": "stub-model"}]}
+    assert chat.json()["choices"][0]["message"]["content"] == "stub reply"
+    assert stream.content == b"".join(STREAM_CHUNKS)
+    assert [item["path"] for item in seen] == [
+        "/v1/models?api-version=7", "/v1/chat/completions", "/v1/chat/completions",
+    ]
+    for item in seen:
+        assert item["headers"]["authorization"] == "Bearer caller-oauth-token"
+        assert item["headers"]["x-provider-extra"] == "kept"
+        assert item["headers"]["host"] == host
+        assert not {"x-conversation-id", "x-harness", "x-companion-route"} & set(item["headers"])
+    assert seen[1]["body"]["model"] == "any-model"
+    assert "<companion_state>" in seen[1]["body"]["messages"][0]["content"]
+    stored = [(item["role"], item["text"]) for item in await _stored(app)]
+    assert stored == [
+        ("user", "Passthrough hello."), ("assistant", "stub reply"),
+        ("user", "Passthrough stream."), ("assistant", "streamed reply"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("allowed", "target", "status"),
+    [
+        ([], "http/{host}/v1", 403),
+        (["api.example.com"], "http/{host}/v1", 403),
+        (["127.0.0.1:1"], "http/{host}/v1", 403),
+        (["127.0.0.1"], "http/user@{host}/v1", 422),
+        (["{host}"], "http/{host}/v1", 200),
+        (["127.*"], "http/{host}/v1", 200),
+        (["*"], "http/{host}/v1", 200),
+    ],
+)
+async def test_passthrough_follows_the_host_allowlist(config, provider_stub, allowed, target, status):
+    host, seen = provider_stub
+    config.upstream.allowed_hosts = [item.format(host=host) for item in allowed]
+    app = api.create_app(config)
+    base = f"/v1/to/{target.format(host=host)}"
+    async with _client(app) as client:
+        models = await client.get(f"{base}/models")
+        chat = await client.post(
+            f"{base}/chat/completions",
+            json={"model": "any-model", "messages": [{"role": "user", "content": "Allowlist probe."}]},
+        )
+    assert (models.status_code, chat.status_code) == (status, status)
+    assert len(seen) == (2 if status == 200 else 0)
+    assert bool(await _stored(app)) is (status == 200)
+
+
 @pytest.mark.parametrize(
     ("fake", "status", "content", "check"),
     [
