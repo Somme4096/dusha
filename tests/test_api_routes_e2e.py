@@ -318,7 +318,6 @@ def provider_stub():
 async def test_passthrough_forwards_to_the_upstream_named_in_the_path(config, monkeypatch, provider_stub):
     host, seen = provider_stub
     monkeypatch.setenv("UPSTREAM_API_KEY", "fixed-upstream-key")
-    config.upstream.allowed_hosts = ["127.0.0.1"]
     app = api.create_app(config)
     base = f"/v1/to/http/{host}/v1"
     headers = {
@@ -359,32 +358,20 @@ async def test_passthrough_forwards_to_the_upstream_named_in_the_path(config, mo
     ]
 
 
-@pytest.mark.parametrize(
-    ("allowed", "target", "status"),
-    [
-        ([], "http/{host}/v1", 403),
-        (["api.example.com"], "http/{host}/v1", 403),
-        (["127.0.0.1:1"], "http/{host}/v1", 403),
-        (["127.0.0.1"], "http/user@{host}/v1", 422),
-        (["{host}"], "http/{host}/v1", 200),
-        (["127.*"], "http/{host}/v1", 200),
-        (["*"], "http/{host}/v1", 200),
-    ],
-)
-async def test_passthrough_follows_the_host_allowlist(config, provider_stub, allowed, target, status):
+@pytest.mark.parametrize("target", ["http/user@{host}/v1", "http"])
+async def test_passthrough_rejects_an_invalid_upstream_address(config, provider_stub, target):
     host, seen = provider_stub
-    config.upstream.allowed_hosts = [item.format(host=host) for item in allowed]
     app = api.create_app(config)
     base = f"/v1/to/{target.format(host=host)}"
     async with _client(app) as client:
         models = await client.get(f"{base}/models")
         chat = await client.post(
             f"{base}/chat/completions",
-            json={"model": "any-model", "messages": [{"role": "user", "content": "Allowlist probe."}]},
+            json={"model": "any-model", "messages": [{"role": "user", "content": "Address probe."}]},
         )
-    assert (models.status_code, chat.status_code) == (status, status)
-    assert len(seen) == (2 if status == 200 else 0)
-    assert bool(await _stored(app)) is (status == 200)
+    assert (models.status_code, chat.status_code) == (422, 422)
+    assert not seen
+    assert not await _stored(app)
 
 
 @pytest.mark.parametrize(

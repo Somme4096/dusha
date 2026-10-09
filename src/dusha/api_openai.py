@@ -6,7 +6,6 @@ import hashlib
 import json
 import os
 from collections.abc import AsyncIterator
-from fnmatch import fnmatchcase
 from typing import Any
 
 import httpx
@@ -157,11 +156,6 @@ def _upstream_base(request: Request, cfg: AppConfig) -> str:
         raise HTTPException(status_code=422, detail="upstream address is not valid") from error
     if not url.host or url.userinfo or url.query or url.fragment:
         raise HTTPException(status_code=422, detail="upstream address is not valid")
-    host = url.host.lower()
-    names = [host, f"{host}:{url.port}"] if url.port else [host]
-    patterns = [pattern.lower() for pattern in cfg.upstream.allowed_hosts]
-    if not any(fnmatchcase(name, pattern) for name in names for pattern in patterns):
-        raise HTTPException(status_code=403, detail="upstream host is not in upstream.allowed_hosts")
     return str(url).rstrip("/")
 
 

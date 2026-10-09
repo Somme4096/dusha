@@ -29,15 +29,15 @@ FastAPI serves the field reference at `/docs` and `/openapi.json`. This page cov
 | POST | `/state/v1/proactive/events/{event_id}/ack` | Acknowledge a leased event | 200, 401, 404, 409 |
 | GET | `/v1/models` | Proxy a model list | 401, 503, upstream |
 | POST | `/v1/chat/completions` | Proxy chat completions and store the transcript | 401, 422, 503, upstream |
-| GET | `/v1/to/{upstream}/models` | Proxy a model list from the upstream in the path | 401, 403, 422, upstream |
-| POST | `/v1/to/{upstream}/chat/completions` | Proxy chat completions to the upstream in the path | 401, 403, 422, upstream |
+| GET | `/v1/to/{upstream}/models` | Proxy a model list from the upstream in the path | 401, 422, upstream |
+| POST | `/v1/to/{upstream}/chat/completions` | Proxy chat completions to the upstream in the path | 401, 422, upstream |
 
 Statuses that depend on config:
 
 - `401` applies with [auth](guide.md#auth) on. Send the token in `X-Companion-Token`.
 - `503` on the `/state/v1/*` routes means `storage.enabled` is `false`. Affect, proactive, and health routes stay up.
 - `/v1/*` returns `404` when `api_openai.enabled` is `false` and `503` when `upstream.base_url` is empty.
-- `/v1/to/*` returns `403` when the host is missing from `upstream.allowed_hosts`. It does not need `upstream.base_url`.
+- `/v1/to/*` does not need `upstream.base_url`. It returns `422` for an address that is not a valid host and path.
 
 ## Client flow
 
@@ -331,7 +331,7 @@ http://127.0.0.1:8765/v1/to/http/127.0.0.1:11434/v1
 ```
 
 - The address is the provider base URL without the scheme. It defaults to `https`. A leading `http/` or `https/` segment sets the scheme.
-- The host must match an entry in `upstream.allowed_hosts`. The list is empty by default, which turns passthrough off.
+- Any host is accepted. Anyone who can call the service can relay through it, so turn on [auth](guide.md#auth) before you expose the port.
 - The proxy forwards the caller's headers and query string, including `Authorization`. It drops the routing headers, `X-Companion-Token`, and hop-by-hop headers.
 - The proxy never sends the `upstream.api_key_env` key on these routes. The client logs in and refreshes its own tokens.
 - Context injection, transcript storage, and the `model` field work the same as on the fixed routes.

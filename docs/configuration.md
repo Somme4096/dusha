@@ -42,7 +42,6 @@ Rules for the file:
 | `upstream.base_url` | `""` | Provider the proxy forwards to. Empty disables the proxy. |
 | `upstream.api_key_env` | `UPSTREAM_API_KEY` | Environment variable that holds the provider key. When it is unset, the proxy forwards the caller's `Authorization` header. |
 | `upstream.timeout_seconds` | `120` | |
-| `upstream.allowed_hosts` | `[]` | Hosts that [passthrough](api.md#passthrough) may reach. Entries are host names or `host:port`, with `*` wildcards such as `*.example.com` or `*`. Empty disables passthrough. |
 
 ## Identity, emotions, and prompts
 

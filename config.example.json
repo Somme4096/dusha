@@ -20,8 +20,7 @@
   "upstream": {
     "base_url": "",
     "api_key_env": "UPSTREAM_API_KEY",
-    "timeout_seconds": 120,
-    "allowed_hosts": []
+    "timeout_seconds": 120
   },
   "embedding": {
     "base_url": "",

@@ -16,8 +16,7 @@
   "upstream": {
     "base_url": "",
     "api_key_env": "UPSTREAM_API_KEY",
-    "timeout_seconds": 120.0,
-    "allowed_hosts": []
+    "timeout_seconds": 120.0
   },
   "memory": {
     "recent_messages": 8,
