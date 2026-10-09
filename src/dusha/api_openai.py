@@ -185,7 +185,15 @@ async def _upstream_request(request: Request, cfg: AppConfig, path: str, body: A
         kwargs: dict[str, Any] = {"headers": _upstream_headers(request, cfg)}
         if body is not None:
             kwargs["json"] = body
-        return await client.request(request.method, _upstream_url(request, cfg, path), **kwargs)
+        try:
+            return await client.request(request.method, _upstream_url(request, cfg, path), **kwargs)
+        except httpx.RequestError as error:
+            raise _unreachable(error) from error
+
+
+def _unreachable(error: httpx.RequestError) -> HTTPException:
+    reason = str(error) or type(error).__name__
+    return HTTPException(status_code=502, detail=f"upstream request failed: {reason}")
 
 
 def _passthrough_response(
@@ -221,7 +229,11 @@ async def _proxy_stream(
         headers=_upstream_headers(request, cfg),
         json=body,
     )
-    response = await client.send(upstream_request, stream=True)
+    try:
+        response = await client.send(upstream_request, stream=True)
+    except httpx.RequestError as error:
+        await client.aclose()
+        raise _unreachable(error) from error
     if response.status_code >= 400:
         await response.aread()
         await response.aclose()

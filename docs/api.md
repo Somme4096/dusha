@@ -27,16 +27,17 @@ FastAPI serves the field reference at `/docs` and `/openapi.json`. This page cov
 | POST | `/state/v1/proactive/evaluate` | Run one evaluation pass | 200, 401 |
 | GET | `/state/v1/proactive/events` | Poll and lease pending events | 200, 401 |
 | POST | `/state/v1/proactive/events/{event_id}/ack` | Acknowledge a leased event | 200, 401, 404, 409 |
-| GET | `/v1/models` | Proxy a model list | 401, 503, upstream |
-| POST | `/v1/chat/completions` | Proxy chat completions and store the transcript | 401, 422, 503, upstream |
-| GET | `/v1/to/{upstream}/models` | Proxy a model list from the upstream in the path | 401, 422, upstream |
-| POST | `/v1/to/{upstream}/chat/completions` | Proxy chat completions to the upstream in the path | 401, 422, upstream |
+| GET | `/v1/models` | Proxy a model list | 401, 502, 503, upstream |
+| POST | `/v1/chat/completions` | Proxy chat completions and store the transcript | 401, 422, 502, 503, upstream |
+| GET | `/v1/to/{upstream}/models` | Proxy a model list from the upstream in the path | 401, 422, 502, upstream |
+| POST | `/v1/to/{upstream}/chat/completions` | Proxy chat completions to the upstream in the path | 401, 422, 502, upstream |
 
 Statuses that depend on config:
 
 - `401` applies with [auth](guide.md#auth) on. Send the token in `X-Companion-Token`.
 - `503` on the `/state/v1/*` routes means `storage.enabled` is `false`. Affect, proactive, and health routes stay up.
 - `/v1/*` returns `404` when `api_openai.enabled` is `false` and `503` when `upstream.base_url` is empty.
+- Every proxy route returns `502` when the provider cannot be reached or times out. The `detail` carries the reason.
 - `/v1/to/*` does not need `upstream.base_url`. It returns `422` for an address that is not a valid host and path.
 
 ## Client flow

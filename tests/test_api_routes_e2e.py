@@ -358,6 +358,26 @@ async def test_passthrough_forwards_to_the_upstream_named_in_the_path(config, mo
     ]
 
 
+@pytest.mark.parametrize("stream", [False, True])
+async def test_proxy_maps_an_unreachable_upstream_to_502(config, stream):
+    import socket
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    config.upstream.base_url = f"http://127.0.0.1:{port}/v1"
+    body = {"model": "any-model", "stream": stream, "messages": [{"role": "user", "content": "Anyone there?"}]}
+    async with _client(api.create_app(config)) as client:
+        responses = [
+            await client.get("/v1/models"),
+            await client.post("/v1/chat/completions", json=body),
+            await client.get(f"/v1/to/http/127.0.0.1:{port}/v1/models"),
+            await client.post(f"/v1/to/http/127.0.0.1:{port}/v1/chat/completions", json=body),
+        ]
+    assert [response.status_code for response in responses] == [502, 502, 502, 502]
+    assert all(response.json()["detail"].startswith("upstream request failed: ") for response in responses)
+
+
 @pytest.mark.parametrize("target", ["http/user@{host}/v1", "http"])
 async def test_passthrough_rejects_an_invalid_upstream_address(config, provider_stub, target):
     host, seen = provider_stub

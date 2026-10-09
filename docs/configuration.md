@@ -37,11 +37,13 @@ Rules for the file:
 | `data_dir` | `data` | Holds `state.sqlite3`. |
 | `timezone` | `Asia/Taipei` | IANA zone for quiet hours and the daily limit. |
 | `api_token_env` | `""` | Environment variable that holds the API token. Empty turns auth off. See [Auth](guide.md#auth). |
-| `api_openai.enabled` | `true` | Serves the [OpenAI proxy](api.md#openai-proxy) under `/v1/*`. |
+| `api_openai.enabled` | `true` | Serves the [OpenAI proxy](api.md#openai-proxy) under `/v1/*`, including [passthrough](api.md#passthrough). |
 | `storage.enabled` | `true` | `false` closes the message, memory, context, evergreen, and memo routes with `503`. Stored rows stay on disk. |
-| `upstream.base_url` | `""` | Provider the proxy forwards to. Empty disables the proxy. |
+| `upstream.base_url` | `""` | Provider the fixed proxy routes forward to. Empty closes them with `503`. |
 | `upstream.api_key_env` | `UPSTREAM_API_KEY` | Environment variable that holds the provider key. When it is unset, the proxy forwards the caller's `Authorization` header. |
-| `upstream.timeout_seconds` | `120` | |
+| `upstream.timeout_seconds` | `120` | Applies to passthrough too. |
+
+[Passthrough](api.md#passthrough) under `/v1/to/*` takes the provider address from the request path. It has no keys of its own, ignores `upstream.base_url`, and never sends the `upstream.api_key_env` key.
 
 ## Identity, emotions, and prompts
 
