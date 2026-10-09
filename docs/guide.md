@@ -91,6 +91,8 @@ With auth on:
 
 To reach the service from another device, put a TLS reverse proxy in front of it or stay on a private network. Do not expose the plain HTTP port.
 
+[Passthrough](api.md#passthrough) forwards to any host the caller names. Turn auth on before anyone else can reach the port, or set `api_openai.enabled` to `false`.
+
 ## Backup and restore
 
 ```sh
@@ -125,6 +127,8 @@ dusha memory index rebuild
 | Startup fails on a missing identity file | Fix `identity_prompt.path` or clear it. The file must be UTF-8. |
 | Startup fails on the API token | Export the variable `api_token_env` names, or clear the key to turn auth off. |
 | Requests return `401` | Send `X-Companion-Token` with the token value. |
+| Proxy routes return `502` | The provider is unreachable or timed out. Read the `detail`, then check `upstream.base_url` or the address after `/v1/to/` in the client's base URL. Plain HTTP providers need the `http/` segment. |
+| Passthrough routes return `422` | The address after `/v1/to/` is not a host and path. Drop the `https://` prefix and any `user@` part. |
 | Message, memory, context, fact, and memo routes return `503` | Set `storage.enabled` back to `true` and restart. Your stored rows are intact. |
 | The memory plugin adds no context | Check the log for `failed to initialize memory plugin` or `memory plugin context injection failed`, then check `memory_plugin.module` and the mods directory. |
 | Duplicate proactive events or write errors | Two processes share one `state.sqlite3`. Stop one. |

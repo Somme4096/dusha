@@ -21,11 +21,36 @@ from .service import CompanionService
 _ERROR_DOCS = {
     401: {"description": "https://github.com/Somme4096/dusha"},
 }
+_PASSTHROUGH_DROPPED_HEADERS = frozenset(
+    {
+        "host",
+        "content-length",
+        "accept-encoding",
+        "connection",
+        "keep-alive",
+        "proxy-authorization",
+        "proxy-connection",
+        "te",
+        "trailer",
+        "transfer-encoding",
+        "upgrade",
+        "x-companion-token",
+        "x-companion-route",
+        "x-conversation-id",
+        "x-harness",
+    }
+)
 
 
 def create_openai_router(cfg: AppConfig, service: CompanionService, authorized) -> APIRouter:
     router = APIRouter()
 
+    @router.get(
+        "/v1/to/{upstream:path}/models",
+        tags=["proxy"],
+        dependencies=[Depends(authorized)],
+        responses={401: _ERROR_DOCS[401]},
+    )
     @router.get(
         "/v1/models",
         tags=["proxy"],
@@ -36,14 +61,19 @@ def create_openai_router(cfg: AppConfig, service: CompanionService, authorized) 
         return await _proxy_passthrough(request, cfg, "/models")
 
     @router.post(
+        "/v1/to/{upstream:path}/chat/completions",
+        tags=["proxy"],
+        dependencies=[Depends(authorized)],
+        responses={401: _ERROR_DOCS[401]},
+    )
+    @router.post(
         "/v1/chat/completions",
         tags=["proxy"],
         dependencies=[Depends(authorized)],
         responses={401: _ERROR_DOCS[401]},
     )
     async def chat_completions(request: Request) -> Response:
-        if not cfg.upstream.base_url:
-            raise HTTPException(status_code=503, detail="upstream.base_url is not configured")
+        _upstream_base(request, cfg)
         body = await request.json()
         messages = body.get("messages")
         if not isinstance(messages, list):
@@ -111,7 +141,31 @@ def _inject_context(messages: list[dict[str, Any]], injection: str) -> list[dict
     return output
 
 
+def _upstream_base(request: Request, cfg: AppConfig) -> str:
+    target = request.path_params.get("upstream")
+    if target is None:
+        if not cfg.upstream.base_url:
+            raise HTTPException(status_code=503, detail="upstream.base_url is not configured")
+        return cfg.upstream.base_url.rstrip("/")
+    scheme, _, rest = target.partition("/")
+    if scheme not in {"http", "https"}:
+        scheme, rest = "https", target
+    try:
+        url = httpx.URL(f"{scheme}://{rest}")
+    except httpx.InvalidURL as error:
+        raise HTTPException(status_code=422, detail="upstream address is not valid") from error
+    if not url.host or url.userinfo or url.query or url.fragment:
+        raise HTTPException(status_code=422, detail="upstream address is not valid")
+    return str(url).rstrip("/")
+
+
 def _upstream_headers(request: Request, cfg: AppConfig) -> dict[str, str]:
+    if "upstream" in request.path_params:
+        return {
+            name: value
+            for name, value in request.headers.items()
+            if name not in _PASSTHROUGH_DROPPED_HEADERS
+        }
     key = os.getenv(cfg.upstream.api_key_env, "") if cfg.upstream.api_key_env else ""
     authorization = f"Bearer {key}" if key else request.headers.get("authorization", "")
     headers = {"content-type": "application/json"}
@@ -120,8 +174,10 @@ def _upstream_headers(request: Request, cfg: AppConfig) -> dict[str, str]:
     return headers
 
 
-def _upstream_url(cfg: AppConfig, path: str) -> str:
-    return cfg.upstream.base_url.rstrip("/") + path
+def _upstream_url(request: Request, cfg: AppConfig, path: str) -> str:
+    url = _upstream_base(request, cfg) + path
+    query = request.url.query if "upstream" in request.path_params else ""
+    return f"{url}?{query}" if query else url
 
 
 async def _upstream_request(request: Request, cfg: AppConfig, path: str, body: Any) -> httpx.Response:
@@ -129,7 +185,15 @@ async def _upstream_request(request: Request, cfg: AppConfig, path: str, body: A
         kwargs: dict[str, Any] = {"headers": _upstream_headers(request, cfg)}
         if body is not None:
             kwargs["json"] = body
-        return await client.request(request.method, _upstream_url(cfg, path), **kwargs)
+        try:
+            return await client.request(request.method, _upstream_url(request, cfg, path), **kwargs)
+        except httpx.RequestError as error:
+            raise _unreachable(error) from error
+
+
+def _unreachable(error: httpx.RequestError) -> HTTPException:
+    reason = str(error) or type(error).__name__
+    return HTTPException(status_code=502, detail=f"upstream request failed: {reason}")
 
 
 def _passthrough_response(
@@ -143,8 +207,7 @@ def _passthrough_response(
 
 
 async def _proxy_passthrough(request: Request, cfg: AppConfig, path: str) -> Response:
-    if not cfg.upstream.base_url:
-        raise HTTPException(status_code=503, detail="upstream.base_url is not configured")
+    _upstream_base(request, cfg)
     response = await _upstream_request(request, cfg, path, None)
     return _passthrough_response(response)
 
@@ -162,11 +225,15 @@ async def _proxy_stream(
     client = httpx.AsyncClient(timeout=cfg.upstream.timeout_seconds)
     upstream_request = client.build_request(
         "POST",
-        _upstream_url(cfg, "/chat/completions"),
+        _upstream_url(request, cfg, "/chat/completions"),
         headers=_upstream_headers(request, cfg),
         json=body,
     )
-    response = await client.send(upstream_request, stream=True)
+    try:
+        response = await client.send(upstream_request, stream=True)
+    except httpx.RequestError as error:
+        await client.aclose()
+        raise _unreachable(error) from error
     if response.status_code >= 400:
         await response.aread()
         await response.aclose()
