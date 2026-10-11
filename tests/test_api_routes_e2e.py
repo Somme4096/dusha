@@ -398,7 +398,7 @@ async def test_proxy_maps_an_unreachable_upstream_to_502(config, stream):
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
     config.upstream.base_url = f"http://127.0.0.1:{port}/v1"
-    body = {"model": "any-model", "stream": stream, "messages": [{"role": "user", "content": "Anyone there?"}]}
+    body = {"model": "any-model", "stream": stream, "messages": [{"role": "user", "content": "Anyone?"}]}
     async with _client(api.create_app(config)) as client:
         responses = [
             await client.get("/v1/models"),
