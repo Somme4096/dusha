@@ -306,7 +306,7 @@ class AppConfig:
     host: str = _DEFAULTS["host"]
     port: int = _DEFAULTS["port"]
     timezone: str = _DEFAULTS["timezone"]
-    api_token_env: str = _DEFAULTS["api_token_env"]
+    api_token: str = _DEFAULTS["api_token"]
     api_openai: ApiOpenAIConfig = field(default_factory=ApiOpenAIConfig)
     identity_prompt: IdentityPromptConfig = field(
         default_factory=lambda: IdentityPromptConfig()
@@ -453,7 +453,7 @@ def _app_config_from_raw(raw: dict[str, Any], source_dir: Path) -> AppConfig:
 
     hints = typing.get_type_hints(AppConfig)
     kwargs: dict[str, Any] = {}
-    for key in ("host", "port", "timezone", "api_token_env"):
+    for key in ("host", "port", "timezone", "api_token"):
         if key in raw:
             _validate_value(key, raw[key], hints[key])
             kwargs[key] = raw[key]
@@ -529,7 +529,7 @@ def load_config(
 
 def _validate_packaged_defaults() -> None:
     hints = typing.get_type_hints(AppConfig)
-    for key in ("data_dir", "host", "port", "timezone", "api_token_env"):
+    for key in ("data_dir", "host", "port", "timezone", "api_token"):
         _validate_value(f"packaged defaults {key}", _DEFAULTS[key], hints[key])
     _strict_section(UpstreamConfig, _DEFAULTS["upstream"], "packaged defaults upstream")
     _strict_section(EmbeddingConfig, _DEFAULTS["embedding"], "packaged defaults embedding")

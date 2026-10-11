@@ -510,8 +510,7 @@ async def test_api_context_shape_and_same_state_auth(config, monkeypatch):
     assert set(body) == {"injection", "affect", "evergreen_facts", "records", "search_hits", "context"}
     assert "<companion_state>" in body["injection"]
 
-    config.api_token_env = "TEST_TOKEN_ENV"
-    monkeypatch.setenv("TEST_TOKEN_ENV", "secret-token")
+    config.api_token = "secret-token"
     async with _client(api.create_app(config)) as client:
         denied = await client.post("/state/v1/context", json={"query": ""})
         allowed = await client.post(
@@ -685,9 +684,8 @@ async def test_auth_disabled_local_mode_is_open(config):
 async def test_protected_routes_require_companion_token(
     config, monkeypatch, method, path, payload, params
 ):
-    config.api_token_env = "TEST_TOKEN_ENV"
+    config.api_token = "secret-token"
     config.upstream.base_url = ""
-    monkeypatch.setenv("TEST_TOKEN_ENV", "secret-token")
     app = api.create_app(config)
     async with _client(app) as client:
         missing = await client.request(method, path, json=payload, params=params)
@@ -704,18 +702,8 @@ async def test_protected_routes_require_companion_token(
     assert right.status_code != 401
 
 
-async def test_configured_token_env_without_value_fails_app_creation(config, monkeypatch):
-    config.api_token_env = "MISSING_COMPANION_TOKEN"
-    monkeypatch.delenv("MISSING_COMPANION_TOKEN", raising=False)
-    with pytest.raises(api.AuthConfigError, match="missing or empty"):
-        api.create_app(config)
-    monkeypatch.setenv("MISSING_COMPANION_TOKEN", "")
-    with pytest.raises(api.AuthConfigError, match="missing or empty"):
-        api.create_app(config)
-
-
 async def test_health_stays_public_and_carries_no_token(config, monkeypatch):
-    config.api_token_env = "TEST_TOKEN_ENV"
+    config.api_token = "secret-token"
     monkeypatch.setenv("TEST_TOKEN_ENV", "super-secret-token")
     app = api.create_app(config)
     async with _client(app) as client:
@@ -726,8 +714,7 @@ async def test_health_stays_public_and_carries_no_token(config, monkeypatch):
 
 
 async def test_api_docs_disabled_when_auth_enabled(config, monkeypatch):
-    config.api_token_env = "TEST_TOKEN_ENV"
-    monkeypatch.setenv("TEST_TOKEN_ENV", "secret-token")
+    config.api_token = "secret-token"
     app = api.create_app(config)
     async with _client(app) as client:
         for path in ("/docs", "/redoc", "/openapi.json"):
@@ -736,8 +723,7 @@ async def test_api_docs_disabled_when_auth_enabled(config, monkeypatch):
 
 
 async def test_auth_enabled_streaming_and_upstream_authorization(config, monkeypatch):
-    config.api_token_env = "TEST_TOKEN_ENV"
-    monkeypatch.setenv("TEST_TOKEN_ENV", "secret-token")
+    config.api_token = "secret-token"
     config.upstream.base_url = "https://upstream.invalid/v1"
     app = api.create_app(config)
 

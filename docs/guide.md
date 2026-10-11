@@ -21,7 +21,7 @@ curl -o ~/.config/systemd/user/dusha@.service \
   https://raw.githubusercontent.com/Somme4096/dusha/main/deploy/dusha@.service
 ```
 
-3. Add secrets, if you use an upstream key or an API token. The config stores variable names and this file stores the values.
+3. Add secrets, if you use an upstream or embedding key. The config stores variable names and this file stores the values.
 
 ```sh
 touch ~/.config/dusha/dusha/.env
@@ -31,7 +31,6 @@ ${EDITOR:-vi} ~/.config/dusha/dusha/.env
 
 ```ini
 UPSTREAM_API_KEY=replace-me
-COMPANION_TOKEN=replace-with-a-long-random-value
 ```
 
 The unit sets `PATH` to `~/.local/bin:/usr/local/bin:/usr/bin:/bin`. Add a `PATH=` line to this file when `uv` lives elsewhere.
@@ -57,27 +56,22 @@ The unit is a template. `dusha@<name>` serves the home `~/.config/dusha/<name>/`
 
 ## Auth
 
-Auth is off by default, and the service binds to localhost. To turn auth on, name an environment variable in the config:
+Auth is off by default, and the service binds to localhost. To turn auth on, put a token in the config:
 
 ```json
 {
-  "api_token_env": "COMPANION_TOKEN"
+  "api_token": "replace-with-a-long-random-value"
 }
 ```
 
-Put the token in that variable, then start the service:
-
-```sh
-export COMPANION_TOKEN="$(openssl rand -hex 32)"
-dusha serve dusha
-```
+`openssl rand -hex 32` makes a good one. The config now holds a secret, so run `chmod 600` on it and keep it out of version control.
 
 Send the same value in the `X-Companion-Token` header:
 
 ```sh
 curl -X POST http://127.0.0.1:8765/state/v1/context \
   -H 'Content-Type: application/json' \
-  -H "X-Companion-Token: $COMPANION_TOKEN" \
+  -H "X-Companion-Token: replace-with-a-long-random-value" \
   -d '{"query":"Hello"}'
 ```
 
@@ -86,7 +80,6 @@ With auth on:
 - Every `/state/v1/*` and `/v1/*` route needs the header. A wrong token returns `401`.
 - `/health` stays public.
 - `/docs`, `/redoc`, and `/openapi.json` are off.
-- Startup fails when the variable is unset or empty.
 - A new token needs a restart.
 
 To reach the service from another device, put a TLS reverse proxy in front of it or stay on a private network. Do not expose the plain HTTP port.
@@ -125,7 +118,7 @@ dusha memory index rebuild
 | --- | --- |
 | Startup fails on a missing config file | The selected home needs a `config.json`. Run `dusha list` to see your companions. |
 | Startup fails on a missing identity file | Fix `identity_prompt.path` or clear it. The file must be UTF-8. |
-| Startup fails on the API token | Export the variable `api_token_env` names, or clear the key to turn auth off. |
+| Startup fails on an unknown `api_token_env` field | Rename it to `api_token` and put the token value there. |
 | Requests return `401` | Send `X-Companion-Token` with the token value. |
 | Proxy routes return `502` | The provider is unreachable or timed out. Read the `detail`, then check `upstream.base_url` or the address after `/v1/to/` in the client's base URL. Plain HTTP providers need the `http/` segment. |
 | Passthrough routes return `422` | The address after `/v1/to/` is not a host and path. Drop the `https://` prefix and any `user@` part. |

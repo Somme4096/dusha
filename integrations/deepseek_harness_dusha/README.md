@@ -82,6 +82,6 @@ the old history from search and context.
 
 - Run `curl http://127.0.0.1:8765/health` to confirm the gateway is reachable.
 - A `401` result means the token is wrong. Set `api_token` to the same value
-  the gateway reads from its `api_token_env` environment variable.
+  as `api_token` in the gateway's config.
 - A `422` result means the request body is invalid. Check required tool
   arguments before calling.

@@ -123,8 +123,7 @@ async def test_adapter_client_get_memory(config):
 
 
 async def test_adapter_token_header_success_and_401(config, monkeypatch):
-    config.api_token_env = "E2E_DEEPSEEK_TOKEN"
-    monkeypatch.setenv("E2E_DEEPSEEK_TOKEN", "right-secret")
+    config.api_token = "right-secret"
     async with _running_adapter(api.create_app(config), _settings(api_token="wrong-secret")) as adapter:
         denied = json.loads(await adapter.affect_status())
         assert denied["ok"] is False

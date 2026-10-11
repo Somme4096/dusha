@@ -655,8 +655,7 @@ async def test_tool_gateway_statuses_map_to_ok_false_with_status(config, monkeyp
             }
 
     config.storage = StorageConfig()
-    config.api_token_env = "E2E_ASTRBOT_TOKEN"
-    monkeypatch.setenv("E2E_ASTRBOT_TOKEN", "right-secret")
+    config.api_token = "right-secret"
     async with _running(config) as rig:
         denied = await rig.plugin(api_token="wrong-secret")
         assert await _tool(denied, "yumecho_add", text="never stored") == {
