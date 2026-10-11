@@ -75,6 +75,8 @@ curl -X POST http://127.0.0.1:8765/state/v1/context \
   -d '{"query":"Hello"}'
 ```
 
+OpenAI clients that cannot set headers can put the token in the [base URL](api.md#token-in-the-base-url) of the proxy.
+
 With auth on:
 
 - Every `/state/v1/*` and `/v1/*` route needs the header. A wrong token returns `401`.

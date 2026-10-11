@@ -38,8 +38,24 @@ _PASSTHROUGH_DROPPED_HEADERS = frozenset(
         "x-companion-route",
         "x-conversation-id",
         "x-harness",
+        "x-upstream-endpoint",
     }
 )
+_PATH_TOKEN_PREFIX = "/v1/token/"
+
+
+class PathTokenMiddleware:
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] == "http" and scope["path"].startswith(_PATH_TOKEN_PREFIX):
+            token, _, rest = scope["path"][len(_PATH_TOKEN_PREFIX) :].partition("/")
+            scope["path"] = f"/v1/{rest}"
+            scope["raw_path"] = scope["path"].encode()
+            headers = [item for item in scope["headers"] if item[0] != b"x-companion-token"]
+            scope["headers"] = [*headers, (b"x-companion-token", token.encode())]
+        await self.app(scope, receive, send)
 
 
 def create_openai_router(cfg: AppConfig, service: CompanionService, authorized) -> APIRouter:
@@ -141,26 +157,36 @@ def _inject_context(messages: list[dict[str, Any]], injection: str) -> list[dict
     return output
 
 
-def _upstream_base(request: Request, cfg: AppConfig) -> str:
+def _passthrough_target(request: Request) -> str | None:
+    endpoint = request.headers.get("x-upstream-endpoint", "").strip()
+    if endpoint:
+        return endpoint if "://" in endpoint else f"https://{endpoint}"
     target = request.path_params.get("upstream")
+    if target is None:
+        return None
+    scheme, _, rest = target.partition("/")
+    if scheme not in {"http", "https"}:
+        scheme, rest = "https", target
+    return f"{scheme}://{rest}"
+
+
+def _upstream_base(request: Request, cfg: AppConfig) -> str:
+    target = _passthrough_target(request)
     if target is None:
         if not cfg.upstream.base_url:
             raise HTTPException(status_code=503, detail="upstream.base_url is not configured")
         return cfg.upstream.base_url.rstrip("/")
-    scheme, _, rest = target.partition("/")
-    if scheme not in {"http", "https"}:
-        scheme, rest = "https", target
     try:
-        url = httpx.URL(f"{scheme}://{rest}")
+        url = httpx.URL(target)
     except httpx.InvalidURL as error:
         raise HTTPException(status_code=422, detail="upstream address is not valid") from error
-    if not url.host or url.userinfo or url.query or url.fragment:
+    if url.scheme not in {"http", "https"} or not url.host or url.userinfo or url.query or url.fragment:
         raise HTTPException(status_code=422, detail="upstream address is not valid")
     return str(url).rstrip("/")
 
 
 def _upstream_headers(request: Request, cfg: AppConfig) -> dict[str, str]:
-    if "upstream" in request.path_params:
+    if _passthrough_target(request) is not None:
         return {
             name: value
             for name, value in request.headers.items()
@@ -176,7 +202,7 @@ def _upstream_headers(request: Request, cfg: AppConfig) -> dict[str, str]:
 
 def _upstream_url(request: Request, cfg: AppConfig, path: str) -> str:
     url = _upstream_base(request, cfg) + path
-    query = request.url.query if "upstream" in request.path_params else ""
+    query = request.url.query if _passthrough_target(request) is not None else ""
     return f"{url}?{query}" if query else url
 
 

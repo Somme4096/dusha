@@ -12,7 +12,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from . import schema as _schema
-from .api_openai import create_openai_router
+from .api_openai import PathTokenMiddleware, create_openai_router
 from .api_state import create_state_router
 from .config import AppConfig, load_config
 from .proactive import ProactiveEngine
@@ -137,4 +137,5 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     app.include_router(create_state_router(service, proactive, authorized))
     if cfg.api_openai.enabled:
         app.include_router(create_openai_router(cfg, service, authorized))
+        app.add_middleware(PathTokenMiddleware)
     return app

@@ -358,6 +358,38 @@ async def test_passthrough_forwards_to_the_upstream_named_in_the_path(config, mo
     ]
 
 
+async def test_passthrough_reads_the_upstream_header_and_the_path_token(config, provider_stub):
+    host, seen = provider_stub
+    config.api_token = "path-secret"
+    app = api.create_app(config)
+    body = {"model": "any-model", "messages": [{"role": "user", "content": "Header hello."}]}
+    endpoint = {"X-Upstream-Endpoint": f"http://{host}/v1", "Authorization": "Bearer provider-key"}
+    async with _client(app) as client:
+        responses = [
+            await client.get("/v1/models", headers={**endpoint, "X-Companion-Token": "path-secret"}),
+            await client.post("/v1/token/path-secret/chat/completions", headers=endpoint, json=body),
+            await client.get(f"/v1/token/path-secret/to/http/{host}/v1/models?page=2",
+                             headers={"Authorization": "Bearer provider-key"}),
+        ]
+        denied = [
+            await client.get("/v1/models", headers=endpoint),
+            await client.get(f"/v1/token/wrong/to/http/{host}/v1/models"),
+            await client.get("/v1/token/wrong/models", headers=endpoint),
+        ]
+        invalid = await client.get(
+            "/v1/token/path-secret/models", headers={"X-Upstream-Endpoint": f"ftp://{host}/v1"}
+        )
+    assert [response.status_code for response in responses] == [200, 200, 200]
+    assert [response.status_code for response in denied] == [401, 401, 401]
+    assert invalid.status_code == 422
+    assert [item["path"] for item in seen] == ["/v1/models", "/v1/chat/completions", "/v1/models?page=2"]
+    for item in seen:
+        assert item["headers"]["authorization"] == "Bearer provider-key"
+        assert not {"x-companion-token", "x-upstream-endpoint"} & set(item["headers"])
+        assert "path-secret" not in json.dumps(item)
+    assert "<companion_state>" in seen[1]["body"]["messages"][0]["content"]
+
+
 @pytest.mark.parametrize("stream", [False, True])
 async def test_proxy_maps_an_unreachable_upstream_to_502(config, stream):
     import socket

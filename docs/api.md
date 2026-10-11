@@ -34,7 +34,7 @@ FastAPI serves the field reference at `/docs` and `/openapi.json`. This page cov
 
 Statuses that depend on config:
 
-- `401` applies with [auth](guide.md#auth) on. Send the token in `X-Companion-Token`.
+- `401` applies with [auth](guide.md#auth) on. Send the token in `X-Companion-Token`. Proxy clients that cannot set headers can put it in the [base URL](#token-in-the-base-url).
 - `503` on the `/state/v1/*` routes means `storage.enabled` is `false`. Affect, proactive, and health routes stay up.
 - `/v1/*` returns `404` when `api_openai.enabled` is `false` and `503` when `upstream.base_url` is empty.
 - Every proxy route returns `502` when the provider cannot be reached or times out. The `detail` carries the reason.
@@ -324,7 +324,15 @@ The proxy sends the provider key from `upstream.api_key_env`. See [configuration
 
 ### Passthrough
 
-Passthrough lets the client pick the provider per request. Put the provider address in the path and use the result as the client's base URL:
+Passthrough lets the client pick the provider per request. A client that can set headers keeps the plain base URL `http://127.0.0.1:8765/v1` and names the provider in a header:
+
+```text
+X-Upstream-Endpoint: https://api.example.com/v1
+```
+
+The scheme defaults to `https` when the value has none. The header wins over an address in the path.
+
+Any other client puts the provider address in the path and uses the result as its base URL:
 
 ```text
 http://127.0.0.1:8765/v1/to/api.example.com/v1
@@ -336,6 +344,17 @@ http://127.0.0.1:8765/v1/to/http/127.0.0.1:11434/v1
 - The proxy forwards the caller's headers and query string, including `Authorization`. It drops the routing headers, `X-Companion-Token`, and hop-by-hop headers.
 - The proxy never sends the `upstream.api_key_env` key on these routes. The client logs in and refreshes its own tokens.
 - Context injection, transcript storage, and the `model` field work the same as on the fixed routes.
+
+### Token in the base URL
+
+With [auth](guide.md#auth) on, a client that cannot send `X-Companion-Token` puts the token after `/v1/token/`. Every `/v1/*` proxy route accepts the prefix:
+
+```text
+http://127.0.0.1:8765/v1/token/<token>
+http://127.0.0.1:8765/v1/token/<token>/to/api.example.com/v1
+```
+
+The token must not contain `/`. The service strips it before routing, so its own access log shows the path without it. Other hops, such as a reverse proxy, still see the full URL.
 
 ## Versions
 
