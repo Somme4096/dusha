@@ -15,15 +15,15 @@ def _client(app):
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
 
 
-def _write_config(path: Path, *, data_dir: Path, enabled: object = None, token_env: str = "") -> Path:
+def _write_config(path: Path, *, data_dir: Path, enabled: object = None, token: str = "") -> Path:
     raw = {
         "data_dir": str(data_dir),
         "upstream": {"base_url": "https://provider.invalid/v1"},
     }
     if enabled is not None:
         raw["api_openai"] = {"enabled": enabled}
-    if token_env:
-        raw["api_token_env"] = token_env
+    if token:
+        raw["api_token"] = token
     path.write_text(json.dumps(raw), encoding="utf-8")
     return path
 
@@ -64,8 +64,7 @@ async def test_http_state_survives_app_restart(config):
 
 
 async def test_http_auth_success_and_failure_paths(config, monkeypatch):
-    config.api_token_env = "E2E_COMPANION_TOKEN"
-    monkeypatch.setenv("E2E_COMPANION_TOKEN", "e2e-secret")
+    config.api_token = "e2e-secret"
     app = api.create_app(config)
 
     async with _running_client(app) as client:
@@ -138,12 +137,11 @@ async def test_http_config_json_enables_openai_routes(tmp_path, enabled, monkeyp
 
 
 async def test_http_config_json_disables_openai_but_keeps_state_health_and_auth(tmp_path, monkeypatch):
-    monkeypatch.setenv("E2E_DISABLED_TOKEN", "disabled-secret")
     config_path = _write_config(
         tmp_path / "config.json",
         data_dir=tmp_path / "data",
         enabled=False,
-        token_env="E2E_DISABLED_TOKEN",
+        token="disabled-secret",
     )
     app = api.create_app(load_config(config_path))
 

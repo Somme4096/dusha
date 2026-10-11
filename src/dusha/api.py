@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import os
 import secrets
 from contextlib import asynccontextmanager
 from importlib import metadata as _metadata
@@ -13,7 +12,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from . import schema as _schema
-from .api_openai import create_openai_router
+from .api_openai import PathTokenMiddleware, create_openai_router
 from .api_state import create_state_router
 from .config import AppConfig, load_config
 from .proactive import ProactiveEngine
@@ -21,20 +20,6 @@ from .service import CompanionService, StorageUnavailableError
 
 logger = logging.getLogger("dusha")
 
-
-class AuthConfigError(ValueError):
-    pass
-
-def _resolve_token(cfg: AppConfig) -> str:
-    if not cfg.api_token_env:
-        return ""
-    value = os.getenv(cfg.api_token_env, "")
-    if not value:
-        raise AuthConfigError(
-            f"api_token_env is set to {cfg.api_token_env!r} but that environment variable "
-            "is missing or empty. Export it or clear api_token_env to disable auth"
-        )
-    return value
 
 async def _scheduler(proactive: ProactiveEngine, interval: int) -> None:
     while True:
@@ -70,7 +55,7 @@ async def _index_backfill_scheduler(service: CompanionService, interval: int) ->
 
 def create_app(config: AppConfig | None = None) -> FastAPI:
     cfg = config or load_config()
-    expected_token = _resolve_token(cfg)
+    expected_token = cfg.api_token
     auth_enabled = bool(expected_token)
     service = CompanionService(cfg)
     proactive = ProactiveEngine(service, cfg)
@@ -152,4 +137,5 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     app.include_router(create_state_router(service, proactive, authorized))
     if cfg.api_openai.enabled:
         app.include_router(create_openai_router(cfg, service, authorized))
+        app.add_middleware(PathTokenMiddleware)
     return app

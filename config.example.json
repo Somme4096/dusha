@@ -7,7 +7,7 @@
   "host": "127.0.0.1",
   "port": 8765,
   "timezone": "Asia/Taipei",
-  "api_token_env": "",
+  "api_token": "",
   "api_openai": {
     "enabled": true
   },

@@ -74,6 +74,8 @@ def _prompts_file(tmp_path, mutate, name="prompts.json"):
         ('{"evergreen": {"max_items": -3}}', "evergreen.max_items"),
         ('{"upstream": {"timeout_seconds": 0}}', "upstream.timeout_seconds must be above 0"),
         ('{"upstream": {"allowed_hosts": ["*"]}}', r"unknown field\(s\) under upstream"),
+        ('{"api_token_env": "COMPANION_TOKEN"}', "unknown top-level field"),
+        ('{"api_token": 42}', "api_token must be str"),
         ('{"memo": {"text_max_chars": 0}}', "memo.text_max_chars"),
         ('{"port": 70000}', "port must be"),
         ('{"timezone": "Not/AZone"}', "timezone is not a known IANA zone"),

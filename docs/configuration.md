@@ -36,7 +36,7 @@ Rules for the file:
 | `port` | `8765` | |
 | `data_dir` | `data` | Holds `state.sqlite3`. |
 | `timezone` | `Asia/Taipei` | IANA zone for quiet hours and the daily limit. |
-| `api_token_env` | `""` | Environment variable that holds the API token. Empty turns auth off. See [Auth](guide.md#auth). |
+| `api_token` | `""` | The API token. Empty turns auth off. See [Auth](guide.md#auth). |
 | `api_openai.enabled` | `true` | Serves the [OpenAI proxy](api.md#openai-proxy) under `/v1/*`, including [passthrough](api.md#passthrough). |
 | `storage.enabled` | `true` | `false` closes the message, memory, context, evergreen, and memo routes with `503`. Stored rows stay on disk. |
 | `upstream.base_url` | `""` | Provider the fixed proxy routes forward to. Empty closes them with `503`. |

@@ -358,6 +358,38 @@ async def test_passthrough_forwards_to_the_upstream_named_in_the_path(config, mo
     ]
 
 
+async def test_passthrough_reads_the_upstream_header_and_the_path_token(config, provider_stub):
+    host, seen = provider_stub
+    config.api_token = "path-secret"
+    app = api.create_app(config)
+    body = {"model": "any-model", "messages": [{"role": "user", "content": "Header hello."}]}
+    endpoint = {"X-Upstream-Endpoint": f"http://{host}/v1", "Authorization": "Bearer provider-key"}
+    async with _client(app) as client:
+        responses = [
+            await client.get("/v1/models", headers={**endpoint, "X-Companion-Token": "path-secret"}),
+            await client.post("/v1/token/path-secret/chat/completions", headers=endpoint, json=body),
+            await client.get(f"/v1/token/path-secret/to/http/{host}/v1/models?page=2",
+                             headers={"Authorization": "Bearer provider-key"}),
+        ]
+        denied = [
+            await client.get("/v1/models", headers=endpoint),
+            await client.get(f"/v1/token/wrong/to/http/{host}/v1/models"),
+            await client.get("/v1/token/wrong/models", headers=endpoint),
+        ]
+        invalid = await client.get(
+            "/v1/token/path-secret/models", headers={"X-Upstream-Endpoint": f"ftp://{host}/v1"}
+        )
+    assert [response.status_code for response in responses] == [200, 200, 200]
+    assert [response.status_code for response in denied] == [401, 401, 401]
+    assert invalid.status_code == 422
+    assert [item["path"] for item in seen] == ["/v1/models", "/v1/chat/completions", "/v1/models?page=2"]
+    for item in seen:
+        assert item["headers"]["authorization"] == "Bearer provider-key"
+        assert not {"x-companion-token", "x-upstream-endpoint"} & set(item["headers"])
+        assert "path-secret" not in json.dumps(item)
+    assert "<companion_state>" in seen[1]["body"]["messages"][0]["content"]
+
+
 @pytest.mark.parametrize("stream", [False, True])
 async def test_proxy_maps_an_unreachable_upstream_to_502(config, stream):
     import socket
@@ -366,7 +398,7 @@ async def test_proxy_maps_an_unreachable_upstream_to_502(config, stream):
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
     config.upstream.base_url = f"http://127.0.0.1:{port}/v1"
-    body = {"model": "any-model", "stream": stream, "messages": [{"role": "user", "content": "Anyone there?"}]}
+    body = {"model": "any-model", "stream": stream, "messages": [{"role": "user", "content": "Anyone?"}]}
     async with _client(api.create_app(config)) as client:
         responses = [
             await client.get("/v1/models"),
@@ -510,8 +542,7 @@ async def test_api_context_shape_and_same_state_auth(config, monkeypatch):
     assert set(body) == {"injection", "affect", "evergreen_facts", "records", "search_hits", "context"}
     assert "<companion_state>" in body["injection"]
 
-    config.api_token_env = "TEST_TOKEN_ENV"
-    monkeypatch.setenv("TEST_TOKEN_ENV", "secret-token")
+    config.api_token = "secret-token"
     async with _client(api.create_app(config)) as client:
         denied = await client.post("/state/v1/context", json={"query": ""})
         allowed = await client.post(
@@ -685,9 +716,8 @@ async def test_auth_disabled_local_mode_is_open(config):
 async def test_protected_routes_require_companion_token(
     config, monkeypatch, method, path, payload, params
 ):
-    config.api_token_env = "TEST_TOKEN_ENV"
+    config.api_token = "secret-token"
     config.upstream.base_url = ""
-    monkeypatch.setenv("TEST_TOKEN_ENV", "secret-token")
     app = api.create_app(config)
     async with _client(app) as client:
         missing = await client.request(method, path, json=payload, params=params)
@@ -704,18 +734,8 @@ async def test_protected_routes_require_companion_token(
     assert right.status_code != 401
 
 
-async def test_configured_token_env_without_value_fails_app_creation(config, monkeypatch):
-    config.api_token_env = "MISSING_COMPANION_TOKEN"
-    monkeypatch.delenv("MISSING_COMPANION_TOKEN", raising=False)
-    with pytest.raises(api.AuthConfigError, match="missing or empty"):
-        api.create_app(config)
-    monkeypatch.setenv("MISSING_COMPANION_TOKEN", "")
-    with pytest.raises(api.AuthConfigError, match="missing or empty"):
-        api.create_app(config)
-
-
 async def test_health_stays_public_and_carries_no_token(config, monkeypatch):
-    config.api_token_env = "TEST_TOKEN_ENV"
+    config.api_token = "secret-token"
     monkeypatch.setenv("TEST_TOKEN_ENV", "super-secret-token")
     app = api.create_app(config)
     async with _client(app) as client:
@@ -726,8 +746,7 @@ async def test_health_stays_public_and_carries_no_token(config, monkeypatch):
 
 
 async def test_api_docs_disabled_when_auth_enabled(config, monkeypatch):
-    config.api_token_env = "TEST_TOKEN_ENV"
-    monkeypatch.setenv("TEST_TOKEN_ENV", "secret-token")
+    config.api_token = "secret-token"
     app = api.create_app(config)
     async with _client(app) as client:
         for path in ("/docs", "/redoc", "/openapi.json"):
@@ -736,8 +755,7 @@ async def test_api_docs_disabled_when_auth_enabled(config, monkeypatch):
 
 
 async def test_auth_enabled_streaming_and_upstream_authorization(config, monkeypatch):
-    config.api_token_env = "TEST_TOKEN_ENV"
-    monkeypatch.setenv("TEST_TOKEN_ENV", "secret-token")
+    config.api_token = "secret-token"
     config.upstream.base_url = "https://upstream.invalid/v1"
     app = api.create_app(config)
 
