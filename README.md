@@ -27,7 +27,7 @@ Want it running in the background? Use [deploy/dusha@.service](https://github.co
 
 `user message → dusha → injects context → your model → reply → (harness, dusha)`
 
-Integrations (e.g. opencode-dusha) send each message to `dusha` and add its context to the system prompt before calling your model. That's it, so it works with any harness or provider. If your client only supports the OpenAI API, use `dusha` as a proxy at `/v1/chat/completions` instead.
+Integrations (e.g. opencode-dusha) send each message to `dusha` and add its context to the system prompt before calling your model. That's it, so it works with any harness or provider. If your client only supports the OpenAI API, use `dusha` as a proxy instead. Set the client's base URL to `http://127.0.0.1:8765/v1/to/<provider-host>/v1` and keep your own key and model, see [passthrough](https://github.com/Somme4096/dusha/blob/main/docs/api.md#passthrough).
 
 <details>
 <summary>How does memory/affect/identity work in Dusha?</summary>
