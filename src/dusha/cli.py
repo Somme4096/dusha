@@ -53,13 +53,10 @@ def parser() -> argparse.ArgumentParser:
     recent = memory_commands.add_parser("recent")
     recent.add_argument("--limit", type=int, default=20)
     memory_commands.add_parser("reindex")
-    index = memory_commands.add_parser("index", help="Manage the memory index and plugin status")
-    index_commands = index.add_subparsers(dest="index_command", required=True)
-    index_commands.add_parser("status")
-    backfill = index_commands.add_parser("backfill")
-    backfill.add_argument("--limit", type=int, default=None)
-    backfill.add_argument("--force", action="store_true")
-    index_commands.add_parser("rebuild")
+
+    mods = commands.add_parser("mods", help="Inspect loaded mods")
+    mods_commands = mods.add_subparsers(dest="mods_command", required=True)
+    mods_commands.add_parser("status")
 
     evergreen = commands.add_parser("evergreen", help="Inspect or update evergreen facts")
     evergreen_commands = evergreen.add_subparsers(dest="evergreen_command", required=True)
@@ -160,35 +157,16 @@ def _memory_reindex(service: CompanionService, proactive: ProactiveEngine, args:
     _print(service.memory_reindex())
 
 
-def _memory_index(service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace) -> None:
-    _MEMORY_INDEX_HANDLERS[args.index_command](service, proactive, args)
-
-
-def _index_status(service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace) -> None:
-    _print(service.memory_index_status())
-
-
-def _index_backfill(service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace) -> None:
-    _print(service.memory_index_backfill(args.limit or 100, args.force))
-
-
-def _index_rebuild(service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace) -> None:
-    _print(service.memory_index_rebuild())
-
-
-_MEMORY_INDEX_HANDLERS: dict[str, Handler] = {
-    "status": _index_status,
-    "backfill": _index_backfill,
-    "rebuild": _index_rebuild,
-}
-
 _MEMORY_HANDLERS: dict[str, Handler] = {
     "search": _memory_search,
     "show": _memory_show,
     "recent": _memory_recent,
-    "index": _memory_index,
     "reindex": _memory_reindex,
 }
+
+
+def _cmd_mods(service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace) -> None:
+    _print(service.mods_status())
 
 
 def _cmd_evergreen(service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace) -> None:
@@ -352,6 +330,7 @@ _COMMANDS: dict[str, Handler] = {
     "health": _cmd_health,
     "backup": _cmd_backup,
     "memory": _cmd_memory,
+    "mods": _cmd_mods,
     "evergreen": _cmd_evergreen,
     "memo": _cmd_memo,
     "affect": _cmd_affect,
@@ -381,8 +360,7 @@ def main() -> None:
         return
 
     service = CompanionService(cfg)
-    index_only = getattr(args, "memory_command", "") in {"index", "reindex"}
-    gated = args.command in _FEATURE_COMMANDS and not index_only
+    gated = args.command in _FEATURE_COMMANDS and getattr(args, "memory_command", "") != "reindex"
     if gated and not getattr(cfg.features, args.command):
         print(f"the {args.command} feature is disabled", file=sys.stderr)
         service.close()

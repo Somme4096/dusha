@@ -17,7 +17,7 @@ _OPTIONS = {
     "url", "app_id", "project_id", "instance_namespace", "user_sender_id",
     "assistant_sender_id", "timeout_seconds", "flush_timeout_seconds", "flush_after_ingest",
 }
-_RPC_TIMEOUT_ENV = "DUSHA_MEMORY_RPC_TIMEOUT_SECONDS"
+_RPC_TIMEOUT_ENV = "DUSHA_MOD_TIMEOUT_SECONDS"
 _MIN_RPC_TIMEOUT = 0.5
 _SEARCH_TOP_K = 5
 _EPISODE_SKIP_KEYS = {"session_id", "app_id", "project_id", "user_id"}
@@ -43,13 +43,13 @@ class EverOSMirror:
             raise ValueError("user_sender_id and assistant_sender_id must differ")
         rpc_timeout_text = os.environ.get(_RPC_TIMEOUT_ENV)
         if rpc_timeout_text is None:
-            raise ValueError("memory plugin RPC timeout is unavailable")
+            raise ValueError("mod timeout is unavailable")
         try:
             rpc_timeout = float(rpc_timeout_text)
         except (TypeError, ValueError) as error:
-            raise ValueError("memory plugin RPC timeout must be finite and positive") from error
+            raise ValueError("mod timeout must be finite and positive") from error
         if not math.isfinite(rpc_timeout) or rpc_timeout < _MIN_RPC_TIMEOUT:
-            raise ValueError("memory plugin RPC timeout is too low")
+            raise ValueError("mod timeout is too low")
         timeout = options.get("timeout_seconds", 5)
         if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
             raise ValueError(

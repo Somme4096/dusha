@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import math
@@ -13,16 +14,14 @@ from . import prompts as _prompts
 from .affect_semantic import SemanticAppraisal
 from .config import AppConfig
 from .database import Database
-from .decision import DecisionProvider
 from .embedding import OpenAIEmbeddingClient
-from .hooks import Block, ContextRequest, Contributor, render
+from .hooks import Block, ContextRequest, Contributor, DecisionRequest, Registry, render
 from .serialization import compact_json
 from .timeutil import isoformat, parse_time, utc_now
 
 logger = logging.getLogger("dusha")
 
-Decider = Callable[..., "str | None"]
-PhraseMatcher = Callable[[str], dict[str, float] | None]
+Decide = Callable[[DecisionRequest], list[dict[str, Any]]]
 
 class AffectEngine(Contributor):
     name = "affect"
@@ -32,17 +31,14 @@ class AffectEngine(Contributor):
         self.config = config.affect
         self.prompts = prompts
         self.prompts_fingerprint = _prompts.fingerprint(prompts)
-        self.decision = DecisionProvider(config)
-        self.phrase_matcher: PhraseMatcher | None = None
+        self.registry: Registry | None = None
         self.appraisal = (
             SemanticAppraisal(OpenAIEmbeddingClient(config.embedding))
             if config.embedding.base_url and config.embedding.model
             else None
         )
         self._lock = threading.RLock()
-        self.emotions = _emotions.resolve_emotions(
-            config.affect, config.proactive, config.decision.increment
-        )
+        self.emotions = _emotions.resolve_emotions(config.affect, config.proactive, config.affect.increment)
         self.emotions_version = str(self.emotions["emotion_version"])
         self.emotions_fingerprint = _emotions.fingerprint(self.emotions)
         self.spec = {name: values.copy() for name, values in self.emotions["dimensions"].items()}
@@ -180,22 +176,22 @@ class AffectEngine(Contributor):
             values.append(value)
         db.execute(f"UPDATE affect_state SET {', '.join(assignments)} WHERE id=1", values)
 
+    def _proposals(self, request: DecisionRequest) -> list[dict[str, Any]]:
+        if self.registry is None:
+            return []
+        return self.registry.dispatch_decision(request, skip=self)
+
     def record_user_message(
         self,
         *,
         message: str,
         source_message_id: int | None,
-        decider: Decider | None = None,
+        decide: Decide | None = None,
         instruction: str | None = None,
-        phrase_matcher: PhraseMatcher | None = None,
         now: datetime | None = None,
     ) -> dict[str, Any] | None:
-        if decider is None and self.decision.enabled:
-            decider = self.decision.evaluate
         if instruction is None:
             instruction = str(self.prompts["decision_instruction"])
-        if phrase_matcher is None:
-            phrase_matcher = self.phrase_matcher
         requested = now if now is not None else utc_now()
         with self._lock, self.database.connect() as db:
             row, state = self._load_row(db, requested)
@@ -215,19 +211,18 @@ class AffectEngine(Contributor):
             updated = db.execute("SELECT * FROM affect_state WHERE id=1").fetchone()
             snapshot = self._public_state(state, updated, current)
 
-        emotion = None
-        if decider is not None:
-            try:
-                emotion = decider(
-                    message=message,
-                    emotions=self.spec,
-                    state=snapshot,
-                    instruction=instruction,
-                )
-            except Exception:
-                emotion = None
-            if not isinstance(emotion, str) or emotion not in self.spec:
-                emotion = None
+        request = DecisionRequest(str(message), copy.deepcopy(self.spec), snapshot, instruction)
+        emotion: str | None = None
+        deltas: dict[str, Any] = {}
+        for proposal in (decide or self._proposals)(request):
+            choice = proposal.get("emotion")
+            if emotion is None and choice is not None:
+                if isinstance(choice, str) and choice in self.spec:
+                    emotion = choice
+                else:
+                    logger.warning("decision returned invalid emotion: %r", choice)
+            if isinstance(proposal.get("deltas"), dict):
+                deltas.update(proposal["deltas"])
 
         if emotion is None and self.appraisal is not None:
             emotion = self._semantic_emotion(message)
@@ -253,28 +248,19 @@ class AffectEngine(Contributor):
                 updated = db.execute("SELECT * FROM affect_state WHERE id=1").fetchone()
                 public = self._public_state(state, updated, current)
 
-        if phrase_matcher is not None:
-            try:
-                deltas = phrase_matcher(message)
-                if isinstance(deltas, dict):
-                    deltas = dict(deltas.items())
-                else:
-                    deltas = None
-            except Exception:
-                deltas = None
-            unknown = sorted(str(name) for name in deltas or {} if name not in self.spec)
-            if unknown:
-                logger.warning("phrase deltas name unknown emotion dimension(s): %s", unknown)
-            if deltas:
-                with self._lock, self.database.connect() as db:
-                    row, state = self._load_row(db, requested)
-                    phase_now = now if now is not None else utc_now()
-                    current = max(phase_now, parse_time(row["last_updated_at"]))
-                    self._advance(row, state, current)
-                    self._apply_deltas(state, deltas)
-                    self._save(db, state, current)
-                    updated = db.execute("SELECT * FROM affect_state WHERE id=1").fetchone()
-                    public = self._public_state(state, updated, current)
+        unknown = sorted(str(name) for name in deltas if name not in self.spec)
+        if unknown:
+            logger.warning("decision deltas name unknown emotion dimension(s): %s", unknown)
+        if deltas:
+            with self._lock, self.database.connect() as db:
+                row, state = self._load_row(db, requested)
+                phase_now = now if now is not None else utc_now()
+                current = max(phase_now, parse_time(row["last_updated_at"]))
+                self._advance(row, state, current)
+                self._apply_deltas(state, deltas)
+                self._save(db, state, current)
+                updated = db.execute("SELECT * FROM affect_state WHERE id=1").fetchone()
+                public = self._public_state(state, updated, current)
         if emotion is None:
             return None
         return {

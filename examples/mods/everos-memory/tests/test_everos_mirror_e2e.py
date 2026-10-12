@@ -3,8 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import socket
 import shutil
+import socket
 import subprocess
 import threading
 import time
@@ -16,12 +16,9 @@ import httpx
 import pytest
 
 from dusha import api
-from dusha.config import (
-    AppConfig,
-    EvergreenConfig,
-    MemoryConfig,
-    MemoryPluginConfig,
-)
+from dusha.config import AppConfig, EvergreenConfig, MemoryConfig, ModConfig, ModsConfig
+
+MOD_DIR = Path(__file__).resolve().parents[1]
 
 
 def _unused_port() -> int:
@@ -30,9 +27,9 @@ def _unused_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def _plugin_mods(root: Path, source: Path) -> Path:
+def _plugin_mods(root: Path) -> Path:
     target = root / "mods"
-    shutil.copytree(source / "everos-memory", target / "everos_memory", ignore=shutil.ignore_patterns(".venv"))
+    shutil.copytree(MOD_DIR, target / "everos_memory", ignore=shutil.ignore_patterns(".venv", "tests"))
     return target
 
 
@@ -244,22 +241,24 @@ def _config(
             context_messages=1,
         ),
         evergreen=EvergreenConfig(max_items=32, max_chars=4_000),
-        memory_plugin=MemoryPluginConfig(
-            module="everos_memory",
-            mods_dir=str(mods_dir),
-            timeout_seconds=gateway_timeout_seconds,
-            ingest_batch_size=2,
-            ingest_backfill_interval_seconds=1,
-            options={
-                "everos": {
-                    "url": sidecar_url,
-                    "app_id": "dusha-e2e",
-                    "project_id": "phase1",
-                    "instance_namespace": instance_namespace,
-                    "user_sender_id": user_sender_id,
-                    "assistant_sender_id": assistant_sender_id,
-                    "timeout_seconds": timeout_seconds,
-                }
+        mods=ModsConfig(
+            dir=str(mods_dir),
+            tick_interval_seconds=1,
+            modules={
+                "everos_memory": ModConfig(
+                    timeout_seconds=gateway_timeout_seconds,
+                    options={
+                        "everos": {
+                            "url": sidecar_url,
+                            "app_id": "dusha-e2e",
+                            "project_id": "phase1",
+                            "instance_namespace": instance_namespace,
+                            "user_sender_id": user_sender_id,
+                            "assistant_sender_id": assistant_sender_id,
+                            "timeout_seconds": timeout_seconds,
+                        }
+                    },
+                )
             },
         ),
     )
@@ -321,9 +320,9 @@ async def _everos_search(url: str, session_id: str, query: str, user_id: str = "
 
 
 async def _everos_status(client: httpx.AsyncClient) -> dict:
-    response = await client.get("/state/v1/memory/index")
+    response = await client.get("/state/v1/mods")
     assert response.status_code == 200, response.text
-    return response.json()["everos"]
+    return response.json()["everos_memory"]["status"]
 
 
 async def _wait_everos(client: httpx.AsyncClient, predicate) -> dict:
@@ -349,17 +348,16 @@ async def _pending_status(client: httpx.AsyncClient, expected: int = 0) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_real_everos_projection_failure_retry_isolation_and_restart(tmp_path: Path, everos_server, request):
+async def test_real_everos_projection_failure_retry_isolation_and_restart(tmp_path: Path, everos_server):
     sidecar_url, _, stop_everos, restart_everos = everos_server
-    mods_dir = Path(request.config.rootpath) / "examples" / "mods"
-    plugin_mods = _plugin_mods(tmp_path, mods_dir)
+    plugin_mods = _plugin_mods(tmp_path)
     data_dir = tmp_path / "dusha-data"
 
     async with _client(_config(data_dir, plugin_mods, sidecar_url)) as client:
         first = await _ingest(client, "one", "Conversation one keeps the amber lantern.")
         second = await _ingest(client, "two", "Conversation two keeps the violet telescope.")
-        assistant = await _ingest(client, "one", "Assistant records the copper answer.", role="assistant")
-        tool = await _ingest(client, "one", "Tool output must stay local.", role="tool")
+        await _ingest(client, "one", "Assistant records the copper answer.", role="assistant")
+        await _ingest(client, "one", "Tool output must stay local.", role="tool")
         duplicate_first = await _ingest_with(
             client, "one", "Duplicate source is retained.", external_id="duplicate-source"
         )
@@ -490,9 +488,9 @@ async def test_real_everos_projection_failure_retry_isolation_and_restart(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_real_everos_instance_namespaces_and_backfill_without_ingest(tmp_path: Path, everos_server, request):
+async def test_real_everos_instance_namespaces_and_backfill_without_ingest(tmp_path: Path, everos_server):
     sidecar_url, _, stop_everos, restart_everos = everos_server
-    plugin_mods = _plugin_mods(tmp_path, Path(request.config.rootpath) / "examples" / "mods")
+    plugin_mods = _plugin_mods(tmp_path)
     first_data = tmp_path / "instance-a"
     second_data = tmp_path / "instance-b"
 
@@ -530,9 +528,9 @@ async def test_real_everos_instance_namespaces_and_backfill_without_ingest(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_external_malformed_and_slow_sidecars_keep_worker_alive(tmp_path: Path, external_sidecar, request):
+async def test_external_malformed_and_slow_sidecars_keep_worker_alive(tmp_path: Path, external_sidecar):
     sidecar, sidecar_url = external_sidecar
-    plugin_mods = _plugin_mods(tmp_path, Path(request.config.rootpath) / "examples" / "mods")
+    plugin_mods = _plugin_mods(tmp_path)
     data_dir = tmp_path / "dusha-data"
 
     async with _client(_config(data_dir, plugin_mods, sidecar_url, timeout_seconds=0.2, gateway_timeout_seconds=2)) as client:
@@ -563,10 +561,10 @@ async def test_external_malformed_and_slow_sidecars_keep_worker_alive(tmp_path: 
 
 
 @pytest.mark.asyncio
-async def test_real_everos_rejection_does_not_block_later_delivery(tmp_path: Path, selective_sidecar, request):
+async def test_real_everos_rejection_does_not_block_later_delivery(tmp_path: Path, selective_sidecar):
     sidecar, sidecar_url = selective_sidecar
     real_url = sidecar.upstream
-    plugin_mods = _plugin_mods(tmp_path, Path(request.config.rootpath) / "examples" / "mods")
+    plugin_mods = _plugin_mods(tmp_path)
     data_dir = tmp_path / "dusha-data"
     config = _config(data_dir, plugin_mods, sidecar_url, instance_namespace="rejection-e2e")
 
@@ -590,9 +588,9 @@ async def test_real_everos_rejection_does_not_block_later_delivery(tmp_path: Pat
 
 
 @pytest.mark.asyncio
-async def test_pre_epoch_message_is_local_but_not_projected(tmp_path: Path, everos_server, request):
+async def test_pre_epoch_message_is_local_but_not_projected(tmp_path: Path, everos_server):
     sidecar_url, _, _, _ = everos_server
-    plugin_mods = _plugin_mods(tmp_path, Path(request.config.rootpath) / "examples" / "mods")
+    plugin_mods = _plugin_mods(tmp_path)
     data_dir = tmp_path / "dusha-data"
     async with _client(_config(data_dir, plugin_mods, sidecar_url)) as client:
         message = await _ingest_with(

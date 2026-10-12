@@ -4,7 +4,7 @@
 
 *Dusha* (Russian: душа, [dʊˈʂa], "soul") is a small HTTP API that stores messages, identity, facts, and affect state outside your harness. Any client that can POST a message and read back an injection string can use it, so you can hop between harnesses (or even use multiple at once!) and still get the same soul on the other side.
 
-Every prompt, emotional vector, and threshold is configurable through JSON. Dusha also has an *extensible plugin system* that lets you wire any external memory provider easily!
+Every prompt, emotional vector, and threshold is configurable through JSON. Dusha also has an *extensible mod system* that lets you wire any external memory provider or classifier easily!
 
 ## Quickstart
 
@@ -33,39 +33,30 @@ Integrations (e.g. opencode-dusha) send each message to `dusha` and add its cont
 <summary>How does memory/affect/identity work in Dusha?</summary>
 
 
-- Messages: Basic SQLite FTS5 + optional embedding search. Also `~/.config/dusha/<name>/mods/` for external memory providers integration.
+- Messages: Basic SQLite FTS5 + optional embedding search. A mod in `~/.config/dusha/<name>/mods/` can add its own block, such as an external memory provider.
 - Evergreen: Long-term facts that you edit from the CLI and your companion edits through integration tools. No automatic extraction 
 	* think of it as a USER.md that actually has good lifecycle management and duplication prevention
 - Affect: A deterministic emotion engine with decay and silence drift. Proactive messages fire on thresholds. 
-	* And yeah, message intent analysis can be a plugin too: drop Jev or any other classifier into `~/.config/dusha/<name>/mods/` and it picks which emotion each user message moves.
+	* And yeah, message intent analysis can be a mod too: drop Jev or any other classifier into the mods directory and its `decide` hook picks which emotion each user message moves.
 - Identity: `identity.md`, or name one your own.
 
 </details>
 
-## Plugin API
+## Mod API
 
-A plugin is a directory under the mods directory holding `README.md`, `main.py`, `pyproject.toml`, and `uv.lock`. 
+A mod is a directory under the mods directory holding `README.md`, `main.py`, `pyproject.toml`, and `uv.lock`. The gateway runs `main.py` in its own `uv` environment as a long-lived child process and calls the hooks it exports. Every hook is optional. `options` is the mod's `options` object from `config.json` plus `database_path`.
 
-A decision plugin exports one operation.
+| Hook | Called | Request | Returns |
+| --- | --- | --- | --- |
+| `start(options)` | Once when the mod loads, and again after a restart | | ignored |
+| `on_message(message, options)` | For every stored message, in id order | The stored row: `id`, `conversation_id`, `role`, `text`, `content`, `external_id`, `occurred_at`, `ingested_at`, `sha256`, `harness`, `external_conversation_id`, `route` | ignored. An exception leaves the message undelivered, and the gateway retries it before any later one |
+| `on_context(request, options)` | For every context build | `query`, `harness`, `conversation_id`, `max_chars` | `{"text": "...", "records": [{"source": "...", "text": "..."}]}` or `None` |
+| `decide(request, options)` | For every new user message while affect is on | `message`, `emotions` (the resolved dimensions), `state` (the affect snapshot), `instruction` | `{"emotion": "<dimension>"}`, `{"deltas": {"<dimension>": <number>}}`, both, or `None` |
+| `tick(options)` | Every `mods.tick_interval_seconds` | | ignored |
+| `status(options)` | On `GET /state/v1/mods` and `dusha mods status` | | any JSON value |
+| `close(options)` | On shutdown | | ignored |
 
-| Operation | Request fields | Returns |
-| --- | --- | --- |
-| `decide` | `message`, `emotions` (the resolved dimensions), `state` (the affect snapshot), `instruction` | `{"emotion": "<dimension>"}` or `None` |
-
-A memory plugin exports these operations. The API reads only the fields listed.
-
-| Operation | Request fields | Returns |
-| --- | --- | --- |
-| `ingest_messages` | `messages`, a list of stored rows with `id`, `conversation_id`, `role`, `text`, `occurred_at`, `ingested_at`, `sha256`, `harness`, `external_conversation_id` | `{"highest_id": <id of the last row>}` |
-| `inject_context` | `query`, `scope`, `max_chars`, `harness`, `conversation_id` | `{"text": "...", "records": [{"source": "...", "text": "..."}]}` |
-| `match_phrase` | `message` | `{"deltas": {"<dimension>": <number>}}` or `{"deltas": null}` |
-| `status` | none | `{"status": {...}}`, returned as the memory index status |
-| `backfill_once` | `limit`, `force` | `{"status": {...}}` |
-| `rebuild_chunks` | none | `{"status": {...}}` |
-| `rebuild_index` | none | `{"status": {...}}` |
-| `close` | none | `None` |
-
-`match_phrase` deltas use dimension names from your `emotions.json`. 
+The first `emotion` among the mods in `mods.modules` order wins. `deltas` from every mod merge and apply after the increment. Dimension names come from your `emotions.json`.
 
 ## Documentation
 

@@ -34,23 +34,12 @@
     "dimensions": null,
     "timeout_seconds": 10,
     "batch_size": 32,
-    "backfill_interval_seconds": 10,
     "failure_cooldown_seconds": 60
   },
   "memory": {
     "recent_messages": 8,
     "search_hits": 4,
     "context_messages": 1
-  },
-  "memory_plugin": {
-    "module": "",
-    "context_max_chars": 3000,
-    "mods_dir": "",
-    "timeout_seconds": 15,
-    "ingest_batch_size": 50,
-    "ingest_backfill_interval_seconds": 30,
-    "options": {},
-    "env_passthrough": []
   },
   "evergreen": {
     "max_items": 32,
@@ -73,12 +62,9 @@
     "lease_seconds": 120,
     "retry_delay_minutes": 15
   },
-  "decision": {
-    "module": "",
-    "options": {},
-    "increment": null,
-    "timeout_seconds": 15,
-    "mods_dir": "",
-    "env_passthrough": []
+  "mods": {
+    "dir": "",
+    "tick_interval_seconds": 10,
+    "modules": {}
   }
 }

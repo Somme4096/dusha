@@ -266,3 +266,24 @@ def test_cli_serve_rejects_a_bad_companion_name_without_creating_anything(tmp_pa
     assert result.returncode == 2
     assert "companion name" in stderr
     assert not (tmp_path / "dusha").exists()
+
+
+def test_cli_reports_disabled_features(tmp_path: Path) -> None:
+    config = tmp_path / "config.json"
+    config.write_text(
+        json.dumps({"data_dir": str(tmp_path / "data"), "features": {"memory": False, "evergreen": False}}),
+        encoding="utf-8",
+    )
+    for args in (
+        ("memory", "recent"),
+        ("memory", "show", "1"),
+        ("memory", "search", "anything"),
+        ("evergreen", "list"),
+        ("evergreen", "remember", "key", "value"),
+    ):
+        result = _run(config, *args)
+        assert result.returncode != 0, result.stdout
+        assert "feature is disabled" in (result.stdout + result.stderr).lower(), result.stderr
+    reindex = _run(config, "memory", "reindex")
+    assert reindex.returncode == 0, reindex.stderr
+    assert json.loads(reindex.stdout) == {"status": "rebuilt"}

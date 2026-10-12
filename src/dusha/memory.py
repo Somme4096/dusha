@@ -262,6 +262,16 @@ class MemoryStore:
             ).fetchall()
         return [self._row(row) for row in [*reversed(before), hit, *after]]
 
+    def after(self, cursor: int, limit: int) -> list[dict[str, Any]]:
+        with self.database.connect() as db:
+            rows = db.execute(
+                """SELECT m.*, c.harness, c.external_id AS external_conversation_id, c.route
+                   FROM messages m JOIN conversations c ON c.id=m.conversation_id
+                   WHERE m.id > ? ORDER BY m.id LIMIT ?""",
+                (cursor, max(1, limit)),
+            ).fetchall()
+        return [self._row(row) for row in rows]
+
     def rebuild_index(self) -> None:
         with self.database.connect() as db:
             db.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')")

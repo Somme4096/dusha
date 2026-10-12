@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import logging
 import secrets
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from importlib import metadata as _metadata
 from typing import Any
@@ -15,43 +16,21 @@ from . import schema as _schema
 from .api_openai import PathTokenMiddleware, create_openai_router
 from .api_state import create_state_router
 from .config import AppConfig, load_config
-from .proactive import ProactiveEngine
 from .service import CompanionService, FeatureDisabledError
 
 logger = logging.getLogger("dusha")
 
 
-async def _scheduler(proactive: ProactiveEngine, interval: int) -> None:
+async def _scheduler(step: Callable[[], Any], interval: int, label: str) -> None:
     while True:
         try:
-            await asyncio.to_thread(proactive.evaluate)
+            await asyncio.to_thread(step)
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.exception("proactive evaluation failed")
-        await asyncio.sleep(max(5, interval))
-
-async def _ingest_scheduler(service: CompanionService, interval: int) -> None:
-    while True:
-        try:
-            await asyncio.to_thread(service.memory.catch_up)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("memory plugin ingestion catch-up failed")
+            logger.exception("%s failed", label)
         await asyncio.sleep(max(1, interval))
 
-async def _index_backfill_scheduler(service: CompanionService, interval: int) -> None:
-    while True:
-        try:
-            result = await asyncio.to_thread(service.memory_index_backfill)
-            if result.get("error") and not result.get("cooling_down"):
-                logger.warning("memory index backfill unavailable: %s", result["error"])
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("memory index backfill failed")
-        await asyncio.sleep(max(1, interval))
 
 def create_app(config: AppConfig | None = None) -> FastAPI:
     cfg = config or load_config()
@@ -64,26 +43,18 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     async def lifespan(_: FastAPI):
         tasks = []
         if cfg.features.proactive:
+            interval = max(5, cfg.proactive.poll_interval_seconds)
             tasks.append(
                 asyncio.create_task(
-                    _scheduler(proactive, cfg.proactive.poll_interval_seconds),
+                    _scheduler(proactive.evaluate, interval, "proactive evaluation"),
                     name="proactive-evaluator",
                 )
             )
-        if service.memory.enabled:
+        if service.mods:
             tasks.append(
                 asyncio.create_task(
-                    _ingest_scheduler(
-                        service, cfg.memory_plugin.ingest_backfill_interval_seconds
-                    ),
-                    name="memory-plugin-ingest",
-                )
-            )
-        if service.memory.enabled:
-            tasks.append(
-                asyncio.create_task(
-                    _index_backfill_scheduler(service, cfg.embedding.backfill_interval_seconds),
-                    name="memory-plugin-backfill",
+                    _scheduler(service.tick_mods, cfg.mods.tick_interval_seconds, "mod tick"),
+                    name="mod-tick",
                 )
             )
         try:
@@ -133,7 +104,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             "companion": cfg.home.name if cfg.home else "",
             "database": await asyncio.to_thread(service.database.integrity_check),
             "upstream_configured": bool(cfg.upstream.base_url),
-            "memory_index": await asyncio.to_thread(service.memory_index_status),
+            "mods": [mod.name for mod in service.mods],
         }
 
     app.include_router(create_state_router(service, proactive, authorized))

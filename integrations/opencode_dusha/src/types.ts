@@ -27,7 +27,7 @@ export interface HealthResponse {
   companion?: string;
   database: string;
   upstream_configured: boolean;
-  memory_index?: Record<string, unknown>;
+  mods?: string[];
   [key: string]: unknown;
 }
 
@@ -71,7 +71,7 @@ export interface MemorySearchResponse {
   results: MemorySearchResult[];
 }
 
-export interface MemoryIndexResponse {
+export interface ModsStatusResponse {
   [key: string]: unknown;
 }
 

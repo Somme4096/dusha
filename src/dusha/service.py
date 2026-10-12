@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Any
 
 from . import identity as _identity
+from . import mods as _mods
 from . import prompts as _prompts
 from .affect import AffectEngine
 from .config import AppConfig
@@ -14,8 +15,6 @@ from .evergreen import EvergreenStore
 from .hooks import ContextRequest, Contributor, Registry
 from .memo import MemoStore
 from .memory import MemoryStore
-from .memory_plugin import BackfillIndexRequest
-from .memory_provider import MemoryProvider
 from .proactive import ProactiveEngine
 
 logger = logging.getLogger("dusha")
@@ -46,22 +45,28 @@ class CompanionService:
         )
         self.messages = MemoryStore(self.database)
         self.evergreen = EvergreenStore(self.database, config.evergreen, self.prompts)
-        self.memory = MemoryProvider(config, self.database, self.prompts)
         self.memo = MemoStore(self.database, config.memo, self.prompts)
         self.affect = AffectEngine(self.database, config, self.prompts) if self.features.affect else None
         self.proactive = ProactiveEngine(self, config)
-        if self.affect is not None and self.memory.enabled:
-            self.affect.phrase_matcher = self.memory.match_phrase_deltas
+        mods_dir = _mods.resolve_mods_dir(config)
+        self.mods = [
+            _mods.Mod(name, settings, mods_dir, self.database, self.prompts)
+            for name, settings in config.mods.modules.items()
+        ]
         self.hooks = Registry()
+        if self.features.evergreen:
+            self.hooks.add(self.evergreen)
+        for mod in self.mods:
+            self.hooks.add(mod)
         for enabled, contributor in (
-            (self.features.evergreen, self.evergreen),
-            (self.memory.enabled, self.memory),
             (self.features.memo, self.memo),
             (self.features.affect, self.affect),
             (self.features.proactive, self.proactive),
         ):
             if enabled:
                 self.hooks.add(contributor)
+        if self.affect is not None:
+            self.affect.registry = self.hooks
         self.hooks.start()
 
     def register(self, contributor: Contributor) -> None:
@@ -165,64 +170,13 @@ class CompanionService:
             "context": composed["context"],
         }
 
-    def memory_index_status(self) -> dict[str, Any]:
-        if self.memory.enabled:
-            try:
-                result = self.memory.status()
-                if result is not None and isinstance(result.status, dict):
-                    return result.status
-            except Exception:
-                logger.warning("memory plugin status unavailable")
-        return self._core_index_status()
+    def mods_status(self) -> dict[str, Any]:
+        return {mod.name: mod.status() for mod in self.mods}
 
-    def _core_index_status(self) -> dict[str, Any]:
-        with self.database.connect() as db:
-            messages = int(db.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
-        return {
-            "mode": "lexical",
-            "enabled": False,
-            "configured": False,
-            "chunker_key": "",
-            "embedding_key": "",
-            "messages": messages,
-            "chunked_messages": 0,
-            "chunks": 0,
-            "embedded_chunks": 0,
-            "dimensions": [],
-            "cooling_down": False,
-            "last_error": "",
-            "retrieval": "lexical",
-            "plugin_configured": bool(self.memory.module),
-            "plugin_enabled": self.memory.enabled,
-        }
-
-    def memory_index_backfill(self, limit: int | None = None, force: bool = False) -> dict[str, Any]:
-        if self.memory.enabled:
-            try:
-                result = self.memory.backfill_once(BackfillIndexRequest(limit or 100, force))
-                if result is not None and isinstance(result.status, dict):
-                    return result.status
-            except Exception:
-                logger.warning("memory plugin backfill unavailable", exc_info=True)
-        return {"retrieval": "lexical", "enabled": False, "embedded": 0, "chunks_created": 0}
-
-    def memory_index_rebuild(self) -> dict[str, Any]:
-        if self.memory.enabled:
-            try:
-                result = self.memory.rebuild_chunks()
-                if result is not None and isinstance(result.status, dict):
-                    return result.status
-            except Exception:
-                logger.warning("memory plugin rebuild unavailable")
-        self.messages.rebuild_index()
-        return {"status": "rebuilt", "retrieval": "lexical"}
+    def tick_mods(self) -> dict[str, Any]:
+        return {mod.name: mod.tick() for mod in self.mods}
 
     def memory_reindex(self) -> dict[str, Any]:
-        if self.memory.enabled:
-            try:
-                self.memory.rebuild_index()
-            except Exception:
-                logger.warning("memory plugin reindex unavailable")
         self.messages.rebuild_index()
         return {"status": "rebuilt"}
 

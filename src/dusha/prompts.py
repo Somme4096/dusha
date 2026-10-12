@@ -42,8 +42,8 @@ _SLOT_KEYS: dict[str, set[str]] = {
     "context_blocks": {
         "memo_open_delimiter",
         "memo_close_delimiter",
-        "memory_open_delimiter",
-        "memory_close_delimiter",
+        "mod_open_delimiter",
+        "mod_close_delimiter",
     },
     "proactive_framing": {"ruling", "ladder", "approach", "context_query"},
 }

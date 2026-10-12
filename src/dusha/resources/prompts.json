@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "prompts_version": "0.7.0",
+  "prompts_version": "0.8.0",
   "affect_presentation": {
     "prefix": "Affect: ",
     "separator": "; ",
@@ -28,8 +28,8 @@
   "context_blocks": {
     "memo_open_delimiter": "<memo_notes>",
     "memo_close_delimiter": "</memo_notes>",
-    "memory_open_delimiter": "<memory_context>",
-    "memory_close_delimiter": "</memory_context>"
+    "mod_open_delimiter": "<mod_context>",
+    "mod_close_delimiter": "</mod_context>"
   },
   "proactive_framing": {
     "ruling": "Ruling feeling: {dimension} at {value}, neutral {neutral}. You write this message from that feeling. It overrules your default warmth.",

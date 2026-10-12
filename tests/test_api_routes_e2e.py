@@ -561,9 +561,6 @@ DOC_FILES = [
 ]
 MESSAGE_KEYS = {"id", "conversation_id", "role", "text", "content", "external_id", "occurred_at",
                 "ingested_at", "sha256", "harness", "external_conversation_id", "route"}
-MEMORY_INDEX_KEYS = {"mode", "enabled", "configured", "chunker_key", "embedding_key", "messages",
-                     "chunked_messages", "chunks", "embedded_chunks", "dimensions", "cooling_down",
-                     "last_error"}
 
 
 def test_all_doc_json_fences_are_valid_json():
@@ -581,7 +578,7 @@ async def test_openapi_paths_are_documented(config, monkeypatch):
         paths = openapi["paths"]
         for path in [
             "/health", "/state/v1/messages", "/state/v1/messages/{message_id}",
-            "/state/v1/memory/index", "/state/v1/memory/search", "/state/v1/memory/{message_id}",
+            "/state/v1/mods", "/state/v1/memory/search", "/state/v1/memory/{message_id}",
             "/state/v1/evergreen/facts", "/state/v1/evergreen/facts/{fact_id}/history",
             "/state/v1/evergreen/facts/{fact_id}/revisions", "/state/v1/evergreen/facts/{fact_id}/forget",
             "/state/v1/memo/add", "/state/v1/memo/list", "/state/v1/memo/{note_id}/done",
@@ -641,9 +638,9 @@ async def test_endpoint_response_keys_and_conflict_flow(config, monkeypatch):
         missing = await client.get("/state/v1/messages/999999")
         assert missing.status_code == 404
         assert isinstance(missing.json()["detail"], str)
-        index = await client.get("/state/v1/memory/index")
-        assert index.status_code == 200
-        assert MEMORY_INDEX_KEYS <= set(index.json())
+        mods = await client.get("/state/v1/mods")
+        assert mods.status_code == 200
+        assert mods.json() == {}
         search = await client.post("/state/v1/memory/search", json={"query": "amber window", "limit": 2})
         assert search.status_code == 200
         for hit in search.json()["results"]:
@@ -655,7 +652,7 @@ async def test_endpoint_response_keys_and_conflict_flow(config, monkeypatch):
 
 
 PROTECTED_ROUTES = [
-    ("GET", "/state/v1/memory/index", None, None),
+    ("GET", "/state/v1/mods", None, None),
     ("POST", "/state/v1/messages",
      {"harness": "api", "conversation_id": "auth", "role": "user", "content": "hi"}, None),
     ("GET", "/state/v1/messages/1", None, None),

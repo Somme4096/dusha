@@ -35,7 +35,6 @@
     "dimensions": null,
     "timeout_seconds": 10.0,
     "batch_size": 32,
-    "backfill_interval_seconds": 10,
     "failure_cooldown_seconds": 60
   },
   "evergreen": {
@@ -48,23 +47,10 @@
     "text_max_chars": 4000,
     "reason_max_chars": 1000
   },
-  "memory_plugin": {
-    "module": "",
-    "context_max_chars": 3000,
-    "options": {},
-    "mods_dir": "",
-    "timeout_seconds": 15.0,
-    "ingest_batch_size": 50,
-    "ingest_backfill_interval_seconds": 30,
-    "env_passthrough": []
-  },
-  "decision": {
-    "module": "",
-    "options": {},
-    "increment": null,
-    "mods_dir": "",
-    "timeout_seconds": 15.0,
-    "env_passthrough": []
+  "mods": {
+    "dir": "",
+    "tick_interval_seconds": 10,
+    "modules": {}
   },
   "proactive": {
     "poll_interval_seconds": 60,

@@ -134,16 +134,16 @@ def create_state_router(service: CompanionService, proactive: ProactiveEngine, a
         return check
 
     @router.get(
-        "/state/v1/memory/index",
+        "/state/v1/mods",
         tags=["state"],
         dependencies=[Depends(authorized)],
         responses={
             401: _ERROR_DOCS[401],
-            200: {"model": _schema.MemoryIndexStatus, "description": "https://github.com/Somme4096/dusha"},
+            200: {"model": _schema.ModsStatus, "description": "https://github.com/Somme4096/dusha"},
         },
     )
-    async def memory_index_status() -> dict[str, Any]:
-        return await asyncio.to_thread(service.memory_index_status)
+    async def mods_status() -> dict[str, Any]:
+        return await asyncio.to_thread(service.mods_status)
 
     @router.post(
         "/state/v1/messages",

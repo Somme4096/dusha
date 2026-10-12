@@ -23,9 +23,8 @@ _MEMORY = _DEFAULTS["memory"]
 _EMBEDDING = _DEFAULTS["embedding"]
 _EVERGREEN = _DEFAULTS["evergreen"]
 _MEMO = _DEFAULTS["memo"]
-_DECISION = _DEFAULTS["decision"]
 _FEATURES = _DEFAULTS["features"]
-_MEMORY_PLUGIN = _DEFAULTS["memory_plugin"]
+_MODS = _DEFAULTS["mods"]
 _AFFECT_KNOBS = _EMOTIONS["affect"]
 _PROACTIVE = _DEFAULTS["proactive"]
 _PROMPTS = _DEFAULTS["prompts"]
@@ -36,6 +35,7 @@ IDENTITY_FILE = "identity.md"
 HOME_ENV = "DUSHA_HOME"
 COMPANION_ENV = "DUSHA_COMPANION"
 _COMPANION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+_MODULE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
 def config_root() -> Path:
@@ -85,7 +85,6 @@ _BOUNDS: dict[str, dict[str, tuple[float | None, float | None]]] = {
         "dimensions": (1, None),
         "timeout_seconds": (0, None),
         "batch_size": (1, None),
-        "backfill_interval_seconds": (1, None),
         "failure_cooldown_seconds": (0, None),
     },
     "memory": {
@@ -111,7 +110,8 @@ _BOUNDS: dict[str, dict[str, tuple[float | None, float | None]]] = {
         "lease_seconds": (1, None),
         "retry_delay_minutes": (0, None),
     },
-    "memory_plugin": {"context_max_chars": (0, None)},
+    "mod": {"timeout_seconds": (0, None), "context_max_chars": (0, None)},
+    "mods": {"tick_interval_seconds": (1, None)},
 }
 _EXCLUSIVE_ZERO = {"timeout_seconds"}
 
@@ -156,7 +156,6 @@ class EmbeddingConfig:
     dimensions: int | None = _EMBEDDING["dimensions"]
     timeout_seconds: float = _EMBEDDING["timeout_seconds"]
     batch_size: int = _EMBEDDING["batch_size"]
-    backfill_interval_seconds: int = _EMBEDDING["backfill_interval_seconds"]
     failure_cooldown_seconds: int = _EMBEDDING["failure_cooldown_seconds"]
 
     def __post_init__(self) -> None:
@@ -211,66 +210,47 @@ class AffectConfig:
     mood_return_hours: float = _UNSET
     dimensions: dict[str, dict[str, float]] = field(default_factory=dict)
     silence: dict[str, dict[str, float]] = field(default_factory=dict)
+    increment: float | None = None
     explicit_knobs: frozenset[str] = field(default=frozenset(), init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         _fill_unset(self, _AFFECT_KNOBS, "explicit_knobs")
-
-
-@dataclass(slots=True)
-class DecisionConfig:
-
-    module: str = _DECISION["module"]
-    options: dict[str, Any] = field(default_factory=lambda: dict(_DECISION["options"]))
-    increment: float | None = _DECISION["increment"]
-    mods_dir: str = _DECISION["mods_dir"]
-    timeout_seconds: float = _DECISION["timeout_seconds"]
-    env_passthrough: list[str] = field(default_factory=lambda: list(_DECISION["env_passthrough"]))
-
-    def __post_init__(self) -> None:
-        _check_env_names(self.env_passthrough, "decision.env_passthrough")
         value = self.increment
         if value is not None:
             if isinstance(value, bool) or not isinstance(value, (int, float)):
-                raise ValueError("decision.increment must be null or a finite positive number")
+                raise ValueError("affect.increment must be null or a finite positive number")
             if not math.isfinite(float(value)) or value <= 0:
-                raise ValueError("decision.increment must be null or a finite positive number")
+                raise ValueError("affect.increment must be null or a finite positive number")
             self.increment = float(value)
-        timeout = self.timeout_seconds
-        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
-            raise ValueError("decision.timeout_seconds must be a finite positive number")
-        timeout_number = float(timeout)
-        if not math.isfinite(timeout_number) or timeout_number <= 0:
-            raise ValueError("decision.timeout_seconds must be a finite positive number")
-        self.timeout_seconds = timeout_number
 
 
 @dataclass(slots=True)
-class MemoryPluginConfig:
-    module: str = _MEMORY_PLUGIN["module"]
-    context_max_chars: int = _MEMORY_PLUGIN["context_max_chars"]
-    options: dict[str, Any] = field(default_factory=lambda: dict(_MEMORY_PLUGIN["options"]))
-    mods_dir: str = _MEMORY_PLUGIN["mods_dir"]
-    timeout_seconds: float = _MEMORY_PLUGIN["timeout_seconds"]
-    ingest_batch_size: int = _MEMORY_PLUGIN["ingest_batch_size"]
-    ingest_backfill_interval_seconds: int = _MEMORY_PLUGIN["ingest_backfill_interval_seconds"]
-    env_passthrough: list[str] = field(default_factory=lambda: list(_MEMORY_PLUGIN["env_passthrough"]))
+class ModConfig:
+    timeout_seconds: float = 15.0
+    context_max_chars: int = 3000
+    env_passthrough: list[str] = field(default_factory=list)
+    options: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        _check_env_names(self.env_passthrough, "memory_plugin.env_passthrough")
-        value = self.timeout_seconds
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise ValueError("memory_plugin.timeout_seconds must be a finite positive number")
-        number = float(value)
-        if not math.isfinite(number) or number <= 0:
-            raise ValueError("memory_plugin.timeout_seconds must be a finite positive number")
-        self.timeout_seconds = number
-        batch = self.ingest_batch_size
-        if isinstance(batch, bool) or not isinstance(batch, int) or not 1 <= batch <= 500:
-            raise ValueError("memory_plugin.ingest_batch_size must be an integer between 1 and 500")
-        interval = self.ingest_backfill_interval_seconds
-        if isinstance(interval, bool) or not isinstance(interval, int) or interval < 1:
-            raise ValueError("memory_plugin.ingest_backfill_interval_seconds must be a positive integer")
+        _check_env_names(self.env_passthrough, "mod.env_passthrough")
+        _check_bounds(self, "mod")
+
+
+@dataclass(slots=True)
+class ModsConfig:
+    dir: str = _MODS["dir"]
+    tick_interval_seconds: int = _MODS["tick_interval_seconds"]
+    modules: dict[str, ModConfig] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        _check_bounds(self, "mods")
+        for name, value in list(self.modules.items()):
+            if not _MODULE_NAME.fullmatch(str(name)):
+                raise ValueError(f"mods.modules key must be a plain directory name, got {name!r}")
+            if isinstance(value, dict):
+                self.modules[name] = _strict_section(ModConfig, value, f"mods.modules.{name}")
+            elif not isinstance(value, ModConfig):
+                raise ValueError(f"mods.modules.{name} must be an object")
 
 
 @dataclass(slots=True)
@@ -321,14 +301,11 @@ class AppConfig:
     features: FeaturesConfig = field(default_factory=FeaturesConfig)
     affect: AffectConfig = field(default_factory=lambda: AffectConfig())
     proactive: ProactiveConfig = field(default_factory=lambda: ProactiveConfig())
-    decision: DecisionConfig = field(default_factory=lambda: DecisionConfig())
-    memory_plugin: MemoryPluginConfig = field(default_factory=lambda: MemoryPluginConfig())
+    mods: ModsConfig = field(default_factory=lambda: ModsConfig())
 
     def __post_init__(self) -> None:
         if self.features.proactive and not self.features.affect:
             raise ValueError("features.proactive requires features.affect")
-        if self.decision.module and not self.features.affect:
-            raise ValueError("decision.module requires features.affect")
         if isinstance(self.port, bool) or not 0 <= self.port <= 65535:
             raise ValueError("port must be at least 0 and at most 65535")
         try:
@@ -432,14 +409,9 @@ def _app_config_from_raw(raw: dict[str, Any], source_dir: Path) -> AppConfig:
         if (source_dir / IDENTITY_FILE).is_file():
             identity_prompt.path = str((source_dir / IDENTITY_FILE).resolve())
     prompts = _path_section(PromptsConfig, raw.get("prompts"), "prompts", source_dir)
-    decision = _strict_section(DecisionConfig, raw.get("decision"), "decision")
-    if decision.mods_dir and not Path(decision.mods_dir).is_absolute():
-        decision.mods_dir = str((source_dir / Path(decision.mods_dir).expanduser()).resolve())
-    memory_plugin = _strict_section(
-        MemoryPluginConfig, raw.get("memory_plugin"), "memory_plugin"
-    )
-    if memory_plugin.mods_dir and not Path(memory_plugin.mods_dir).is_absolute():
-        memory_plugin.mods_dir = str((source_dir / Path(memory_plugin.mods_dir).expanduser()).resolve())
+    mods = _strict_section(ModsConfig, raw.get("mods"), "mods")
+    if mods.dir and not Path(mods.dir).is_absolute():
+        mods.dir = str((source_dir / Path(mods.dir).expanduser()).resolve())
     emotions_raw = raw.get("emotions")
     if emotions_raw is not None:
         if not isinstance(emotions_raw, dict):
@@ -492,8 +464,7 @@ def _app_config_from_raw(raw: dict[str, Any], source_dir: Path) -> AppConfig:
         features=features,
         affect=affect,
         proactive=_strict_section(ProactiveConfig, raw.get("proactive"), "proactive"),
-        decision=decision,
-        memory_plugin=memory_plugin,
+        mods=mods,
     )
 
 
@@ -552,8 +523,7 @@ def _validate_packaged_defaults() -> None:
     _strict_section(MemoConfig, _DEFAULTS["memo"], "packaged defaults memo")
     _strict_section(FeaturesConfig, _DEFAULTS["features"], "packaged defaults features")
     _strict_section(ProactiveConfig, _DEFAULTS["proactive"], "packaged defaults proactive")
-    _strict_section(DecisionConfig, _DEFAULTS["decision"], "packaged defaults decision")
-    _strict_section(MemoryPluginConfig, _DEFAULTS["memory_plugin"], "packaged defaults memory_plugin")
+    _strict_section(ModsConfig, _DEFAULTS["mods"], "packaged defaults mods")
     _strict_section(PromptsConfig, _DEFAULTS["prompts"], "packaged defaults prompts")
 
 

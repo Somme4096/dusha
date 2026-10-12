@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from .serialization import safe_json
@@ -14,6 +14,14 @@ class ContextRequest:
     query: str = ""
     harness: str = ""
     conversation_id: str = ""
+
+
+@dataclass(frozen=True)
+class DecisionRequest:
+    message: str
+    emotions: dict[str, dict[str, Any]] = field(default_factory=dict)
+    state: dict[str, Any] = field(default_factory=dict)
+    instruction: str = ""
 
 
 @dataclass(frozen=True)
@@ -40,6 +48,9 @@ class Contributor:
         return None
 
     def on_context(self, request: ContextRequest) -> Block | None:
+        return None
+
+    def decide(self, request: DecisionRequest) -> dict[str, Any] | None:
         return None
 
 
@@ -87,3 +98,19 @@ class Registry:
             if block is not None:
                 blocks.append(block)
         return blocks
+
+    def dispatch_decision(
+        self, request: DecisionRequest, skip: Contributor | None = None
+    ) -> list[dict[str, Any]]:
+        results: list[dict[str, Any]] = []
+        for contributor in self.items:
+            if contributor is skip:
+                continue
+            try:
+                value = contributor.decide(request)
+            except Exception:
+                logger.exception("%s decide failed", contributor.name)
+                continue
+            if isinstance(value, dict):
+                results.append(value)
+        return results

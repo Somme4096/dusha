@@ -46,7 +46,9 @@ async def _running_client(app):
 
 
 def _emotions(config, tmp_path, write_json, snapshot, name="emotions.json"):
-    config.affect = AffectConfig(emotions_path=str(write_json(tmp_path / name, snapshot)))
+    config.affect = AffectConfig(
+        emotions_path=str(write_json(tmp_path / name, snapshot)), increment=config.affect.increment
+    )
     config.proactive.thresholds = {}
     config.proactive.poll_interval_seconds = 3600
     return config
@@ -133,7 +135,7 @@ def _scaled(value):
 
 async def _decide(app, emotion, now):
     return app.state.service.affect.record_user_message(
-        message="x", source_message_id=None, decider=lambda **_: emotion, instruction="", now=now
+        message="x", source_message_id=None, decide=lambda _: [{"emotion": emotion}], instruction="", now=now
     )
 
 
@@ -194,7 +196,7 @@ async def test_http_silence_drift_never_lowers_a_raised_feeling(tmp_path, config
 
 
 def test_startup_rejects_config_increment_beyond_range(tmp_path, config, write_json):
-    config.decision.increment = 2.0
+    config.affect.increment = 2.0
     with pytest.raises(ValueError, match="decision.increment.*value_range span"):
         api.create_app(_emotions(config, tmp_path, write_json, CUSTOM))
 
@@ -202,7 +204,7 @@ def test_startup_rejects_config_increment_beyond_range(tmp_path, config, write_j
 def test_config_increment_overrides_file_default_but_not_dimension(tmp_path, config, write_json):
     snapshot = json.loads(json.dumps(CUSTOM))
     snapshot["dimensions"]["worry"]["increment"] = 0.3
-    config.decision.increment = 0.2
+    config.affect.increment = 0.2
     affect = api.create_app(_emotions(config, tmp_path, write_json, snapshot)).state.service.affect
     assert (affect.increment_for("warmth"), affect.increment_for("worry")) == (0.2, 0.3)
 
@@ -249,8 +251,8 @@ async def test_http_custom_framing_and_block_delimiters_render(tmp_path, config,
         "context_blocks": {
             "memo_open_delimiter": "[memo]",
             "memo_close_delimiter": "[/memo]",
-            "memory_open_delimiter": "[mem]",
-            "memory_close_delimiter": "[/mem]",
+            "mod_open_delimiter": "[mod]",
+            "mod_close_delimiter": "[/mod]",
         },
     }
     config.prompts = PromptsConfig(path=str(write_json(tmp_path / "prompts.json", overlay)))

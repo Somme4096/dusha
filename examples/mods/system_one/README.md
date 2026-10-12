@@ -1,18 +1,51 @@
-# SystemOne decision plugin
+# SystemOne mod
 
-This plugin calls a running [llama.cpp server](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md)
-with decision-model support (`POST /v1/systemone`). The public plugin API is
-documented in the project [README](https://github.com/Somme4096/dusha).
+This mod exports `decide`. It calls a running [llama.cpp server](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md)
+with decision-model support (`POST /v1/systemone`) and returns the emotion the
+server picks. The hook contract is in the project
+[README](https://github.com/Somme4096/dusha#mod-api).
 
-The gateway runs it in its dedicated `uv` environment as a child process. The
-plugin has inherited OS permissions and is not a container or OS sandbox.
+## Install
 
-The runner passes `decide(request, options)`. `request` has `message`,
-`emotions`, `state`, and `instruction`. The function returns `{"emotion":
-name}` or `None`.
+```sh
+mkdir -p ~/.config/dusha/dusha/mods
+cp -R examples/mods/system_one ~/.config/dusha/dusha/mods/system_one
+```
 
-Options include `base_url` (required), `timeout_seconds`, explicit `api_key`,
-`model`, and optional `allowed_ips`. When `allowed_ips` is supplied, every
-request and redirect must use a literal address in that list. The adapter uses
-only credentials explicitly supplied in options. OS permissions remain
-inherited by design.
+```json
+{
+  "mods": {
+    "modules": {
+      "system_one": {
+        "timeout_seconds": 15,
+        "options": {
+          "base_url": "http://127.0.0.1:8000",
+          "timeout_seconds": 10
+        }
+      }
+    }
+  }
+}
+```
+
+## Options
+
+| Option            | Required | Meaning                                                              |
+| ----------------- | -------- | -------------------------------------------------------------------- |
+| `base_url`        | yes      | SystemOne server root, for example `http://127.0.0.1:8000`.          |
+| `timeout_seconds` | no       | Finite positive HTTP timeout, default `10`. Keep it below the mod's `timeout_seconds`. |
+| `api_key`         | no       | Bearer token sent with every request.                                |
+| `model`           | no       | Checkpoint name. Omitted, the server picks.                          |
+| `allowed_ips`     | no       | Literal IPv4 or IPv6 addresses every request and redirect must use.  |
+
+The allowed choices are the keys of `request.emotions`. Each is sent with its
+`description` when present, otherwise a human-readable dimension name. Set
+`description` on a dimension in `emotions.json` to supply one.
+
+A cross-origin redirect drops the bearer token. An HTTPS to HTTP redirect is
+refused.
+
+## Tests
+
+`tests/test_system_one_e2e.py` runs the mod against a local stand-in for the
+SystemOne server. `uv run pytest` from the project root collects it.

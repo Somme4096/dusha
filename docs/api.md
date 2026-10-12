@@ -8,12 +8,12 @@ FastAPI serves the field reference at `/docs` and `/openapi.json`. This page cov
 
 | Method | Path | Purpose | Statuses |
 | --- | --- | --- | --- |
-| GET | `/health` | Process, database, and index status, plus the `companion` name | 200 |
+| GET | `/health` | Process and database status, the `companion` name, and the loaded mod names | 200 |
 | POST | `/state/v1/messages` | Store one message, update affect for a new user message | 200, 401, 422 |
 | GET | `/state/v1/messages/{message_id}` | Read one stored message | 200, 401, 404 |
 | POST | `/state/v1/memory/search` | Search the archive with adjacent context | 200, 401, 503 |
 | GET | `/state/v1/memory/{message_id}` | Read a message plus neighbors | 200, 401, 404, 503 |
-| GET | `/state/v1/memory/index` | Report index status | 200, 401 |
+| GET | `/state/v1/mods` | Report each mod's status | 200, 401 |
 | POST | `/state/v1/context` | Build the injection | 200, 401, 422 |
 | GET | `/state/v1/affect` | Read affect state and advance decay | 200, 401, 503 |
 | POST | `/state/v1/evergreen/facts` | Remember a fact | 200, 401, 409, 422, 503 |
@@ -86,16 +86,16 @@ The response carries the stored `id`, a `duplicate` flag, `conversation_id`, and
 
 The response carries `injection`, `records`, `search_hits`, and `context`. Prepend `injection` to your system prompt, or read `context` for the same data as fields: `version`, `identity`, `instructions`, `session`, and `blocks`.
 
-`injection` holds up to six parts in this order:
+`injection` holds these parts in this order:
 
 1. The identity text
 2. `<evergreen_facts>`, a JSON list of facts
-3. `<memory_context>`, the memory plugin block
+3. `<mod_context>`, one block per mod that returns context
 4. `<memo_notes>`, a JSON list of active memos
 5. `<affect>`, the emotion values and the Affect line
 6. `<companion_state>`, a JSON object with the instructions and session records
 
-`context.blocks` holds parts 2 to 5 as data, keyed `evergreen`, the plugin's `module` name, `memo`, and `affect`. A [feature](configuration.md#features) that is off contributes no part and no key.
+`context.blocks` holds parts 2 to 5 as data, keyed `evergreen`, each mod's name, `memo`, and `affect`. A [feature](configuration.md#features) that is off contributes no part and no key, and so does a part with nothing to say.
 
 You can rename the delimiters in [prompts.json](configuration.md#promptsjson). The serializer escapes `&`, `<`, and `>` in stored text.
 
@@ -123,8 +123,8 @@ Call `POST /state/v1/messages` with `role: "assistant"`. Assistant and tool mess
 
 A new user message moves affect in up to two steps:
 
-1. The [decision plugin](configuration.md#plugins) picks one dimension or abstains. With [embedding](configuration.md#embedding) configured, semantic appraisal picks when the plugin is absent, abstains, or fails. The engine raises the picked dimension by its increment and reports it in the ingest `affect` field.
-2. A memory plugin's `match_phrase` operation returns per-dimension deltas for the message text. A delta can be negative, and one message can move several dimensions. The ingest `affect` field does not report these.
+1. Each [mod](configuration.md#mods) with a `decide` hook proposes an emotion, deltas, or nothing. The first emotion wins. With [embedding](configuration.md#embedding) configured, semantic appraisal picks when no mod proposes one. The engine raises the picked dimension by its increment and reports it in the ingest `affect` field.
+2. The merged `deltas` apply next. A delta can be negative, and one message can move several dimensions. The ingest `affect` field does not report these.
 
 ## Evergreen facts
 
@@ -192,9 +192,9 @@ Response:
 
 An unknown `note_id` returns `404`. A blank `reason`, one longer than `memo.reason_max_chars`, or a memo you archived before returns `422`.
 
-## Memory index status
+## Mod status
 
-`GET /state/v1/memory/index` returns the memory plugin's `status` object when a plugin runs, so its fields depend on the plugin. Without a plugin the gateway reports its built-in index, with `mode` set to `lexical` and a `messages` count. `/health` embeds the same object under `memory_index`.
+`GET /state/v1/mods` returns one object per entry in `mods.modules`, keyed by name: `loaded`, `exports` (the hooks its `main.py` defines), `error` (the load failure, if any), and `status` (what its `status` hook returned, or `null`). `/health` lists the names under `mods`.
 
 ## Proactive delivery
 

@@ -104,15 +104,14 @@ To restore:
 2. Place the backup in the data directory as `state.sqlite3`.
 3. Start the service.
 
-## Memory index
+## Mods
 
 ```sh
-dusha memory index status
-dusha memory index backfill --limit 256
-dusha memory index rebuild
+dusha mods status
+dusha memory reindex
 ```
 
-`status` and `backfill` talk to the memory plugin when you run one. `rebuild` also rebuilds the built-in search index.
+`mods status` prints each mod's `loaded`, `exports`, `error`, and `status`. `memory reindex` rebuilds the built-in search index.
 
 ## Troubleshooting
 
@@ -123,11 +122,12 @@ dusha memory index rebuild
 | Startup fails on an empty `identity_prompt.path` | Remove the key to use `identity.md`, or set `features.identity` to `false`. |
 | Startup fails on an unknown `storage` field, or `enabled` under `evergreen` or `proactive` | Use the [features](configuration.md#features) keys instead. |
 | Startup fails on an unknown `api_token_env` field | Rename it to `api_token` and put the token value there. |
+| Startup fails on an unknown `memory_plugin` or `decision` field | Move the mod under [`mods.modules`](configuration.md#mods) and `decision.increment` to `affect.increment`. |
 | Requests return `401` | Send `X-Companion-Token` with the token value. |
 | Proxy routes return `502` | The provider is unreachable or timed out. Read the `detail`, then check `upstream.base_url` or the address after `/v1/to/` in the client's base URL. Plain HTTP providers need the `http/` segment. |
 | Passthrough routes return `422` | The address after `/v1/to/` is not a host and path. Drop the `https://` prefix and any `user@` part. |
 | Memory, fact, memo, affect, or proactive routes return `503` | Turn the feature named in the `detail` back on under `features` and restart. Your stored rows are intact. |
-| The memory plugin adds no context | Check the log for `failed to initialize memory plugin` or `memory plugin context injection failed`, then check `memory_plugin.module` and the mods directory. |
+| A mod adds no context or no decision | Run `dusha mods status`. Check the log for `failed to load mod` or `<name> on_context failed`, then check `mods.modules` and the mods directory. |
 | Duplicate proactive events or write errors | Two processes share one `state.sqlite3`. Stop one. |
 
 ## See also

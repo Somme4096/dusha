@@ -130,7 +130,7 @@ async def test_http_failed_delivery_waits_for_the_retry_delay(tmp_path, config):
 async def test_http_raised_fear_wins_over_silence_as_the_reason(config, embedding_stub):
     config.embedding.base_url = embedding_stub.url
     config.embedding.model = "stub"
-    config.decision.increment = 1.0
+    config.affect.increment = 1.0
     embedding_stub.says["I will be away for a while."] = "fear_general"
     async with _running(config) as client:
         await _silent_for(client, 4)

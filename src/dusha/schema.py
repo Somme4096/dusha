@@ -18,7 +18,7 @@ class HealthResponse(ExtraAllow):
     companion: str = ""
     database: str
     upstream_configured: bool
-    memory_index: dict
+    mods: list[str]
 
 
 class MessageResponse(ExtraAllow):
@@ -36,19 +36,15 @@ class MessageResponse(ExtraAllow):
     route: str
 
 
-class MemoryIndexStatus(ExtraAllow):
-    mode: str
-    enabled: bool
-    configured: bool
-    chunker_key: str
-    embedding_key: str
-    messages: int
-    chunked_messages: int
-    chunks: int
-    embedded_chunks: int
-    dimensions: list
-    cooling_down: bool
-    last_error: str
+class ModStatus(ExtraAllow):
+    loaded: bool
+    exports: list[str]
+    error: str
+    status: Any
+
+
+class ModsStatus(ExtraAllow):
+    pass
 
 
 class IngestResponse(ExtraAllow):

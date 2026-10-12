@@ -51,7 +51,7 @@ Each key turns one part of the companion on or off. A part that is off leaves th
 | Key | Default | Notes |
 | --- | --- | --- |
 | `features.identity` | `true` | The identity text. |
-| `features.affect` | `true` | Emotion state. Off also skips the decision plugin, and `decision.module` must be empty. |
+| `features.affect` | `true` | Emotion state. Off also skips every mod's `decide` hook. |
 | `features.memory` | `true` | Recent and recalled messages, and the memory search routes. |
 | `features.evergreen` | `true` | Evergreen facts. |
 | `features.memo` | `true` | Memos. |
@@ -111,6 +111,7 @@ Patch single values without a custom emotions file:
   "affect": {
     "mood_follow_hours": 12,
     "mood_return_hours": 72,
+    "increment": 0.1,
     "dimensions": {"fear": {"neutral": 0.05}},
     "silence": {"longing": {"rate_per_hour": 0.02}}
   },
@@ -120,6 +121,7 @@ Patch single values without a custom emotions file:
 
 | Key | Patches |
 | --- | --- |
+| `affect.increment` | `decision.increment`, the step a decision adds. A per-dimension `increment` still wins. |
 | `affect.dimensions` | `neutral`, `floor`, `tau`, or `increment` of an existing dimension. |
 | `affect.silence` | A silence rule. A new dimension name adds a rule. |
 | `proactive.thresholds` | The trigger threshold for that dimension. The dimension needs a trigger in the file. |
@@ -136,10 +138,10 @@ The overlay replaces whole slots. A slot you include must carry every key of tha
 | `companion_state` | Delimiters and the memory instruction for the state block. |
 | `affect` | Delimiters and the instruction for the affect block. |
 | `evergreen` | Delimiters for the fact block. |
-| `context_blocks` | Delimiters for the memo and memory plugin blocks. |
+| `context_blocks` | Delimiters for the memo and mod blocks. |
 | `proactive_framing` | `ruling`, `ladder`, `approach`, and `context_query` for proactive messages. |
 | `proactive_generation_instruction` | `base` plus `variants`. The gateway rotates one variant per send. |
-| `decision_instruction` | Selection criteria sent to the decision plugin. |
+| `decision_instruction` | Selection criteria sent to a mod's `decide` hook. |
 
 Placeholders in `proactive_framing`:
 
@@ -176,36 +178,38 @@ Optional. Set `base_url` and `model` to turn on semantic appraisal. The gateway 
 | `embedding.dimensions` | `null` | Sent to the endpoint when set. |
 | `embedding.timeout_seconds` | `10` | |
 | `embedding.batch_size` | `32` | |
-| `embedding.backfill_interval_seconds` | `10` | Interval of the memory plugin's index backfill. |
 | `embedding.failure_cooldown_seconds` | `60` | Pause after a failed request. |
 
-## Plugins
+## Mods
 
-A plugin is a directory under the mods directory. The [README](../README.md#plugin-api) describes the contract, and [examples/mods](../examples/mods/README.md) holds two working plugins. Plugins need `uv` on the gateway's `PATH`.
-
-- `decision` picks the emotion each user message moves.
-- `memory_plugin` adds retrieval and extra context.
-
-Both sections take these keys:
+A mod is a directory under the mods directory. The [README](../README.md#mod-api) describes the hooks, and [examples/mods](../examples/mods/README.md) holds two working mods. Mods need `uv` on the gateway's `PATH`.
 
 | Key | Default | Notes |
 | --- | --- | --- |
-| `module` | `""` | Plugin directory name. Empty disables the plugin. |
-| `options` | `{}` | Passed to the plugin as written. |
-| `mods_dir` | `""` | Empty uses `mods` in the companion home. `DUSHA_MODS_DIR` overrides it. |
-| `timeout_seconds` | `15` | Deadline per call. Keep it above any HTTP timeout in `options`. |
-| `env_passthrough` | `[]` | Environment variables the plugin may read, such as a proxy setting. |
+| `mods.dir` | `""` | Empty uses `mods` in the companion home. `DUSHA_MODS_DIR` overrides it. |
+| `mods.tick_interval_seconds` | `10` | Interval of the `tick` hook and of message delivery retries. |
+| `mods.modules` | `{}` | One entry per mod, keyed by directory name, in the order the gateway calls them. |
 
-Each section has keys of its own:
+Each entry under `mods.modules` takes these keys:
 
 | Key | Default | Notes |
 | --- | --- | --- |
-| `decision.increment` | `null` | Replaces `decision.increment` from `emotions.json`. A per-dimension `increment` in that file still wins. |
-| `memory_plugin.ingest_batch_size` | `50` | 1 to 500. |
-| `memory_plugin.ingest_backfill_interval_seconds` | `30` | Retry interval for messages the plugin missed. |
-| `memory_plugin.context_max_chars` | `3000` | Cap for the plugin's context block. |
+| `timeout_seconds` | `15` | Deadline per hook call. Keep it above any HTTP timeout in `options`. |
+| `context_max_chars` | `3000` | Cap for the mod's context block. `0` skips `on_context`. |
+| `env_passthrough` | `[]` | Environment variables the mod may read, such as a proxy setting. |
+| `options` | `{}` | Passed to every hook as written. |
 
-Plugins run as child processes with your OS permissions and no sandbox. Install plugins you wrote or reviewed. The gateway logs a failing plugin and keeps storing messages without it.
+```json
+{
+  "mods": {
+    "modules": {
+      "system_one": {"options": {"base_url": "http://127.0.0.1:8000"}}
+    }
+  }
+}
+```
+
+Mods run as child processes with your OS permissions and no sandbox. Install mods you wrote or reviewed. The gateway logs a failing mod, reports it under `GET /state/v1/mods`, and keeps storing messages without it.
 
 ## Proactive
 
