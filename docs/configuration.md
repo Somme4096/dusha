@@ -38,18 +38,30 @@ Rules for the file:
 | `timezone` | `Asia/Taipei` | IANA zone for quiet hours and the daily limit. |
 | `api_token` | `""` | The API token. Empty turns auth off. See [Auth](guide.md#auth). |
 | `api_openai.enabled` | `true` | Serves the [OpenAI proxy](api.md#openai-proxy) under `/v1/*`, including [passthrough](api.md#passthrough). |
-| `storage.enabled` | `true` | `false` closes the message, memory, context, evergreen, and memo routes with `503`. Stored rows stay on disk. |
 | `upstream.base_url` | `""` | Provider the fixed proxy routes forward to. Empty closes them with `503`. |
 | `upstream.api_key_env` | `UPSTREAM_API_KEY` | Environment variable that holds the provider key. When it is unset, the proxy forwards the caller's `Authorization` header. |
 | `upstream.timeout_seconds` | `120` | Applies to passthrough too. |
 
 [Passthrough](api.md#passthrough) under `/v1/to/*` takes the provider address from the request path. It has no keys of its own, ignores `upstream.base_url`, and never sends the `upstream.api_key_env` key.
 
+## Features
+
+Each key turns one part of the companion on or off. A part that is off leaves the injection, and its routes return `503`. Stored rows stay on disk, and messages are always stored.
+
+| Key | Default | Notes |
+| --- | --- | --- |
+| `features.identity` | `true` | The identity text. |
+| `features.affect` | `true` | Emotion state. Off also skips the decision plugin, and `decision.module` must be empty. |
+| `features.memory` | `true` | Recent and recalled messages, and the memory search routes. |
+| `features.evergreen` | `true` | Evergreen facts. |
+| `features.memo` | `true` | Memos. |
+| `features.proactive` | `true` | Proactive events. Needs `features.affect`. |
+
 ## Identity, emotions, and prompts
 
 | Key | Default | Notes |
 | --- | --- | --- |
-| `identity_prompt.path` | `""` | Markdown file. The service prepends it verbatim to every context. Empty means no identity. |
+| `identity_prompt.path` | unset | Markdown file. The service prepends it verbatim to every context. Leave the key out to use `identity.md` next to `config.json`, when that file exists. An empty value fails startup while `features.identity` is on. |
 | `emotions.path` | `""` | Custom emotions file. Empty uses the packaged one. |
 | `emotions.expected_version` | `""` | Startup fails unless the file's `emotion_version` matches. Empty accepts any version. |
 | `prompts.path` | `""` | Overlay for the packaged prompt text. |
@@ -145,7 +157,6 @@ Search is lexical and uses SQLite FTS5.
 | `memory.search_hits` | `4` | |
 | `memory.context_messages` | `1` | Neighbors added around each search hit. |
 | `memory.plugin_context_max_chars` | `3000` | Cap for the memory plugin block. |
-| `evergreen.enabled` | `true` | |
 | `evergreen.max_items` | `32` | |
 | `evergreen.max_chars` | `4000` | |
 | `memo.max_items` | `10` | Memos per injection. |
@@ -199,7 +210,6 @@ Plugins run as child processes with your OS permissions and no sandbox. Install 
 
 | Key | Default | Notes |
 | --- | --- | --- |
-| `proactive.enabled` | `true` | |
 | `proactive.poll_interval_seconds` | `60` | |
 | `proactive.min_silence_minutes` | `180` | |
 | `proactive.cooldown_minutes` | `360` | Gap after a send. |

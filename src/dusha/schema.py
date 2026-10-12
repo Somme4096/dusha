@@ -132,12 +132,12 @@ class ContextMetadata(ExtraAllow):
     identity: IdentityMetadata
     instructions: dict
     memory: MemoryMetadata
-    emotion: EmotionMetadata
+    emotion: EmotionMetadata | None = None
 
 
 class ContextResponse(ExtraAllow):
     injection: str
-    affect: dict
+    affect: dict | None
     evergreen_facts: list
     records: list
     search_hits: list

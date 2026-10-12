@@ -20,8 +20,6 @@ _ERROR_DOCS = {
     503: {"model": _schema.ErrorDetail, "description": "https://github.com/Somme4096/dusha"},
 }
 
-_STORAGE_DISABLED = "built-in message storage is disabled"
-
 def _raise_http(
     error: Exception,
     *,
@@ -126,20 +124,21 @@ class MemoDoneInput(GatewayInput):
 
 def create_state_router(service: CompanionService, proactive: ProactiveEngine, authorized) -> APIRouter:
     router = APIRouter()
-    memory_store: MemoryStore | None = service._memory_fallback
-    evergreen_store: EvergreenStore | None = service._evergreen_fallback
+    memory_store: MemoryStore = service._memory_fallback
+    evergreen_store: EvergreenStore = service._evergreen_fallback
 
-    async def require_storage() -> None:
-        if not service.storage_enabled:
-            raise HTTPException(status_code=503, detail=_STORAGE_DISABLED)
+    def feature(name: str):
+        async def check() -> None:
+            service.require(name)
+
+        return check
 
     @router.get(
         "/state/v1/memory/index",
         tags=["state"],
-        dependencies=[Depends(authorized), Depends(require_storage)],
+        dependencies=[Depends(authorized)],
         responses={
             401: _ERROR_DOCS[401],
-            503: _ERROR_DOCS[503],
             200: {"model": _schema.MemoryIndexStatus, "description": "https://github.com/Somme4096/dusha"},
         },
     )
@@ -151,8 +150,8 @@ def create_state_router(service: CompanionService, proactive: ProactiveEngine, a
         tags=["state"],
         response_model=_schema.IngestResponse,
         summary="Ingest one message",
-        dependencies=[Depends(authorized), Depends(require_storage)],
-        responses={401: _ERROR_DOCS[401], 422: _ERROR_DOCS[422], 503: _ERROR_DOCS[503]},
+        dependencies=[Depends(authorized)],
+        responses={401: _ERROR_DOCS[401], 422: _ERROR_DOCS[422]},
     )
     async def ingest_message(body: MessageInput) -> dict[str, Any]:
         return await _service_call(
@@ -170,11 +169,10 @@ def create_state_router(service: CompanionService, proactive: ProactiveEngine, a
     @router.get(
         "/state/v1/messages/{message_id}",
         tags=["state"],
-        dependencies=[Depends(authorized), Depends(require_storage)],
+        dependencies=[Depends(authorized)],
         responses={
             401: _ERROR_DOCS[401],
             404: _ERROR_DOCS[404],
-            503: _ERROR_DOCS[503],
             200: {"model": _schema.MessageResponse, "description": "https://github.com/Somme4096/dusha"},
         },
     )
@@ -189,7 +187,7 @@ def create_state_router(service: CompanionService, proactive: ProactiveEngine, a
         tags=["state"],
         response_model=_schema.SearchResponse,
         summary="Search archived memory",
-        dependencies=[Depends(authorized), Depends(require_storage)],
+        dependencies=[Depends(authorized), Depends(feature("memory"))],
         responses={401: _ERROR_DOCS[401], 503: _ERROR_DOCS[503]},
     )
     async def search_memory(body: SearchInput) -> dict[str, Any]:
@@ -205,7 +203,7 @@ def create_state_router(service: CompanionService, proactive: ProactiveEngine, a
         "/state/v1/memory/{message_id}",
         tags=["state"],
         response_model=_schema.MemoryContextResponse,
-        dependencies=[Depends(authorized), Depends(require_storage)],
+        dependencies=[Depends(authorized), Depends(feature("memory"))],
         responses={401: _ERROR_DOCS[401], 404: _ERROR_DOCS[404], 503: _ERROR_DOCS[503]},
     )
     async def memory_context(
@@ -222,7 +220,7 @@ def create_state_router(service: CompanionService, proactive: ProactiveEngine, a
         tags=["state"],
         response_model=_schema.FactEnvelope,
         summary="Remember an evergreen fact",
-        dependencies=[Depends(authorized), Depends(require_storage)],
+        dependencies=[Depends(authorized), Depends(feature("evergreen"))],
         responses={401: _ERROR_DOCS[401], 409: _ERROR_DOCS[409], 422: _ERROR_DOCS[422], 503: _ERROR_DOCS[503]},
     )
     async def remember_fact(body: RememberFactInput) -> dict[str, Any]:
@@ -245,7 +243,7 @@ def create_state_router(service: CompanionService, proactive: ProactiveEngine, a
         "/state/v1/evergreen/facts",
         tags=["state"],
         response_model=_schema.FactsEnvelope,
-        dependencies=[Depends(authorized), Depends(require_storage)],
+        dependencies=[Depends(authorized), Depends(feature("evergreen"))],
         responses={401: _ERROR_DOCS[401], 503: _ERROR_DOCS[503]},
     )
     async def list_facts(
@@ -265,7 +263,7 @@ def create_state_router(service: CompanionService, proactive: ProactiveEngine, a
         "/state/v1/evergreen/facts/{fact_id}/history",
         tags=["state"],
         response_model=_schema.RevisionsEnvelope,
-        dependencies=[Depends(authorized), Depends(require_storage)],
+        dependencies=[Depends(authorized), Depends(feature("evergreen"))],
         responses={401: _ERROR_DOCS[401], 404: _ERROR_DOCS[404], 503: _ERROR_DOCS[503]},
     )
     async def fact_history(fact_id: str) -> dict[str, Any]:
@@ -282,7 +280,7 @@ def create_state_router(service: CompanionService, proactive: ProactiveEngine, a
         tags=["state"],
         response_model=_schema.FactEnvelope,
         summary="Revise an evergreen fact",
-        dependencies=[Depends(authorized), Depends(require_storage)],
+        dependencies=[Depends(authorized), Depends(feature("evergreen"))],
         responses={
             401: _ERROR_DOCS[401],
             404: _ERROR_DOCS[404],
@@ -318,7 +316,7 @@ def create_state_router(service: CompanionService, proactive: ProactiveEngine, a
         "/state/v1/evergreen/facts/{fact_id}/forget",
         tags=["state"],
         response_model=_schema.FactEnvelope,
-        dependencies=[Depends(authorized), Depends(require_storage)],
+        dependencies=[Depends(authorized), Depends(feature("evergreen"))],
         responses={
             401: _ERROR_DOCS[401],
             404: _ERROR_DOCS[404],
@@ -346,7 +344,7 @@ def create_state_router(service: CompanionService, proactive: ProactiveEngine, a
         tags=["state"],
         response_model=_schema.MemoEnvelope,
         summary="Add an agent memo",
-        dependencies=[Depends(authorized), Depends(require_storage)],
+        dependencies=[Depends(authorized), Depends(feature("memo"))],
         responses={401: _ERROR_DOCS[401], 422: _ERROR_DOCS[422], 503: _ERROR_DOCS[503]},
     )
     async def memo_add(body: MemoAddInput) -> dict[str, Any]:
@@ -357,7 +355,7 @@ def create_state_router(service: CompanionService, proactive: ProactiveEngine, a
         "/state/v1/memo/list",
         tags=["state"],
         response_model=_schema.MemosEnvelope,
-        dependencies=[Depends(authorized), Depends(require_storage)],
+        dependencies=[Depends(authorized), Depends(feature("memo"))],
         responses={401: _ERROR_DOCS[401], 422: _ERROR_DOCS[422], 503: _ERROR_DOCS[503]},
     )
     async def memo_list(
@@ -374,7 +372,7 @@ def create_state_router(service: CompanionService, proactive: ProactiveEngine, a
         tags=["state"],
         response_model=_schema.MemoEnvelope,
         summary="Archive an agent memo with a reason",
-        dependencies=[Depends(authorized), Depends(require_storage)],
+        dependencies=[Depends(authorized), Depends(feature("memo"))],
         responses={
             401: _ERROR_DOCS[401],
             404: _ERROR_DOCS[404],
@@ -397,8 +395,8 @@ def create_state_router(service: CompanionService, proactive: ProactiveEngine, a
         tags=["state"],
         response_model=_schema.ContextResponse,
         summary="Build provider-neutral context",
-        dependencies=[Depends(authorized), Depends(require_storage)],
-        responses={401: _ERROR_DOCS[401], 422: _ERROR_DOCS[422], 503: _ERROR_DOCS[503]},
+        dependencies=[Depends(authorized)],
+        responses={401: _ERROR_DOCS[401], 422: _ERROR_DOCS[422]},
     )
     async def context(body: ContextInput) -> dict[str, Any]:
         return await _service_call(
@@ -416,8 +414,8 @@ def create_state_router(service: CompanionService, proactive: ProactiveEngine, a
         tags=["state"],
         response_model=_schema.AffectStatusResponse,
         summary="Read affect state (advances decay)",
-        dependencies=[Depends(authorized)],
-        responses={401: _ERROR_DOCS[401]},
+        dependencies=[Depends(authorized), Depends(feature("affect"))],
+        responses={401: _ERROR_DOCS[401], 503: _ERROR_DOCS[503]},
     )
     async def affect_status() -> dict[str, Any]:
         return await asyncio.to_thread(service.affect.status)
@@ -426,8 +424,8 @@ def create_state_router(service: CompanionService, proactive: ProactiveEngine, a
         "/state/v1/proactive/evaluate",
         tags=["state"],
         response_model=_schema.ProactiveEvaluateResponse,
-        dependencies=[Depends(authorized)],
-        responses={401: _ERROR_DOCS[401]},
+        dependencies=[Depends(authorized), Depends(feature("proactive"))],
+        responses={401: _ERROR_DOCS[401], 503: _ERROR_DOCS[503]},
     )
     async def evaluate_proactive() -> dict[str, Any]:
         event = await asyncio.to_thread(proactive.evaluate)
@@ -438,8 +436,8 @@ def create_state_router(service: CompanionService, proactive: ProactiveEngine, a
         tags=["state"],
         response_model=_schema.ProactivePollResponse,
         summary="Poll and lease proactive events",
-        dependencies=[Depends(authorized)],
-        responses={401: _ERROR_DOCS[401]},
+        dependencies=[Depends(authorized), Depends(feature("proactive"))],
+        responses={401: _ERROR_DOCS[401], 503: _ERROR_DOCS[503]},
     )
     async def poll_proactive(
         consumer: str = Query(..., min_length=1),
@@ -453,8 +451,8 @@ def create_state_router(service: CompanionService, proactive: ProactiveEngine, a
         "/state/v1/proactive/events/{event_id}/ack",
         tags=["state"],
         response_model=_schema.AckResponse,
-        dependencies=[Depends(authorized)],
-        responses={401: _ERROR_DOCS[401], 404: _ERROR_DOCS[404], 409: _ERROR_DOCS[409]},
+        dependencies=[Depends(authorized), Depends(feature("proactive"))],
+        responses={401: _ERROR_DOCS[401], 503: _ERROR_DOCS[503], 404: _ERROR_DOCS[404], 409: _ERROR_DOCS[409]},
     )
     async def acknowledge_proactive(event_id: str, body: AckInput) -> dict[str, Any]:
         return await _service_call(

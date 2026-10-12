@@ -57,7 +57,7 @@ def _prompts_file(tmp_path, mutate, name="prompts.json"):
         ('{"upstream": {"timeout_seconds": NaN}}', "non-finite"),
         ('{"host": "a" // jsonc comment\n}', "invalid JSON"),
         ('{"port": "abc"}', "port must be int"),
-        ('{"proactive": {"enabled": "yes"}}', "enabled must be bool"),
+        ('{"features": {"proactive": "yes"}}', "features.proactive must be bool"),
         ('{"memory": {"recent_messages": true}}', "recent_messages must be int"),
         ('{"decision": {"increment": -1}}', "decision.increment"),
         ('{"decision": {"increment": 0}}', "decision.increment"),
@@ -79,11 +79,37 @@ def _prompts_file(tmp_path, mutate, name="prompts.json"):
         ('{"memo": {"text_max_chars": 0}}', "memo.text_max_chars"),
         ('{"port": 70000}', "port must be"),
         ('{"timezone": "Not/AZone"}', "timezone is not a known IANA zone"),
+        ('{"features": {"bogus": true}}', r"unknown field\(s\) under features"),
+        ('{"features": {"affect": false}}', "features.proactive requires features.affect"),
+        ('{"identity_prompt": {"path": ""}}', "identity_prompt.path is empty"),
+        ('{"storage": {"enabled": true}}', "unknown top-level field"),
     ],
 )
 def test_startup_rejects_invalid_config(tmp_path, body, pattern):
     with pytest.raises(ValueError, match=pattern):
         _start(tmp_path, None, text=body)
+
+
+@pytest.mark.parametrize(
+    ("raw", "present", "expected"),
+    [
+        ({}, True, "HOME_IDENTITY"),
+        ({}, False, ""),
+        ({"features": {"identity": False}}, True, ""),
+        ({"features": {"identity": False}, "identity_prompt": {"path": ""}}, True, ""),
+        ({"identity_prompt": {"path": "named.md"}}, True, "NAMED_IDENTITY"),
+    ],
+)
+async def test_identity_defaults_to_identity_md_in_the_companion_home(tmp_path, raw, present, expected):
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "named.md").write_text("NAMED_IDENTITY", encoding="utf-8")
+    if present:
+        (home / "identity.md").write_text("HOME_IDENTITY", encoding="utf-8")
+    async with _client(_start(tmp_path, raw)) as client:
+        context = (await client.post("/state/v1/context", json={"query": ""})).json()["context"]
+    assert context["identity"]["text"] == expected
+    assert context["identity"]["configured"] is bool(expected)
 
 
 @pytest.mark.parametrize(

@@ -8,7 +8,7 @@ import pytest
 
 from dusha import api
 from dusha import prompts as prompts_module
-from dusha.config import IdentityPromptConfig, MemoryConfig, PromptsConfig
+from dusha.config import FeaturesConfig, IdentityPromptConfig, MemoryConfig, PromptsConfig
 
 IDENTITY = "# Identity SENTINEL\nRaw user-authored identity text."
 MEMORY_INSTRUCTION = (
@@ -148,6 +148,46 @@ async def test_http_identity_is_optional_and_a_broken_file_fails_startup(
     assert result["context"]["identity"]["configured"] is configured
     assert result["context"]["identity"]["text"] == ""
     assert result["injection"].startswith("<companion_state>")
+
+
+async def test_http_disabled_features_leave_the_injection_and_close_their_routes(tmp_path, config):
+    config.identity_prompt = _identity(tmp_path, b"IDENTITY_SENTINEL")
+    async with _running(config) as client:
+        await _say(client, "The orchid token is in the blue cabinet.")
+        assert (await _remember(client, "user.favorite", "The user likes tea.")).status_code == 200
+        await client.post("/state/v1/memo/add", json={"text": "Draft the report."})
+    config.features = FeaturesConfig(
+        identity=False, affect=False, memory=False, evergreen=False, memo=False, proactive=False
+    )
+    async with _running(config) as client:
+        stored = await _say(client, "A new turn about the orchid token.")
+        result = await _context(client, "orchid token")
+        closed = {
+            "memory": await client.post("/state/v1/memory/search", json={"query": "orchid"}),
+            "evergreen": await client.get("/state/v1/evergreen/facts"),
+            "memo": await client.get("/state/v1/memo/list"),
+            "affect": await client.get("/state/v1/affect"),
+            "proactive": await client.post("/state/v1/proactive/evaluate"),
+        }
+        health = await client.get("/health")
+    assert stored["affect"] is None
+    assert (result["affect"], result["records"], result["search_hits"]) == (None, [], [])
+    assert result["evergreen_facts"] == []
+    assert result["context"]["identity"]["configured"] is False
+    assert result["injection"].startswith("<companion_state>")
+    assert set(_companion_payload(result["injection"])) == {"instructions", "session"}
+    for name, response in closed.items():
+        assert (response.status_code, response.json()) == (
+            503,
+            {"detail": f"the {name} feature is disabled"},
+        )
+    assert health.status_code == 200
+    config.features = FeaturesConfig()
+    async with _running(config) as client:
+        injection = (await _context(client, "orchid token"))["injection"]
+    assert injection.startswith("IDENTITY_SENTINEL")
+    for kept in ("The user likes tea.", "Draft the report.", "A new turn about the orchid token."):
+        assert kept in injection
 
 
 async def test_http_stored_text_cannot_break_the_block_delimiters(tmp_path, config):

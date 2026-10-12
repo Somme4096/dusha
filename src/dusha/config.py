@@ -24,15 +24,15 @@ _EMBEDDING = _DEFAULTS["embedding"]
 _EVERGREEN = _DEFAULTS["evergreen"]
 _MEMO = _DEFAULTS["memo"]
 _DECISION = _DEFAULTS["decision"]
-_STORAGE = _DEFAULTS["storage"]
+_FEATURES = _DEFAULTS["features"]
 _MEMORY_PLUGIN = _DEFAULTS["memory_plugin"]
 _AFFECT_KNOBS = _EMOTIONS["affect"]
 _PROACTIVE = _DEFAULTS["proactive"]
-_IDENTITY_PROMPT = _DEFAULTS["identity_prompt"]
 _PROMPTS = _DEFAULTS["prompts"]
 
 
 CONFIG_FILE = "config.json"
+IDENTITY_FILE = "identity.md"
 HOME_ENV = "DUSHA_HOME"
 COMPANION_ENV = "DUSHA_COMPANION"
 _COMPANION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
@@ -176,7 +176,6 @@ class MemoryConfig:
 
 @dataclass(slots=True)
 class EvergreenConfig:
-    enabled: bool = _EVERGREEN["enabled"]
     max_items: int = _EVERGREEN["max_items"]
     max_chars: int = _EVERGREEN["max_chars"]
 
@@ -196,8 +195,13 @@ class MemoConfig:
 
 
 @dataclass(slots=True)
-class StorageConfig:
-    enabled: bool = _STORAGE["enabled"]
+class FeaturesConfig:
+    identity: bool = _FEATURES["identity"]
+    affect: bool = _FEATURES["affect"]
+    memory: bool = _FEATURES["memory"]
+    evergreen: bool = _FEATURES["evergreen"]
+    memo: bool = _FEATURES["memo"]
+    proactive: bool = _FEATURES["proactive"]
 
 
 @dataclass(slots=True)
@@ -271,7 +275,6 @@ class MemoryPluginConfig:
 
 @dataclass(slots=True)
 class ProactiveConfig:
-    enabled: bool = _PROACTIVE["enabled"]
     poll_interval_seconds: int = _PROACTIVE["poll_interval_seconds"]
     min_silence_minutes: int = _PROACTIVE["min_silence_minutes"]
     thresholds: dict[str, float] = field(default_factory=dict)
@@ -289,7 +292,7 @@ class ProactiveConfig:
 
 @dataclass(slots=True)
 class IdentityPromptConfig:
-    path: str = _IDENTITY_PROMPT["path"]
+    path: str = ""
 
 
 @dataclass(slots=True)
@@ -315,15 +318,17 @@ class AppConfig:
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     evergreen: EvergreenConfig = field(default_factory=EvergreenConfig)
     memo: MemoConfig = field(default_factory=MemoConfig)
-    storage: StorageConfig = field(default_factory=StorageConfig)
+    features: FeaturesConfig = field(default_factory=FeaturesConfig)
     affect: AffectConfig = field(default_factory=lambda: AffectConfig())
     proactive: ProactiveConfig = field(default_factory=lambda: ProactiveConfig())
     decision: DecisionConfig = field(default_factory=lambda: DecisionConfig())
     memory_plugin: MemoryPluginConfig = field(default_factory=lambda: MemoryPluginConfig())
 
     def __post_init__(self) -> None:
-        if self.memory_plugin.module and not self.storage.enabled:
-            raise ValueError("memory_plugin.module requires storage.enabled")
+        if self.features.proactive and not self.features.affect:
+            raise ValueError("features.proactive requires features.affect")
+        if self.decision.module and not self.features.affect:
+            raise ValueError("decision.module requires features.affect")
         if isinstance(self.port, bool) or not 0 <= self.port <= 65535:
             raise ValueError("port must be at least 0 and at most 65535")
         try:
@@ -413,9 +418,19 @@ def _app_config_from_raw(raw: dict[str, Any], source_dir: Path) -> AppConfig:
             f"unknown field(s) under affect: {misplaced}. Use emotions.path and emotions.expected_version"
         )
     affect = _strict_section(AffectConfig, raw.get("affect"), "affect")
+    features = _strict_section(FeaturesConfig, raw.get("features"), "features")
     identity_prompt = _path_section(
         IdentityPromptConfig, raw.get("identity_prompt"), "identity_prompt", source_dir
     )
+    identity_raw = raw.get("identity_prompt")
+    if features.identity and not identity_prompt.path:
+        if isinstance(identity_raw, dict) and "path" in identity_raw:
+            raise ValueError(
+                f"identity_prompt.path is empty. Remove the key to use {IDENTITY_FILE}, "
+                "or set features.identity to false"
+            )
+        if (source_dir / IDENTITY_FILE).is_file():
+            identity_prompt.path = str((source_dir / IDENTITY_FILE).resolve())
     prompts = _path_section(PromptsConfig, raw.get("prompts"), "prompts", source_dir)
     decision = _strict_section(DecisionConfig, raw.get("decision"), "decision")
     if decision.mods_dir and not Path(decision.mods_dir).is_absolute():
@@ -474,7 +489,7 @@ def _app_config_from_raw(raw: dict[str, Any], source_dir: Path) -> AppConfig:
         memory=_strict_section(MemoryConfig, raw.get("memory"), "memory"),
         evergreen=_strict_section(EvergreenConfig, raw.get("evergreen"), "evergreen"),
         memo=_strict_section(MemoConfig, raw.get("memo"), "memo"),
-        storage=_strict_section(StorageConfig, raw.get("storage"), "storage"),
+        features=features,
         affect=affect,
         proactive=_strict_section(ProactiveConfig, raw.get("proactive"), "proactive"),
         decision=decision,
@@ -535,13 +550,10 @@ def _validate_packaged_defaults() -> None:
     _strict_section(MemoryConfig, _DEFAULTS["memory"], "packaged defaults memory")
     _strict_section(EvergreenConfig, _DEFAULTS["evergreen"], "packaged defaults evergreen")
     _strict_section(MemoConfig, _DEFAULTS["memo"], "packaged defaults memo")
-    _strict_section(StorageConfig, _DEFAULTS["storage"], "packaged defaults storage")
+    _strict_section(FeaturesConfig, _DEFAULTS["features"], "packaged defaults features")
     _strict_section(ProactiveConfig, _DEFAULTS["proactive"], "packaged defaults proactive")
     _strict_section(DecisionConfig, _DEFAULTS["decision"], "packaged defaults decision")
     _strict_section(MemoryPluginConfig, _DEFAULTS["memory_plugin"], "packaged defaults memory_plugin")
-    _strict_section(
-        IdentityPromptConfig, _DEFAULTS["identity_prompt"], "packaged defaults identity_prompt"
-    )
     _strict_section(PromptsConfig, _DEFAULTS["prompts"], "packaged defaults prompts")
 
 

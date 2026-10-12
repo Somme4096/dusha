@@ -16,7 +16,6 @@ from dusha.config import (
     EvergreenConfig,
     MemoryConfig,
     MemoryPluginConfig,
-    StorageConfig,
     load_config,
 )
 
@@ -155,8 +154,7 @@ def _config(
             context_messages=1,
             plugin_context_max_chars=plugin_context_max_chars,
         ),
-        evergreen=EvergreenConfig(enabled=True, max_items=32, max_chars=4_000),
-        storage=StorageConfig(enabled=True),
+        evergreen=EvergreenConfig(max_items=32, max_chars=4_000),
         memory_plugin=MemoryPluginConfig(
             module="boundary_memory",
             mods_dir=str(mods),
@@ -185,13 +183,6 @@ async def _ingest(
     return response.json()
 
 
-def _assert_unavailable(response: httpx.Response) -> None:
-    assert response.status_code in (503, 409), response.text
-    detail = str(response.json().get("detail", "")).lower()
-    assert "storage" in detail, response.text
-    assert "disabled" in detail or "unavailable" in detail, response.text
-
-
 def _cli(config: Path, *args: str) -> subprocess.CompletedProcess[str]:
     env = {**os.environ, "PYTHONPATH": str(Path(__file__).parents[1] / "src")}
     return subprocess.run(
@@ -206,14 +197,12 @@ def _cli(config: Path, *args: str) -> subprocess.CompletedProcess[str]:
 def _assert_cli_unavailable(result: subprocess.CompletedProcess[str]) -> None:
     assert result.returncode != 0, result.stdout
     output = (result.stdout + result.stderr).lower()
-    assert "storage" in output, result.stderr
-    assert "disabled" in output or "unavailable" in output, result.stderr
+    assert "feature is disabled" in output, result.stderr
 
 
 async def test_default_storage_round_trips_messages_and_facts_across_restart(tmp_path: Path):
     config_path = _write_json(tmp_path / "config.json", {"data_dir": str(tmp_path / "data")})
     config = load_config(config_path)
-    assert config.storage.enabled is True
 
     async with _client(config) as (client, _):
         created = await _ingest(client, "builtin", "BUILTIN_MESSAGE_MARKER")
@@ -240,71 +229,10 @@ async def test_default_storage_round_trips_messages_and_facts_across_restart(tmp
         assert any(fact["text"] == "BUILTIN_FACT_MARKER" for fact in facts.json()["facts"])
 
 
-async def test_storage_disabled_reports_unavailable_and_preserves_data_through_restart(tmp_path: Path):
-    enabled_path = _write_json(
-        tmp_path / "enabled.json",
-        {"data_dir": str(tmp_path / "data"), "storage": {"enabled": True}},
-    )
-    disabled_path = _write_json(
-        tmp_path / "disabled.json",
-        {"data_dir": str(tmp_path / "data"), "storage": {"enabled": False}},
-    )
-
-    async with _client(load_config(enabled_path)) as (client, _):
-        created = await _ingest(client, "preserve", "PRESERVED_MESSAGE_MARKER")
-        message_id = created["id"]
-        fact = await client.post(
-            "/state/v1/evergreen/facts",
-            json={"key": "preserve.key", "text": "PRESERVED_FACT_MARKER"},
-        )
-        assert fact.status_code == 200, fact.text
-
-    async with _client(load_config(disabled_path)) as (client, _):
-        _assert_unavailable(await client.post(
-            "/state/v1/messages",
-            json={"harness": "e2e", "conversation_id": "preserve", "role": "user", "content": "blocked"},
-        ))
-        _assert_unavailable(await client.get(f"/state/v1/messages/{message_id}"))
-        _assert_unavailable(await client.post("/state/v1/memory/search", json={"query": "PRESERVED"}))
-        _assert_unavailable(await client.get("/state/v1/evergreen/facts"))
-        _assert_unavailable(await client.post(
-            "/state/v1/evergreen/facts",
-            json={"key": "blocked.key", "text": "blocked"},
-        ))
-
-    async with _client(load_config(disabled_path)) as (client, _):
-        _assert_unavailable(await client.get(f"/state/v1/messages/{message_id}"))
-
-    async with _client(load_config(enabled_path)) as (client, _):
-        fetched = await client.get(f"/state/v1/messages/{message_id}")
-        assert fetched.status_code == 200
-        assert fetched.json()["text"] == "PRESERVED_MESSAGE_MARKER"
-        facts = await client.get("/state/v1/evergreen/facts")
-        assert facts.status_code == 200
-        assert any(fact["text"] == "PRESERVED_FACT_MARKER" for fact in facts.json()["facts"])
-
-
-def test_cli_rejects_configured_plugin_with_storage_disabled(tmp_path: Path, boundary_plugin: Path):
+def test_cli_reports_disabled_features(tmp_path: Path):
     config_path = _write_json(
         tmp_path / "config.json",
-        {
-            "data_dir": str(tmp_path / "data"),
-            "storage": {"enabled": False},
-            "memory_plugin": {"module": "boundary_memory", "mods_dir": str(boundary_plugin)},
-        },
-    )
-
-    result = _cli(config_path, "health")
-    assert result.returncode != 0, result.stdout
-    output = (result.stdout + result.stderr).lower()
-    assert "storage" in output, result.stderr
-    assert "memory_plugin" in output, result.stderr
-
-
-def test_cli_reports_storage_unavailable(tmp_path: Path):
-    config_path = _write_json(
-        tmp_path / "config.json",
-        {"data_dir": str(tmp_path / "data"), "storage": {"enabled": False}},
+        {"data_dir": str(tmp_path / "data"), "features": {"memory": False, "evergreen": False}},
     )
 
     _assert_cli_unavailable(_cli(config_path, "memory", "recent"))
@@ -341,7 +269,7 @@ async def test_plugin_injects_context_alongside_builtin_facts(
 async def test_health_and_index_report_lexical_only_without_plugin(tmp_path: Path):
     config_path = _write_json(
         tmp_path / "config.json",
-        {"data_dir": str(tmp_path / "data"), "storage": {"enabled": True}},
+        {"data_dir": str(tmp_path / "data"), "features": {"memory": False}},
     )
     config = load_config(config_path)
 
@@ -412,25 +340,3 @@ async def test_health_and_index_report_plugin_status_with_configured_plugin(
     reindex = _cli(config_path, "memory", "reindex")
     assert reindex.returncode == 0, reindex.stderr
     assert json.loads(reindex.stdout) == {"status": "rebuilt"}
-
-
-async def test_health_survives_storage_disabled_and_index_reports_unavailable(tmp_path: Path):
-    config_path = _write_json(
-        tmp_path / "config.json",
-        {"data_dir": str(tmp_path / "data"), "storage": {"enabled": False}},
-    )
-    config = load_config(config_path)
-
-    async with _client(config) as (client, _):
-        health = await client.get("/health")
-        assert health.status_code == 200, health.text
-        assert isinstance(health.json()["memory_index"], dict)
-
-        index = await client.get("/state/v1/memory/index")
-        _assert_unavailable(index)
-
-    _assert_cli_unavailable(_cli(config_path, "memory", "index", "status"))
-    _assert_cli_unavailable(_cli(config_path, "memory", "index", "backfill"))
-    _assert_cli_unavailable(_cli(config_path, "memory", "index", "rebuild"))
-    _assert_cli_unavailable(_cli(config_path, "memory", "reindex"))
-

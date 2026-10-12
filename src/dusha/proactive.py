@@ -106,9 +106,7 @@ class ProactiveEngine:
 
     def evaluate(self, now: datetime | None = None) -> dict[str, Any] | None:
         current = now or utc_now()
-        if not self.rules.enabled or self._quiet(current):
-            return None
-        if not self.config.storage.enabled:
+        if not self.config.features.proactive or self._quiet(current):
             return None
         state = self.service.affect.status(current)
         if not state["last_user_message_at"]:

@@ -33,31 +33,31 @@ _PLUGIN_CONTEXT_MAX_RECORDS = 50
 _PLUGIN_CATCH_UP_BATCHES = 20
 
 
-class StorageUnavailableError(RuntimeError):
-    pass
+class FeatureDisabledError(RuntimeError):
+    def __init__(self, name: str):
+        super().__init__(f"the {name} feature is disabled")
 
 
 class CompanionService:
     def __init__(self, config: AppConfig):
         self.config = config
-        self.storage_enabled = bool(config.storage.enabled)
+        self.features = config.features
         self.database = Database(config.database_path)
         self.memory = MemoryProvider(config)
-        self._memory_fallback = None
-        self._evergreen_fallback = None
-        if self.storage_enabled:
-            self._memory_fallback = MemoryStore(self.database)
-            self._evergreen_fallback = EvergreenStore(self.database)
+        self._memory_fallback = MemoryStore(self.database)
+        self._evergreen_fallback = EvergreenStore(self.database)
         self.evergreen = self._evergreen_fallback
         self._ingest_lock = threading.Lock()
         self._plugin_name = str(getattr(config.memory_plugin, "module", "") or "").strip()
         self._plugin_batch_size = max(1, min(int(config.memory_plugin.ingest_batch_size), 500))
         self.prompts = _prompts.resolve_prompts(config.prompts)
         self.prompts_fingerprint = _prompts.fingerprint(self.prompts)
-        self.identity_text, self.identity_revision = _identity.load_identity(
-            config.identity_prompt
-        )
-        self.identity_configured = bool(config.identity_prompt.path)
+        self.identity_text, self.identity_revision = "", ""
+        if self.features.identity:
+            self.identity_text, self.identity_revision = _identity.load_identity(
+                config.identity_prompt
+            )
+        self.identity_configured = bool(self.features.identity and config.identity_prompt.path)
         self.decision = DecisionProvider(config)
         appraisal = (
             SemanticAppraisal(OpenAIEmbeddingClient(config.embedding))
@@ -71,9 +71,7 @@ class CompanionService:
             decision_increment=config.decision.increment,
             appraisal=appraisal,
         )
-        self.phrase_matcher = (
-            self._phrase_matcher if (self.memory.enabled and self.storage_enabled) else None
-        )
+        self.phrase_matcher = self._phrase_matcher if self.memory.enabled else None
         self.composer = ContextComposer(
             prompts=self.prompts,
             identity_text=self.identity_text,
@@ -85,9 +83,9 @@ class CompanionService:
             memo_max_chars=config.memo.max_chars,
         )
 
-    def _require_storage(self) -> None:
-        if not self.storage_enabled:
-            raise StorageUnavailableError("built-in message storage is disabled")
+    def require(self, name: str) -> None:
+        if not getattr(self.features, name):
+            raise FeatureDisabledError(name)
 
     def ingest_message(
         self,
@@ -101,7 +99,6 @@ class CompanionService:
         occurred_at: str | datetime | None = None,
         source_payload: Any | None = None,
     ) -> dict[str, Any]:
-        self._require_storage()
         message = self._memory_fallback.ingest(
             harness=harness,
             conversation_id=conversation_id,
@@ -113,7 +110,7 @@ class CompanionService:
             source_payload=source_payload,
         )
         affect = None
-        if role == "user" and not message.duplicate:
+        if self.features.affect and role == "user" and not message.duplicate:
             stored_message = self._memory_fallback.get(message.id)
             if stored_message is not None:
                 message_time = parse_time(stored_message["occurred_at"])
@@ -144,17 +141,18 @@ class CompanionService:
         exclude_message_ids: set[int] | None = None,
         include_recent: bool = True,
     ) -> dict[str, Any]:
-        self._require_storage()
         excluded = exclude_message_ids or set()
         internal_conversation = None
         if harness and conversation_id:
             internal_conversation = self._memory_fallback.conversation_id(harness, conversation_id)
 
-        recent = self._memory_fallback.recent(
-            conversation_id=internal_conversation,
-            limit=self.config.memory.recent_messages,
-            exclude_ids=excluded,
-        )
+        recent: list[dict[str, Any]] = []
+        if self.features.memory:
+            recent = self._memory_fallback.recent(
+                conversation_id=internal_conversation,
+                limit=self.config.memory.recent_messages,
+                exclude_ids=excluded,
+            )
         recent_ids = {item["id"] for item in recent}
         hits = (
             self._memory_fallback.search(
@@ -163,7 +161,7 @@ class CompanionService:
                 self.config.memory.context_messages,
                 excluded | recent_ids,
             )
-            if query.strip()
+            if self.features.memory and query.strip()
             else []
         )
 
@@ -182,10 +180,10 @@ class CompanionService:
                     records.append(self._record(message, "recalled"))
                     seen.add(message["id"])
 
-        affect_snapshot = self.affect.status()
-        affect_text = self.affect.describe(affect_snapshot)
+        affect_snapshot = self.affect.status() if self.features.affect else None
+        affect_text = self.affect.describe(affect_snapshot) if affect_snapshot else ""
         evergreen_facts: list[dict[str, Any]] = []
-        if self.config.evergreen.enabled:
+        if self.features.evergreen:
             evergreen = self.prompts["evergreen"]
             _, evergreen_facts = self._evergreen_fallback.render(
                 self.config.evergreen.max_items,
@@ -194,7 +192,7 @@ class CompanionService:
                 close_delimiter=evergreen["close_delimiter"],
             )
         plugin_context = self._plugin_context(query, harness, conversation_id)
-        memo_notes = self._active_memo_items()
+        memo_notes = self._active_memo_items() if self.features.memo else []
         composed = self.composer.compose(
             affect_snapshot=affect_snapshot,
             affect_text=affect_text,
@@ -215,7 +213,7 @@ class CompanionService:
     def _plugin_context(
         self, query: str, harness: str, conversation_id: str
     ) -> dict[str, Any] | None:
-        if not (self.storage_enabled and self.memory.enabled):
+        if not self.memory.enabled:
             return None
         cap = int(self.config.memory.plugin_context_max_chars)
         if cap <= 0:
@@ -288,7 +286,7 @@ class CompanionService:
         return payload
 
     def _push_plugin_batch_locked(self) -> dict[str, Any]:
-        if not (self.storage_enabled and self.memory.enabled and self._plugin_name):
+        if not (self.memory.enabled and self._plugin_name):
             return {"skipped": True}
         with self.database.connect() as db:
             cursor = self._plugin_cursor(db)
@@ -322,13 +320,13 @@ class CompanionService:
         return {"cursor": int(highest), "pushed": len(batch), "acknowledged": True}
 
     def _push_plugin_batch(self) -> dict[str, Any] | None:
-        if not (self.storage_enabled and self.memory.enabled and self._plugin_name):
+        if not (self.memory.enabled and self._plugin_name):
             return None
         with self._ingest_lock:
             return self._push_plugin_batch_locked()
 
     def catch_up_plugin(self) -> dict[str, Any]:
-        if not (self.storage_enabled and self.memory.enabled and self._plugin_name):
+        if not (self.memory.enabled and self._plugin_name):
             return {"skipped": True}
         pushed = 0
         cursor = 0
@@ -366,25 +364,6 @@ class CompanionService:
         return self._core_index_status()
 
     def _core_index_status(self) -> dict[str, Any]:
-        if not self.storage_enabled:
-            return {
-                "mode": "disabled",
-                "enabled": False,
-                "configured": False,
-                "chunker_key": "",
-                "embedding_key": "",
-                "messages": 0,
-                "chunked_messages": 0,
-                "chunks": 0,
-                "embedded_chunks": 0,
-                "dimensions": [],
-                "cooling_down": False,
-                "last_error": "",
-                "retrieval": "lexical",
-                "storage_enabled": False,
-                "plugin_configured": False,
-                "plugin_enabled": False,
-            }
         with self.database.connect() as db:
             messages = int(db.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
         return {
@@ -401,7 +380,6 @@ class CompanionService:
             "cooling_down": False,
             "last_error": "",
             "retrieval": "lexical",
-            "storage_enabled": True,
             "plugin_configured": bool(self._plugin_name),
             "plugin_enabled": self.memory.enabled,
         }
@@ -424,8 +402,7 @@ class CompanionService:
                     return result.status
             except Exception:
                 logger.warning("memory plugin rebuild unavailable")
-        if self._memory_fallback is not None:
-            self._memory_fallback.rebuild_index()
+        self._memory_fallback.rebuild_index()
         return {"status": "rebuilt", "retrieval": "lexical"}
 
     def memory_reindex(self) -> dict[str, Any]:
@@ -434,12 +411,11 @@ class CompanionService:
                 self.memory.rebuild_index()
             except Exception:
                 logger.warning("memory plugin reindex unavailable")
-        if self._memory_fallback is not None:
-            self._memory_fallback.rebuild_index()
+        self._memory_fallback.rebuild_index()
         return {"status": "rebuilt"}
 
     def memo_add(self, text: str, now: datetime | None = None) -> dict[str, Any]:
-        self._require_storage()
+        self.require("memo")
         value = self._validate_memo_text(text)
         timestamp = isoformat(now or utc_now())
         with self.database.connect() as db:
@@ -454,7 +430,7 @@ class CompanionService:
         return dict(row)
 
     def memo_list(self, status: str = "active", limit: int = 20) -> list[dict[str, Any]]:
-        self._require_storage()
+        self.require("memo")
         state = self._validate_memo_status(status)
         capped = max(1, min(int(limit), 500))
         with self.database.connect() as db:
@@ -466,7 +442,7 @@ class CompanionService:
         return [dict(row) for row in rows]
 
     def memo_done(self, note_id: int, reason: str, now: datetime | None = None) -> dict[str, Any]:
-        self._require_storage()
+        self.require("memo")
         value = str(reason).strip()
         if not value:
             raise ValueError("reason is required when completing a memo")

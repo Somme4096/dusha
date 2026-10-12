@@ -16,7 +16,7 @@ from .api_openai import PathTokenMiddleware, create_openai_router
 from .api_state import create_state_router
 from .config import AppConfig, load_config
 from .proactive import ProactiveEngine
-from .service import CompanionService, StorageUnavailableError
+from .service import CompanionService, FeatureDisabledError
 
 logger = logging.getLogger("dusha")
 
@@ -68,7 +68,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                 name="proactive-evaluator",
             )
         ]
-        if service.memory.enabled and cfg.storage.enabled:
+        if service.memory.enabled:
             tasks.append(
                 asyncio.create_task(
                     _ingest_scheduler(
@@ -120,8 +120,8 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         ):
             raise HTTPException(status_code=401, detail="invalid companion token")
 
-    @app.exception_handler(StorageUnavailableError)
-    async def storage_unavailable(_: Request, error: StorageUnavailableError) -> JSONResponse:
+    @app.exception_handler(FeatureDisabledError)
+    async def feature_disabled(_: Request, error: FeatureDisabledError) -> JSONResponse:
         return JSONResponse(status_code=503, content={"detail": str(error)})
 
     @app.get("/health", tags=["health"], response_model=_schema.HealthResponse)

@@ -9,13 +9,13 @@ FastAPI serves the field reference at `/docs` and `/openapi.json`. This page cov
 | Method | Path | Purpose | Statuses |
 | --- | --- | --- | --- |
 | GET | `/health` | Process, database, and index status, plus the `companion` name | 200 |
-| POST | `/state/v1/messages` | Store one message, update affect for a new user message | 200, 401, 422, 503 |
-| GET | `/state/v1/messages/{message_id}` | Read one stored message | 200, 401, 404, 503 |
+| POST | `/state/v1/messages` | Store one message, update affect for a new user message | 200, 401, 422 |
+| GET | `/state/v1/messages/{message_id}` | Read one stored message | 200, 401, 404 |
 | POST | `/state/v1/memory/search` | Search the archive with adjacent context | 200, 401, 503 |
 | GET | `/state/v1/memory/{message_id}` | Read a message plus neighbors | 200, 401, 404, 503 |
-| GET | `/state/v1/memory/index` | Report index status | 200, 401, 503 |
-| POST | `/state/v1/context` | Build the injection | 200, 401, 422, 503 |
-| GET | `/state/v1/affect` | Read affect state and advance decay | 200, 401 |
+| GET | `/state/v1/memory/index` | Report index status | 200, 401 |
+| POST | `/state/v1/context` | Build the injection | 200, 401, 422 |
+| GET | `/state/v1/affect` | Read affect state and advance decay | 200, 401, 503 |
 | POST | `/state/v1/evergreen/facts` | Remember a fact | 200, 401, 409, 422, 503 |
 | GET | `/state/v1/evergreen/facts` | List current facts | 200, 401, 503 |
 | GET | `/state/v1/evergreen/facts/{fact_id}/history` | List every revision | 200, 401, 404, 503 |
@@ -24,9 +24,9 @@ FastAPI serves the field reference at `/docs` and `/openapi.json`. This page cov
 | POST | `/state/v1/memo/add` | Add one memo | 200, 401, 422, 503 |
 | GET | `/state/v1/memo/list` | List active or archived memos | 200, 401, 422, 503 |
 | POST | `/state/v1/memo/{note_id}/done` | Archive a memo with a reason | 200, 401, 404, 422, 503 |
-| POST | `/state/v1/proactive/evaluate` | Run one evaluation pass | 200, 401 |
-| GET | `/state/v1/proactive/events` | Poll and lease pending events | 200, 401 |
-| POST | `/state/v1/proactive/events/{event_id}/ack` | Acknowledge a leased event | 200, 401, 404, 409 |
+| POST | `/state/v1/proactive/evaluate` | Run one evaluation pass | 200, 401, 503 |
+| GET | `/state/v1/proactive/events` | Poll and lease pending events | 200, 401, 503 |
+| POST | `/state/v1/proactive/events/{event_id}/ack` | Acknowledge a leased event | 200, 401, 404, 409, 503 |
 | GET | `/v1/models` | Proxy a model list | 401, 502, 503, upstream |
 | POST | `/v1/chat/completions` | Proxy chat completions and store the transcript | 401, 422, 502, 503, upstream |
 | GET | `/v1/to/{upstream}/models` | Proxy a model list from the upstream in the path | 401, 422, 502, upstream |
@@ -35,7 +35,7 @@ FastAPI serves the field reference at `/docs` and `/openapi.json`. This page cov
 Statuses that depend on config:
 
 - `401` applies with [auth](guide.md#auth) on. Send the token in `X-Companion-Token`. Proxy clients that cannot set headers can put it in the [base URL](#token-in-the-base-url).
-- `503` on the `/state/v1/*` routes means `storage.enabled` is `false`. Affect, proactive, and health routes stay up.
+- `503` on a `/state/v1/*` route means its [feature](configuration.md#features) is off. The `detail` names the feature.
 - `/v1/*` returns `404` when `api_openai.enabled` is `false` and `503` when `upstream.base_url` is empty.
 - Every proxy route returns `502` when the provider cannot be reached or times out. The `detail` carries the reason.
 - `/v1/to/*` does not need `upstream.base_url`. It returns `422` for an address that is not a valid host and path.
@@ -85,6 +85,8 @@ The response carries the stored `id`, a `duplicate` flag, `conversation_id`, and
 - `exclude_message_ids` removes messages you send yourself.
 
 The response carries `injection`, `affect`, `evergreen_facts`, `records`, `search_hits`, and `context`. Prepend `injection` to your system prompt, or read `context` for the same data as fields: `version`, `identity`, `instructions`, `memory`, and `emotion`.
+
+A [feature](configuration.md#features) that is off leaves its part empty. With `features.affect` off, `affect` and `context.emotion` are `null`.
 
 `injection` holds up to five parts in this order:
 

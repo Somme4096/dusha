@@ -138,7 +138,7 @@ def configured_app(tmp_path: Path, generic_plugin: Path, decision_plugin: Path):
         return AppConfig(
             data_dir=data_dir or tmp_path / "data",
             memory=MemoryConfig(recent_messages=8, search_hits=8, context_messages=1),
-            evergreen=EvergreenConfig(enabled=True, max_items=32, max_chars=4_000),
+            evergreen=EvergreenConfig(max_items=32, max_chars=4_000),
             decision=DecisionConfig(
                 module="state_decider" if decision_enabled else "",
                 mods_dir=str(decision_plugin),

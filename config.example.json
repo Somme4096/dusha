@@ -11,8 +11,13 @@
   "api_openai": {
     "enabled": true
   },
-  "identity_prompt": {
-    "path": ""
+  "features": {
+    "identity": true,
+    "affect": true,
+    "memory": true,
+    "evergreen": true,
+    "memo": true,
+    "proactive": true
   },
   "prompts": {
     "path": ""
@@ -47,11 +52,7 @@
     "options": {},
     "env_passthrough": []
   },
-  "storage": {
-    "enabled": true
-  },
   "evergreen": {
-    "enabled": true,
     "max_items": 32,
     "max_chars": 4000
   },
@@ -62,7 +63,6 @@
     "reason_max_chars": 1000
   },
   "proactive": {
-    "enabled": true,
     "poll_interval_seconds": 60,
     "min_silence_minutes": 180,
     "cooldown_minutes": 360,

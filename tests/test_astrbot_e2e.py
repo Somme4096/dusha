@@ -13,14 +13,13 @@ import httpx
 import pytest
 
 from dusha import api
-from dusha.config import StorageConfig
+from dusha.config import FeaturesConfig
 from dusha.timeutil import isoformat, utc_now
 
 _INTEGRATION_DIR = Path(__file__).resolve().parents[1] / "integrations" / "astrbot_dusha"
 PLATFORM = "telegram-dusha"
 ROUTE = "telegram-dusha:FriendMessage:user-1"
 ROUTING_ERROR = {"ok": False, "error": "gateway access is disabled for this platform"}
-STORAGE_DISABLED = "built-in message storage is disabled"
 NUDGE = "thinking of you"
 
 
@@ -644,17 +643,18 @@ async def test_tool_gateway_statuses_map_to_ok_false_with_status(config, monkeyp
         assert [item["text"] for item in await rig.facts()] == ["Ada drinks tea"]
         assert await rig.memos() == []
 
-    config.storage = StorageConfig(enabled=False)
+    config.features = FeaturesConfig(memory=False, evergreen=False, memo=False)
     async with _running(config) as rig:
         plugin = await rig.plugin()
         for name, (_, arguments) in TOOL_CALLS.items():
+            feature = "evergreen" if "evergreen" in name else "memo" if "yumecho" in name else "memory"
             assert await _tool(plugin, name, **arguments) == {
                 "ok": False,
-                "error": STORAGE_DISABLED,
+                "error": f"the {feature} feature is disabled",
                 "status": 503,
             }
 
-    config.storage = StorageConfig()
+    config.features = FeaturesConfig()
     config.api_token = "right-secret"
     async with _running(config) as rig:
         denied = await rig.plugin(api_token="wrong-secret")

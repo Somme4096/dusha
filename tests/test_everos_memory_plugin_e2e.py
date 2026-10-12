@@ -243,7 +243,7 @@ def _config(
             search_hits=8,
             context_messages=1,
         ),
-        evergreen=EvergreenConfig(enabled=True, max_items=32, max_chars=4_000),
+        evergreen=EvergreenConfig(max_items=32, max_chars=4_000),
         memory_plugin=MemoryPluginConfig(
             module="everos_memory",
             mods_dir=str(mods_dir),

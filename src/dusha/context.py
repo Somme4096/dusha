@@ -30,10 +30,12 @@ class ContextComposer:
         self.memo_max_chars = int(memo_max_chars)
 
     def _instructions_and_emotion(
-        self, affect_snapshot: dict[str, Any], affect_text: str
-    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        self, affect_snapshot: dict[str, Any] | None, affect_text: str
+    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
         companion = self.prompts["companion_state"]
         instructions = {"memory": companion["memory_instruction"]}
+        if affect_snapshot is None:
+            return instructions, None
         emotion = {
             "values": {
                 "base": affect_snapshot["base"],
@@ -49,11 +51,17 @@ class ContextComposer:
         return instructions, emotion
 
     def _companion_block(
-        self, affect_snapshot: dict[str, Any], affect_text: str, session: list[dict[str, Any]]
+        self,
+        affect_snapshot: dict[str, Any] | None,
+        affect_text: str,
+        session: list[dict[str, Any]],
     ) -> str:
         companion = self.prompts["companion_state"]
         instructions, emotion = self._instructions_and_emotion(affect_snapshot, affect_text)
-        payload = {"instructions": instructions, "emotion": emotion, "session": session}
+        payload: dict[str, Any] = {"instructions": instructions}
+        if emotion is not None:
+            payload["emotion"] = emotion
+        payload["session"] = session
         return companion["open_delimiter"] + safe_json(payload) + companion["close_delimiter"]
 
     def _evergreen_block(self, facts: list[dict[str, Any]]) -> str:
@@ -82,7 +90,7 @@ class ContextComposer:
     def compose(
         self,
         *,
-        affect_snapshot: dict[str, Any],
+        affect_snapshot: dict[str, Any] | None,
         affect_text: str,
         evergreen_facts: list[dict[str, Any]],
         session_records: list[dict[str, Any]],

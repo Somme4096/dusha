@@ -39,10 +39,9 @@ def config(tmp_path: Path) -> AppConfig:
         timezone="Asia/Taipei",
         upstream=UpstreamConfig(),
         memory=MemoryConfig(recent_messages=2, search_hits=4, context_messages=1),
-        evergreen=EvergreenConfig(enabled=True, max_items=32, max_chars=4_000),
+        evergreen=EvergreenConfig(max_items=32, max_chars=4_000),
         affect=AffectConfig(),
         proactive=ProactiveConfig(
-            enabled=True,
             poll_interval_seconds=60,
             min_silence_minutes=60,
             thresholds={"longing": 0.31, "fear": 0.55},

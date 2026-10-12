@@ -358,6 +358,8 @@ _COMMANDS: dict[str, Handler] = {
     "proactive": _cmd_proactive,
 }
 
+_FEATURE_COMMANDS = frozenset({"memory", "evergreen", "memo", "affect", "proactive"})
+
 
 def main() -> None:
     args = parser().parse_args()
@@ -379,8 +381,10 @@ def main() -> None:
         return
 
     service = CompanionService(cfg)
-    if args.command in {"memory", "evergreen", "memo"} and not service.storage_enabled:
-        print("built-in message storage is disabled", file=sys.stderr)
+    index_only = getattr(args, "memory_command", "") in {"index", "reindex"}
+    gated = args.command in _FEATURE_COMMANDS and not index_only
+    if gated and not getattr(cfg.features, args.command):
+        print(f"the {args.command} feature is disabled", file=sys.stderr)
         service.close()
         raise SystemExit(1)
     proactive = ProactiveEngine(service, cfg)

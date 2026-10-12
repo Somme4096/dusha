@@ -119,12 +119,14 @@ dusha memory index rebuild
 | Symptom | Fix |
 | --- | --- |
 | Startup fails on a missing config file | The selected home needs a `config.json`. Run `dusha list` to see your companions. |
-| Startup fails on a missing identity file | Fix `identity_prompt.path` or clear it. The file must be UTF-8. |
+| Startup fails on a missing identity file | Fix `identity_prompt.path` or remove the key. The file must be UTF-8. |
+| Startup fails on an empty `identity_prompt.path` | Remove the key to use `identity.md`, or set `features.identity` to `false`. |
+| Startup fails on an unknown `storage` field, or `enabled` under `evergreen` or `proactive` | Use the [features](configuration.md#features) keys instead. |
 | Startup fails on an unknown `api_token_env` field | Rename it to `api_token` and put the token value there. |
 | Requests return `401` | Send `X-Companion-Token` with the token value. |
 | Proxy routes return `502` | The provider is unreachable or timed out. Read the `detail`, then check `upstream.base_url` or the address after `/v1/to/` in the client's base URL. Plain HTTP providers need the `http/` segment. |
 | Passthrough routes return `422` | The address after `/v1/to/` is not a host and path. Drop the `https://` prefix and any `user@` part. |
-| Message, memory, context, fact, and memo routes return `503` | Set `storage.enabled` back to `true` and restart. Your stored rows are intact. |
+| Memory, fact, memo, affect, or proactive routes return `503` | Turn the feature named in the `detail` back on under `features` and restart. Your stored rows are intact. |
 | The memory plugin adds no context | Check the log for `failed to initialize memory plugin` or `memory plugin context injection failed`, then check `memory_plugin.module` and the mods directory. |
 | Duplicate proactive events or write errors | Two processes share one `state.sqlite3`. Stop one. |
 
