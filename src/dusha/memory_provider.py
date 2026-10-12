@@ -16,16 +16,23 @@ from pathlib import Path
 from typing import Any
 
 from . import plugin_runtime as _runtime
+from .database import Database
+from .hooks import Block, ContextRequest, Contributor, render
 from .memory_plugin import (
     BackfillIndexResult,
     IndexStatusResult,
+    IngestMessagesRequest,
     IngestMessagesResult,
+    InjectContextRequest,
     InjectContextResult,
+    MatchPhraseRequest,
     MatchPhraseResult,
     MemoryPluginError,
     RebuildIndexResult,
     RebuildMemoryIndexResult,
 )
+from .serialization import compact_json
+from .timeutil import isoformat, utc_now
 
 logger = logging.getLogger("dusha")
 _RESTART_COOLDOWN = 5.0
@@ -269,10 +276,24 @@ class _SuiteMemory:
             self.proc.wait()
 
 
-class MemoryProvider:
-    def __init__(self, config: Any):
+_BATCH_MAX_BYTES = 512 * 1024
+_CONTEXT_MAX_RECORDS = 50
+_CATCH_UP_BATCHES = 20
+
+
+class MemoryProvider(Contributor):
+    def __init__(self, config: Any, database: Database, prompts: dict[str, Any]):
         self.config = config
+        self.settings = config.memory_plugin
+        self.database = database
+        self.blocks = prompts["context_blocks"]
+        self.module = str(getattr(self.settings, "module", "") or "").strip()
+        self.name = self.module or "memory_plugin"
+        self.batch_size = max(1, min(int(self.settings.ingest_batch_size), 500))
+        self._lock = threading.Lock()
         self.plugin: _SuiteMemory | None = None
+        if not self.module:
+            return
         try:
             self.plugin = _load(config)
         except Exception:
@@ -283,10 +304,148 @@ class MemoryProvider:
         return self.plugin is not None
 
     def __getattr__(self, name: str) -> Callable[..., Any]:
-        if name not in (*_RESULTS, "close"):
+        if name not in _RESULTS:
             raise AttributeError(name)
         def operation(request: Any = None, *args: Any, **kwargs: Any) -> Any:
             if self.plugin is None:
                 return None
             return self.plugin.call(name, request)
         return operation
+
+    def match_phrase_deltas(self, message: str) -> dict[str, float] | None:
+        result = self.match_phrase(MatchPhraseRequest(message=message))
+        return result.deltas if result is not None else None
+
+    def on_message(self, message: dict[str, Any]) -> None:
+        if self.enabled:
+            with self._lock:
+                self._push_locked()
+        return None
+
+    def on_context(self, request: ContextRequest) -> Block | None:
+        cap = int(self.settings.context_max_chars)
+        if not self.enabled or cap <= 0:
+            return None
+        try:
+            result = self.inject_context(
+                InjectContextRequest(
+                    query=request.query,
+                    scope=request.conversation_id or request.harness or "",
+                    max_chars=cap,
+                    harness=request.harness,
+                    conversation_id=request.conversation_id,
+                )
+            )
+        except Exception:
+            logger.warning("memory plugin context injection failed")
+            return None
+        data = self._normalize(result, cap)
+        if data is None:
+            return None
+        return render(
+            self.name, self.blocks["memory_open_delimiter"], data, self.blocks["memory_close_delimiter"]
+        )
+
+    def _normalize(self, result: Any, cap: int) -> dict[str, Any] | None:
+        text = result.text if isinstance(getattr(result, "text", None), str) else ""
+        text = text[:cap]
+        records: list[dict[str, Any]] = []
+        remaining = max(0, cap - len(text))
+        for item in list(getattr(result, "records", None) or [])[:_CONTEXT_MAX_RECORDS]:
+            if not isinstance(item, dict):
+                continue
+            source, body = item.get("source"), item.get("text")
+            if not isinstance(source, str) or not isinstance(body, str):
+                continue
+            body = body[:remaining]
+            if not body:
+                break
+            records.append({"source": source[:200], "text": body})
+            remaining -= len(body)
+        if not text and not records:
+            return None
+        data: dict[str, Any] = {"source": self.name, "text": text}
+        if records:
+            data["records"] = records
+        return data
+
+    def _cursor(self, db: Any) -> int:
+        row = db.execute(
+            "SELECT last_acknowledged_id FROM plugin_ingest_state WHERE plugin=?", (self.module,)
+        ).fetchone()
+        return int(row["last_acknowledged_id"]) if row else 0
+
+    def _batch(self, cursor: int) -> list[dict[str, Any]]:
+        with self.database.connect() as db:
+            rows = db.execute(
+                """SELECT m.id, m.conversation_id, m.role, m.text, m.occurred_at,
+                          m.ingested_at, m.sha256, c.harness,
+                          c.external_id AS external_conversation_id
+                   FROM messages m JOIN conversations c ON c.id=m.conversation_id
+                   WHERE m.id > ? AND m.role IN ('user','assistant')
+                     AND m.occurred_at > '1970-01-01T00:00:00+00:00'
+                   ORDER BY m.id ASC LIMIT ?""",
+                (cursor, self.batch_size),
+            ).fetchall()
+        payload: list[dict[str, Any]] = []
+        for row in rows:
+            if payload and len(compact_json(payload + [dict(row)])) > _BATCH_MAX_BYTES:
+                break
+            payload.append(dict(row))
+        return payload
+
+    def _push_locked(self) -> dict[str, Any]:
+        with self.database.connect() as db:
+            cursor = self._cursor(db)
+        batch = self._batch(cursor)
+        if not batch:
+            return {"cursor": cursor, "pushed": 0, "acknowledged": False}
+        try:
+            result = self.ingest_messages(IngestMessagesRequest(messages=tuple(batch)))
+        except Exception:
+            logger.warning("memory plugin message ingestion failed", exc_info=True)
+            return {"cursor": cursor, "pushed": len(batch), "acknowledged": False}
+        highest = getattr(result, "highest_id", None)
+        expected = int(batch[-1]["id"])
+        if (
+            isinstance(highest, bool)
+            or not isinstance(highest, int)
+            or highest != expected
+            or highest <= cursor
+        ):
+            logger.warning("memory plugin returned an invalid ingestion acknowledgement")
+            return {"cursor": cursor, "pushed": len(batch), "acknowledged": False}
+        with self.database.connect() as db:
+            db.execute(
+                """INSERT INTO plugin_ingest_state(plugin, last_acknowledged_id, updated_at)
+                   VALUES(?,?,?)
+                   ON CONFLICT(plugin) DO UPDATE SET
+                     last_acknowledged_id=excluded.last_acknowledged_id,
+                     updated_at=excluded.updated_at""",
+                (self.module, int(highest), isoformat(utc_now())),
+            )
+        return {"cursor": int(highest), "pushed": len(batch), "acknowledged": True}
+
+    def catch_up(self) -> dict[str, Any]:
+        if not self.enabled:
+            return {"skipped": True}
+        pushed, cursor, acknowledged, pending = 0, 0, False, False
+        with self._lock:
+            for _ in range(_CATCH_UP_BATCHES):
+                result = self._push_locked()
+                cursor = int(result.get("cursor", cursor))
+                if result.get("acknowledged"):
+                    pushed += int(result.get("pushed", 0))
+                    acknowledged = True
+                    continue
+                pending = bool(result.get("pushed"))
+                break
+        if acknowledged:
+            logger.info("memory plugin ingestion acknowledged through id %s", cursor)
+        elif pending:
+            logger.warning("memory plugin ingestion backlog pending")
+        return {"cursor": cursor, "pushed": pushed, "acknowledged": acknowledged, "pending": pending}
+
+    def close(self) -> None:
+        if self.plugin is not None:
+            self.plugin.close()

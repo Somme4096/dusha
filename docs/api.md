@@ -84,17 +84,18 @@ The response carries the stored `id`, a `duplicate` flag, `conversation_id`, and
 - `include_recent` defaults to `true`. Pass `false` when your provider conversation holds the recent history.
 - `exclude_message_ids` removes messages you send yourself.
 
-The response carries `injection`, `affect`, `evergreen_facts`, `records`, `search_hits`, and `context`. Prepend `injection` to your system prompt, or read `context` for the same data as fields: `version`, `identity`, `instructions`, `memory`, and `emotion`.
+The response carries `injection`, `records`, `search_hits`, and `context`. Prepend `injection` to your system prompt, or read `context` for the same data as fields: `version`, `identity`, `instructions`, `session`, and `blocks`.
 
-A [feature](configuration.md#features) that is off leaves its part empty. With `features.affect` off, `affect` and `context.emotion` are `null`.
-
-`injection` holds up to five parts in this order:
+`injection` holds up to six parts in this order:
 
 1. The identity text
 2. `<evergreen_facts>`, a JSON list of facts
 3. `<memory_context>`, the memory plugin block
 4. `<memo_notes>`, a JSON list of active memos
-5. `<companion_state>`, a JSON object with the instructions, emotion values, and session records
+5. `<affect>`, the emotion values and the Affect line
+6. `<companion_state>`, a JSON object with the instructions and session records
+
+`context.blocks` holds parts 2 to 5 as data, keyed `evergreen`, the plugin's `module` name, `memo`, and `affect`. A [feature](configuration.md#features) that is off contributes no part and no key.
 
 You can rename the delimiters in [prompts.json](configuration.md#promptsjson). The serializer escapes `&`, `<`, and `>` in stored text.
 

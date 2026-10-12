@@ -141,11 +141,11 @@ def _cmd_memory(service: CompanionService, proactive: ProactiveEngine, args: arg
 
 
 def _memory_search(service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace) -> None:
-    _print({"results": service._memory_fallback.search(args.query, args.limit)})
+    _print({"results": service.messages.search(args.query, args.limit)})
 
 
 def _memory_show(service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace) -> None:
-    result = service._memory_fallback.get(args.message_id)
+    result = service.messages.get(args.message_id)
     if result is None:
         print("message not found", file=sys.stderr)
         raise SystemExit(1)
@@ -153,7 +153,7 @@ def _memory_show(service: CompanionService, proactive: ProactiveEngine, args: ar
 
 
 def _memory_recent(service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace) -> None:
-    _print({"messages": service._memory_fallback.recent(limit=args.limit)})
+    _print({"messages": service.messages.recent(limit=args.limit)})
 
 
 def _memory_reindex(service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace) -> None:
@@ -198,7 +198,7 @@ def _cmd_evergreen(service: CompanionService, proactive: ProactiveEngine, args: 
 def _evergreen_list(service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace) -> None:
     _print(
         {
-            "facts": service._evergreen_fallback.list_current(
+            "facts": service.evergreen.list_current(
                 include_inactive=args.include_inactive,
                 due_only=args.due_only,
                 limit=args.limit,
@@ -210,7 +210,7 @@ def _evergreen_list(service: CompanionService, proactive: ProactiveEngine, args:
 def _evergreen_history(
     service: CompanionService, proactive: ProactiveEngine, args: argparse.Namespace
 ) -> None:
-    _print({"revisions": service._evergreen_fallback.history(args.fact_id)})
+    _print({"revisions": service.evergreen.history(args.fact_id)})
 
 
 def _evergreen_remember(
@@ -218,7 +218,7 @@ def _evergreen_remember(
 ) -> None:
     _print(
         {
-            "fact": service._evergreen_fallback.remember(
+            "fact": service.evergreen.remember(
                 key=args.key,
                 text=args.text,
                 priority=args.priority,
@@ -252,7 +252,7 @@ def _evergreen_revise(
         revise_kwargs["expires_at"] = None
     elif args.expires_at is not None:
         revise_kwargs["expires_at"] = args.expires_at
-    _print({"fact": service._evergreen_fallback.revise(**revise_kwargs)})
+    _print({"fact": service.evergreen.revise(**revise_kwargs)})
 
 
 def _evergreen_forget(
@@ -260,7 +260,7 @@ def _evergreen_forget(
 ) -> None:
     _print(
         {
-            "fact": service._evergreen_fallback.forget(
+            "fact": service.evergreen.forget(
                 fact_id=args.fact_id,
                 expected_revision=args.expected_revision,
                 reason=args.reason,
@@ -387,7 +387,7 @@ def main() -> None:
         print(f"the {args.command} feature is disabled", file=sys.stderr)
         service.close()
         raise SystemExit(1)
-    proactive = ProactiveEngine(service, cfg)
+    proactive = service.proactive
     _COMMANDS[args.command](service, proactive, args)
     service.close()
 

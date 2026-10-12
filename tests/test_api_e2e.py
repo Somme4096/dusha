@@ -114,7 +114,7 @@ async def test_http_proxy_context_keeps_system_messages_first(config, monkeypatc
 
     assert response.status_code == 200
     assert [message["role"] for message in captured["messages"][:2]] == ["system", "system"]
-    assert captured["messages"][1]["content"].startswith("<companion_state>")
+    assert "<companion_state>" in captured["messages"][1]["content"]
 
 
 @pytest.mark.parametrize("enabled", [None, True])

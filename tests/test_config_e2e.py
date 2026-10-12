@@ -170,7 +170,7 @@ def test_startup_rejects_unreadable_emotions_file(tmp_path, text, message):
     [
         (lambda s: s.update(bogus_slot={}), "unknown prompts slot"),
         (lambda s: s["companion_state"].update(bogus_key="x"), "unknown field"),
-        (lambda s: s.update(companion_state={"affect_instruction": "only this"}), "incomplete"),
+        (lambda s: s.update(companion_state={"memory_instruction": "only this"}), "incomplete"),
         (lambda s: s.update(decision_instruction=5), "must be a string"),
         (lambda s: s.update(proactive_generation_instruction=5), "must be an object"),
         (lambda s: s["proactive_generation_instruction"].update(variants=[]), "must be a non-empty list"),
@@ -200,7 +200,7 @@ async def test_http_config_paths_resolve_beside_the_config_file_or_stay_absolute
     base.mkdir()
     (base / "identity.md").write_text("IDENTITY_SENTINEL", encoding="utf-8")
     _emotions_file(base, lambda s: s["dimensions"]["fear"].update(neutral=0.25))
-    _prompts_file(base, lambda s: s["companion_state"].update(affect_instruction="PROMPT_SENTINEL"))
+    _prompts_file(base, lambda s: s["affect"].update(instruction="PROMPT_SENTINEL"))
 
     def located(name):
         return str(base / name) if absolute else name

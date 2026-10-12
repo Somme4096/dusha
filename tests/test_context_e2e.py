@@ -8,7 +8,7 @@ import pytest
 
 from dusha import api
 from dusha import prompts as prompts_module
-from dusha.config import FeaturesConfig, IdentityPromptConfig, MemoryConfig, PromptsConfig
+from dusha.config import FeaturesConfig, IdentityPromptConfig, PromptsConfig
 
 IDENTITY = "# Identity SENTINEL\nRaw user-authored identity text."
 MEMORY_INSTRUCTION = (
@@ -111,12 +111,12 @@ async def test_http_context_fields_mirror_the_injection_and_building_it_stores_n
     context = result["context"]
     payload = _companion_payload(result["injection"])
     assert result["injection"].startswith(IDENTITY)
-    assert context["version"] == 1
+    assert context["version"] == 2
     assert context["identity"]["configured"] is True
     assert context["identity"]["text"] == IDENTITY
-    assert context["memory"]["session"] == result["records"] == payload["session"]
-    assert context["emotion"]["values"]["base"] == result["affect"]["base"]
-    assert set(context["emotion"]["fingerprints"]) == {"emotions", "prompts"}
+    assert context["session"] == result["records"] == payload["session"]
+    assert set(context["blocks"]["affect"]["values"]) == {"base", "mood"}
+    assert set(context["blocks"]["affect"]["fingerprints"]) == {"emotions", "prompts"}
     assert payload["instructions"] == {"memory": MEMORY_INSTRUCTION}
     assert context["instructions"]["memory"] == MEMORY_INSTRUCTION
     assert again["records"] == result["records"]
@@ -147,7 +147,7 @@ async def test_http_identity_is_optional_and_a_broken_file_fails_startup(
         result = await _context(client)
     assert result["context"]["identity"]["configured"] is configured
     assert result["context"]["identity"]["text"] == ""
-    assert result["injection"].startswith("<companion_state>")
+    assert result["injection"].startswith("<affect>")
 
 
 async def test_http_disabled_features_leave_the_injection_and_close_their_routes(tmp_path, config):
@@ -171,8 +171,8 @@ async def test_http_disabled_features_leave_the_injection_and_close_their_routes
         }
         health = await client.get("/health")
     assert stored["affect"] is None
-    assert (result["affect"], result["records"], result["search_hits"]) == (None, [], [])
-    assert result["evergreen_facts"] == []
+    assert (result["records"], result["search_hits"]) == ([], [])
+    assert result["context"]["blocks"] == {}
     assert result["context"]["identity"]["configured"] is False
     assert result["injection"].startswith("<companion_state>")
     assert set(_companion_payload(result["injection"])) == {"instructions", "session"}
@@ -210,7 +210,7 @@ async def test_http_stored_text_cannot_break_the_block_delimiters(tmp_path, conf
     assert "<evergreen_facts>" not in injection
     assert "\\u003c/FACTS\\u003e" in injection
     assert content in [item["text"] for item in _companion_payload(injection)["session"]]
-    assert result["context"]["memory"]["evergreen"] == result["evergreen_facts"]
+    assert [fact["key"] for fact in result["context"]["blocks"]["evergreen"]] == ["user.favorite"]
 
 
 async def test_http_evergreen_block_orders_by_priority_and_skips_expired_facts(config):
@@ -228,7 +228,7 @@ async def test_http_evergreen_block_orders_by_priority_and_skips_expired_facts(c
         replaced = await _remember(client, "user.units", "The user has no unit preference.")
         stale = await client.post(f"/state/v1/evergreen/facts/{fact['fact_id']}/revisions",
                                   json={"expected_revision": 2, "text": "The user prefers imperial units."})
-    keys = [item["key"] for item in result["evergreen_facts"]]
+    keys = [item["key"] for item in result["context"]["blocks"]["evergreen"]]
     assert keys == ["user.favorite", "user.timezone", "user.units"]
     assert result["injection"].startswith("<evergreen_facts>")
     assert result["injection"].index("<evergreen_facts>") < result["injection"].index("<companion_state>")
@@ -247,6 +247,6 @@ async def test_http_active_memos_reach_the_injection_and_archived_ones_do_not(co
         result = await _context(client)
     assert "<memo_notes>" in result["injection"]
     assert "Obsolete memo." not in result["injection"]
-    assert result["context"]["memory"]["memo_notes"] == [
+    assert result["context"]["blocks"]["memo"] == [
         {"id": active["id"], "text": "Draft the report.", "created_at": active["created_at"]}
     ]

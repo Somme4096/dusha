@@ -82,7 +82,7 @@ async def test_http_renamed_dimension_set_drives_affect_context_and_proactive(
         assert set(affect["base"]) == {"warmth", "worry", "spark"}
         assert affect["base"]["worry"] == pytest.approx(0.6, abs=0.01)
         context = (await client.post("/state/v1/context", json={"query": ""})).json()
-        description = context["context"]["emotion"]["description"]
+        description = context["context"]["blocks"]["affect"]["description"]
         assert "worry is elevated" in description
         assert "spark is noticeable" in description
         event = (await client.post("/state/v1/proactive/evaluate")).json()["event"]
@@ -104,7 +104,7 @@ async def test_http_renamed_dimension_set_drives_affect_context_and_proactive(
         assert affect["base"]["glow"] == 0.0
         context = await client.post("/state/v1/context", json={"query": ""})
         assert context.status_code == 200
-        assert "spark" not in context.json()["context"]["emotion"]["description"]
+        assert "spark" not in context.json()["context"]["blocks"]["affect"]["description"]
 
 
 async def test_http_proactive_stays_quiet_below_every_trigger(tmp_path, config, write_json):
@@ -163,7 +163,7 @@ async def test_http_value_range_scales_the_whole_engine(tmp_path, config, write_
                 json={"consumer": "e2e", "outcome": "sent"},
             )
             after = (await client.get("/state/v1/affect")).json()
-        return decision["increment"], affect, context["context"]["emotion"]["description"], event, after
+        return decision["increment"], affect, context["context"]["blocks"]["affect"]["description"], event, after
 
     unit_step, unit, unit_text, unit_event, unit_after = await run(CUSTOM, "unit")
     wide_step, scaled, wide_text, wide_event, wide_after = await run(wide, "wide")

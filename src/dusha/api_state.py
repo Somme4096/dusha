@@ -124,8 +124,8 @@ class MemoDoneInput(GatewayInput):
 
 def create_state_router(service: CompanionService, proactive: ProactiveEngine, authorized) -> APIRouter:
     router = APIRouter()
-    memory_store: MemoryStore = service._memory_fallback
-    evergreen_store: EvergreenStore = service._evergreen_fallback
+    memory_store: MemoryStore = service.messages
+    evergreen_store: EvergreenStore = service.evergreen
 
     def feature(name: str):
         async def check() -> None:

@@ -13,6 +13,7 @@ SCHEMA_VERSION = 2
 _TEXT_SLOTS = {
     "affect_presentation",
     "companion_state",
+    "affect",
     "evergreen",
     "context_blocks",
     "proactive_framing",
@@ -35,12 +36,8 @@ _SLOT_KEYS: dict[str, set[str]] = {
         "level_elevated",
         "level_noticeable",
     },
-    "companion_state": {
-        "open_delimiter",
-        "close_delimiter",
-        "affect_instruction",
-        "memory_instruction",
-    },
+    "companion_state": {"open_delimiter", "close_delimiter", "memory_instruction"},
+    "affect": {"open_delimiter", "close_delimiter", "instruction"},
     "evergreen": {"open_delimiter", "close_delimiter"},
     "context_blocks": {
         "memo_open_delimiter",

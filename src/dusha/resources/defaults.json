@@ -26,8 +26,7 @@
   "memory": {
     "recent_messages": 8,
     "search_hits": 4,
-    "context_messages": 1,
-    "plugin_context_max_chars": 3000
+    "context_messages": 1
   },
   "embedding": {
     "base_url": "",
@@ -51,6 +50,7 @@
   },
   "memory_plugin": {
     "module": "",
+    "context_max_chars": 3000,
     "options": {},
     "mods_dir": "",
     "timeout_seconds": 15.0,

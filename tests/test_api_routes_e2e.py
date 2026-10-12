@@ -10,7 +10,6 @@ import httpx
 import pytest
 
 from dusha import api, api_openai
-from dusha.config import AppConfig
 
 
 async def _run_inline(function, /, *args, **kwargs):
@@ -528,7 +527,7 @@ async def test_api_context_shape_and_same_state_auth(config, monkeypatch):
         )
     assert response.status_code == 200
     body = response.json()
-    assert set(body) == {"injection", "affect", "evergreen_facts", "records", "search_hits", "context"}
+    assert set(body) == {"injection", "records", "search_hits", "context"}
     assert "<companion_state>" in body["injection"]
 
     config.api_token = "secret-token"
@@ -613,7 +612,7 @@ async def test_configuration_export_commands_roundtrip(tmp_path):
     emotions.load_emotions(emotions_file)
 
     data = json.loads(prompts_file.read_text(encoding="utf-8"))
-    data["companion_state"]["affect_instruction"] = "SENTINEL_EXPORT"
+    data["affect"]["instruction"] = "SENTINEL_EXPORT"
     prompts_file.write_text(json.dumps(data), encoding="utf-8")
     cfg = AppConfig(
         data_dir=tmp_path / "data",

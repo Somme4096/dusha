@@ -115,30 +115,16 @@ class IdentityMetadata(ExtraAllow):
     revision: str
 
 
-class EmotionMetadata(ExtraAllow):
-    values: dict
-    description: str
-    preface: str
-    fingerprints: dict
-
-
-class MemoryMetadata(ExtraAllow):
-    evergreen: list
-    session: list
-
-
 class ContextMetadata(ExtraAllow):
     version: int
     identity: IdentityMetadata
     instructions: dict
-    memory: MemoryMetadata
-    emotion: EmotionMetadata | None = None
+    session: list
+    blocks: dict
 
 
 class ContextResponse(ExtraAllow):
     injection: str
-    affect: dict | None
-    evergreen_facts: list
     records: list
     search_hits: list
     context: ContextMetadata

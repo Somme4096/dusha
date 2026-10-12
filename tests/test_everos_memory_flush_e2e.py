@@ -404,7 +404,7 @@ async def test_flush_context_projects_source_labeled_episode_and_falls_back(
             json={"harness": "everos-flush-e2e", "conversation_id": "context", "query": "cobalt-orchid"},
         )
         assert response.status_code == 200, response.text
-        plugin_context = response.json()["context"]["memory"].get("plugin_context")
+        plugin_context = response.json()["context"]["blocks"].get("everos_memory")
         assert plugin_context is not None, response.text
         assert isinstance(plugin_context.get("source"), str) and plugin_context["source"]
         records = plugin_context.get("records") or []

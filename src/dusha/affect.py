@@ -11,8 +11,11 @@ from typing import Any
 from . import emotions as _emotions
 from . import prompts as _prompts
 from .affect_semantic import SemanticAppraisal
-from .config import AffectConfig
+from .config import AppConfig
 from .database import Database
+from .decision import DecisionProvider
+from .embedding import OpenAIEmbeddingClient
+from .hooks import Block, ContextRequest, Contributor, render
 from .serialization import compact_json
 from .timeutil import isoformat, parse_time, utc_now
 
@@ -21,20 +24,25 @@ logger = logging.getLogger("dusha")
 Decider = Callable[..., "str | None"]
 PhraseMatcher = Callable[[str], dict[str, float] | None]
 
-class AffectEngine:
-    def __init__(
-        self,
-        database: Database,
-        config: AffectConfig,
-        prompts: dict[str, Any] | None = None,
-        decision_increment: float | None = None,
-        appraisal: SemanticAppraisal | None = None,
-    ):
+class AffectEngine(Contributor):
+    name = "affect"
+
+    def __init__(self, database: Database, config: AppConfig, prompts: dict[str, Any]):
         self.database = database
-        self.config = config
-        self.appraisal = appraisal
+        self.config = config.affect
+        self.prompts = prompts
+        self.prompts_fingerprint = _prompts.fingerprint(prompts)
+        self.decision = DecisionProvider(config)
+        self.phrase_matcher: PhraseMatcher | None = None
+        self.appraisal = (
+            SemanticAppraisal(OpenAIEmbeddingClient(config.embedding))
+            if config.embedding.base_url and config.embedding.model
+            else None
+        )
         self._lock = threading.RLock()
-        self.emotions = _emotions.resolve_emotions(config, decision_increment=decision_increment)
+        self.emotions = _emotions.resolve_emotions(
+            config.affect, config.proactive, config.decision.increment
+        )
         self.emotions_version = str(self.emotions["emotion_version"])
         self.emotions_fingerprint = _emotions.fingerprint(self.emotions)
         self.spec = {name: values.copy() for name, values in self.emotions["dimensions"].items()}
@@ -42,11 +50,9 @@ class AffectEngine:
         self.value_min = float(value_range["min"])
         self.value_max = float(value_range["max"])
         self.value_span = self.value_max - self.value_min
-        self.affect_presentation = dict(
-            (prompts or _prompts.default_prompts())["affect_presentation"]
-        )
-        if appraisal is not None:
-            appraisal.configure(self.emotions["appraisal"])
+        self.affect_presentation = dict(prompts["affect_presentation"])
+        if self.appraisal is not None:
+            self.appraisal.configure(self.emotions["appraisal"])
 
     def initial_state(self) -> dict[str, Any]:
         base = {name: values["neutral"] for name, values in self.spec.items()}
@@ -179,21 +185,22 @@ class AffectEngine:
         *,
         message: str,
         source_message_id: int | None,
-        decider: Decider | None,
-        instruction: str,
+        decider: Decider | None = None,
+        instruction: str | None = None,
         phrase_matcher: PhraseMatcher | None = None,
         now: datetime | None = None,
     ) -> dict[str, Any] | None:
+        if decider is None and self.decision.enabled:
+            decider = self.decision.evaluate
+        if instruction is None:
+            instruction = str(self.prompts["decision_instruction"])
+        if phrase_matcher is None:
+            phrase_matcher = self.phrase_matcher
         requested = now if now is not None else utc_now()
         with self._lock, self.database.connect() as db:
             row, state = self._load_row(db, requested)
             current = max(requested, parse_time(row["last_updated_at"]))
             self._advance(row, state, current)
-            db.execute(
-                "UPDATE proactive_events SET status='cancelled', updated_at=? "
-                "WHERE status IN ('pending','leased')",
-                (isoformat(current),),
-            )
             self._save(db, state, current, last_interaction_at=isoformat(current))
             db.execute(
                 """UPDATE affect_state SET
@@ -276,6 +283,30 @@ class AffectEngine:
             "decision_id": decision_id,
             "state": public,
         }
+
+    def on_message(self, message: dict[str, Any]) -> dict[str, Any] | None:
+        if message.get("role") != "user":
+            return None
+        return self.record_user_message(
+            message=message["text"],
+            source_message_id=message["id"],
+            now=parse_time(message["occurred_at"]),
+        )
+
+    def on_context(self, request: ContextRequest) -> Block:
+        snapshot = self.status()
+        slot = self.prompts["affect"]
+        data = {
+            "values": {"base": snapshot["base"], "mood": snapshot["mood"]},
+            "description": self.describe(snapshot),
+            "preface": slot["instruction"],
+            "fingerprints": {"emotions": self.emotions_fingerprint, "prompts": self.prompts_fingerprint},
+        }
+        return render(self.name, slot["open_delimiter"], data, slot["close_delimiter"])
+
+    def close(self) -> None:
+        if self.appraisal is not None:
+            self.appraisal.client.close()
 
     def status(self, now: datetime | None = None) -> dict[str, Any]:
         current = now or utc_now()

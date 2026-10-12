@@ -34,7 +34,7 @@ async def _scheduler(proactive: ProactiveEngine, interval: int) -> None:
 async def _ingest_scheduler(service: CompanionService, interval: int) -> None:
     while True:
         try:
-            await asyncio.to_thread(service.catch_up_plugin)
+            await asyncio.to_thread(service.memory.catch_up)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -58,16 +58,18 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     expected_token = cfg.api_token
     auth_enabled = bool(expected_token)
     service = CompanionService(cfg)
-    proactive = ProactiveEngine(service, cfg)
+    proactive = service.proactive
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
-        tasks = [
-            asyncio.create_task(
-                _scheduler(proactive, cfg.proactive.poll_interval_seconds),
-                name="proactive-evaluator",
+        tasks = []
+        if cfg.features.proactive:
+            tasks.append(
+                asyncio.create_task(
+                    _scheduler(proactive, cfg.proactive.poll_interval_seconds),
+                    name="proactive-evaluator",
+                )
             )
-        ]
         if service.memory.enabled:
             tasks.append(
                 asyncio.create_task(

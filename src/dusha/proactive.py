@@ -3,14 +3,16 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
-from . import emotions as _emotions
 from .config import AppConfig
+from .hooks import Contributor
 from .serialization import compact_json
-from .service import CompanionService
 from .timeutil import isoformat, parse_time, utc_now
+
+if TYPE_CHECKING:
+    from .service import CompanionService
 
 
 def format_silence(minutes: float) -> str:
@@ -69,19 +71,30 @@ def build_proactive_instruction(
     return f"{base.rstrip()}\n{ruling}\n{ladder}\n{approach}"
 
 
-class ProactiveEngine:
+class ProactiveEngine(Contributor):
+    name = "proactive"
+
     def __init__(self, service: CompanionService, config: AppConfig):
         self.service = service
         self.database = service.database
         self.config = config
         self.rules = config.proactive
         self.timezone = ZoneInfo(config.timezone)
-        effective = _emotions.resolve_emotions(
-            service.affect.config, config.proactive, config.decision.increment
-        )
-        self._emotional = effective["proactive"]
-        service.affect.emotions = effective
-        service.affect.emotions_fingerprint = _emotions.fingerprint(effective)
+
+    @property
+    def _emotional(self) -> dict[str, Any]:
+        return self.service.affect.emotions["proactive"]
+
+    def on_message(self, message: dict[str, Any]) -> None:
+        if message.get("role") != "user":
+            return None
+        with self.database.connect() as db:
+            db.execute(
+                "UPDATE proactive_events SET status='cancelled', updated_at=? "
+                "WHERE status IN ('pending','leased')",
+                (message["occurred_at"],),
+            )
+        return None
 
     def _quiet(self, now: datetime) -> bool:
         hour = now.astimezone(self.timezone).hour

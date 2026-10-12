@@ -92,7 +92,6 @@ _BOUNDS: dict[str, dict[str, tuple[float | None, float | None]]] = {
         "recent_messages": (0, None),
         "search_hits": (0, None),
         "context_messages": (0, None),
-        "plugin_context_max_chars": (0, None),
     },
     "evergreen": {"max_items": (0, None), "max_chars": (0, None)},
     "memo": {
@@ -112,6 +111,7 @@ _BOUNDS: dict[str, dict[str, tuple[float | None, float | None]]] = {
         "lease_seconds": (1, None),
         "retry_delay_minutes": (0, None),
     },
+    "memory_plugin": {"context_max_chars": (0, None)},
 }
 _EXCLUSIVE_ZERO = {"timeout_seconds"}
 
@@ -168,7 +168,6 @@ class MemoryConfig:
     recent_messages: int = _MEMORY["recent_messages"]
     search_hits: int = _MEMORY["search_hits"]
     context_messages: int = _MEMORY["context_messages"]
-    plugin_context_max_chars: int = _MEMORY["plugin_context_max_chars"]
 
     def __post_init__(self) -> None:
         _check_bounds(self, "memory")
@@ -249,6 +248,7 @@ class DecisionConfig:
 @dataclass(slots=True)
 class MemoryPluginConfig:
     module: str = _MEMORY_PLUGIN["module"]
+    context_max_chars: int = _MEMORY_PLUGIN["context_max_chars"]
     options: dict[str, Any] = field(default_factory=lambda: dict(_MEMORY_PLUGIN["options"]))
     mods_dir: str = _MEMORY_PLUGIN["mods_dir"]
     timeout_seconds: float = _MEMORY_PLUGIN["timeout_seconds"]

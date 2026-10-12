@@ -133,7 +133,8 @@ The overlay replaces whole slots. A slot you include must carry every key of tha
 | Slot | Holds |
 | --- | --- |
 | `affect_presentation` | Wording of the Affect line. |
-| `companion_state` | Delimiters and instructions for the state block. |
+| `companion_state` | Delimiters and the memory instruction for the state block. |
+| `affect` | Delimiters and the instruction for the affect block. |
 | `evergreen` | Delimiters for the fact block. |
 | `context_blocks` | Delimiters for the memo and memory plugin blocks. |
 | `proactive_framing` | `ruling`, `ladder`, `approach`, and `context_query` for proactive messages. |
@@ -156,7 +157,6 @@ Search is lexical and uses SQLite FTS5.
 | `memory.recent_messages` | `8` | Recent messages in the injection. |
 | `memory.search_hits` | `4` | |
 | `memory.context_messages` | `1` | Neighbors added around each search hit. |
-| `memory.plugin_context_max_chars` | `3000` | Cap for the memory plugin block. |
 | `evergreen.max_items` | `32` | |
 | `evergreen.max_chars` | `4000` | |
 | `memo.max_items` | `10` | Memos per injection. |
@@ -203,6 +203,7 @@ Each section has keys of its own:
 | `decision.increment` | `null` | Replaces `decision.increment` from `emotions.json`. A per-dimension `increment` in that file still wins. |
 | `memory_plugin.ingest_batch_size` | `50` | 1 to 500. |
 | `memory_plugin.ingest_backfill_interval_seconds` | `30` | Retry interval for messages the plugin missed. |
+| `memory_plugin.context_max_chars` | `3000` | Cap for the plugin's context block. |
 
 Plugins run as child processes with your OS permissions and no sandbox. Install plugins you wrote or reviewed. The gateway logs a failing plugin and keeps storing messages without it.
 

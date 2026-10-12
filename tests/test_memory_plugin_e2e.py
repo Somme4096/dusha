@@ -337,7 +337,7 @@ async def test_plugin_context_is_source_labeled_across_restart_and_falls_back(co
             json={"harness": "e2e", "conversation_id": "transition", "query": "transition"},
         )
         assert context.status_code == 200, context.text
-        plugin_context = context.json()["context"]["memory"].get("plugin_context")
+        plugin_context = context.json()["context"]["blocks"].get("generic_memory")
         assert plugin_context is not None, context.text
         assert plugin_context["source"]
         blob = json.dumps(plugin_context)
@@ -360,7 +360,7 @@ async def test_plugin_context_is_source_labeled_across_restart_and_falls_back(co
             json={"harness": "e2e", "conversation_id": "transition", "query": "transition"},
         )
         assert context.status_code == 200, context.text
-        plugin_context = context.json()["context"]["memory"].get("plugin_context")
+        plugin_context = context.json()["context"]["blocks"].get("generic_memory")
         assert plugin_context is not None, context.text
         assert "GENERIC_PLUGIN_RECORD" in json.dumps(plugin_context)
 
@@ -376,4 +376,4 @@ async def test_plugin_context_is_source_labeled_across_restart_and_falls_back(co
             "Core lexical retrieval keeps the transition marker." in item["text"]
             for item in body["records"]
         )
-        assert body["context"]["memory"].get("plugin_context") is None
+        assert body["context"]["blocks"].get("generic_memory") is None

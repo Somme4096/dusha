@@ -7,6 +7,7 @@ from typing import Any
 
 from . import prompts as _prompts
 from .database import Database
+from .hooks import Block, ContextRequest, Contributor
 from .serialization import safe_json
 from .timeutil import isoformat, parse_time, utc_now
 
@@ -19,10 +20,24 @@ class EvergreenConflict(ValueError):
     pass
 
 
-class EvergreenStore:
+class EvergreenStore(Contributor):
+    name = "evergreen"
 
-    def __init__(self, database: Database):
+    def __init__(self, database: Database, config: Any = None, prompts: dict[str, Any] | None = None):
         self.database = database
+        self.config = config
+        self.delimiters = (prompts or {}).get("evergreen") or _DEFAULT_EVERGREEN
+
+    def on_context(self, request: ContextRequest) -> Block | None:
+        if self.config is None:
+            return None
+        text, facts = self.render(
+            self.config.max_items,
+            self.config.max_chars,
+            open_delimiter=self.delimiters["open_delimiter"],
+            close_delimiter=self.delimiters["close_delimiter"],
+        )
+        return Block(self.name, text, facts) if facts else None
 
     def remember(
         self,

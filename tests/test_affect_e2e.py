@@ -60,7 +60,7 @@ async def _affect(client):
 
 async def _description(client):
     response = await client.post("/state/v1/context", json={"query": ""})
-    return response.json()["context"]["emotion"]["description"]
+    return response.json()["context"]["blocks"]["affect"]["description"]
 
 
 async def test_http_affect_starts_at_neutral_and_stays_there_without_a_decision_source(config):

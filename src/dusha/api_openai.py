@@ -334,7 +334,7 @@ async def _ingest_transcript(
         )
         if message["role"] == "user":
             current_message_id = result["id"]
-            stored = service._memory_fallback.get(current_message_id)
+            stored = service.messages.get(current_message_id)
             current_query = stored["text"]
     return transcript_key, current_message_id, current_query
 
