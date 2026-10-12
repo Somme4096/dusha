@@ -116,7 +116,7 @@ def contract_plugin(tmp_path_factory: pytest.TempPathFactory) -> Path:
 def _config(tmp_path: Path, mods: Path, *, fail: bool = False) -> AppConfig:
     return AppConfig(
         data_dir=tmp_path / "data",
-        memory=MemoryConfig(recent_messages=8, search_hits=8, context_messages=1, injection_max_chars=20_000),
+        memory=MemoryConfig(recent_messages=8, search_hits=8, context_messages=1),
         memory_plugin=MemoryPluginConfig(
             module="contract_memory",
             mods_dir=str(mods),

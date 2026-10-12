@@ -242,7 +242,6 @@ def _config(
             recent_messages=8,
             search_hits=8,
             context_messages=1,
-            injection_max_chars=20_000,
         ),
         evergreen=EvergreenConfig(enabled=True, max_items=32, max_chars=4_000),
         memory_plugin=MemoryPluginConfig(

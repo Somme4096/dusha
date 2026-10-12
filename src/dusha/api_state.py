@@ -7,7 +7,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
 from . import schema as _schema
-from .context import ContextBudgetError
 from .evergreen import EvergreenConflict, EvergreenStore
 from .memory import MemoryStore
 from .proactive import ProactiveEngine
@@ -409,7 +408,7 @@ def create_state_router(service: CompanionService, proactive: ProactiveEngine, a
             conversation_id=body.conversation_id,
             exclude_message_ids=set(body.exclude_message_ids),
             include_recent=body.include_recent,
-            errors=(ContextBudgetError,),
+            errors=(),
         )
 
     @router.get(

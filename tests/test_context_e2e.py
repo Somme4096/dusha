@@ -210,19 +210,3 @@ async def test_http_active_memos_reach_the_injection_and_archived_ones_do_not(co
     assert result["context"]["memory"]["memo_notes"] == [
         {"id": active["id"], "text": "Draft the report.", "created_at": active["created_at"]}
     ]
-
-
-async def test_http_small_budget_trims_session_records_and_keeps_evergreen_facts(config):
-    config.memory = MemoryConfig(
-        recent_messages=8, search_hits=4, context_messages=1, injection_max_chars=1900
-    )
-    async with _running(config) as client:
-        await _remember(client, "user.favorite", "A fact with a moderately long body.")
-        for index in range(6):
-            await _say(client, f"Record number {index} with a long enough body to count.")
-        result = await _context(client)
-    assert len(result["injection"]) <= 1900
-    assert [item["key"] for item in result["evergreen_facts"]] == ["user.favorite"]
-    assert "A fact with a moderately long body." in result["injection"]
-    assert 0 < len(result["records"]) < 6
-    assert _companion_payload(result["injection"])["session"] == result["records"]

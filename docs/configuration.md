@@ -144,7 +144,6 @@ Search is lexical and uses SQLite FTS5.
 | `memory.recent_messages` | `8` | Recent messages in the injection. |
 | `memory.search_hits` | `4` | |
 | `memory.context_messages` | `1` | Neighbors added around each search hit. |
-| `memory.injection_max_chars` | `12000` | Cap for the whole injection. See [Build context](api.md#2-build-context) for the fill order. |
 | `memory.plugin_context_max_chars` | `3000` | Cap for the memory plugin block. |
 | `evergreen.enabled` | `true` | |
 | `evergreen.max_items` | `32` | |

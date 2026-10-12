@@ -145,7 +145,6 @@ def _config(
     tmp_path: Path,
     *,
     mods: Path,
-    injection_max_chars: int = 20_000,
     plugin_context_max_chars: int = 3_000,
 ) -> AppConfig:
     return AppConfig(
@@ -154,7 +153,6 @@ def _config(
             recent_messages=8,
             search_hits=8,
             context_messages=1,
-            injection_max_chars=injection_max_chars,
             plugin_context_max_chars=plugin_context_max_chars,
         ),
         evergreen=EvergreenConfig(enabled=True, max_items=32, max_chars=4_000),
@@ -316,15 +314,10 @@ def test_cli_reports_storage_unavailable(tmp_path: Path):
     _assert_cli_unavailable(_cli(config_path, "evergreen", "remember", "key", "value"))
 
 
-async def test_plugin_injects_context_within_budget_without_displacing_builtin_facts(
+async def test_plugin_injects_context_alongside_builtin_facts(
     tmp_path: Path, boundary_plugin: Path
 ):
-    config = _config(
-        tmp_path,
-        mods=boundary_plugin,
-        injection_max_chars=3_000,
-        plugin_context_max_chars=500,
-    )
+    config = _config(tmp_path, mods=boundary_plugin, plugin_context_max_chars=500)
 
     async with _client(config) as (client, _):
         await _ingest(client, "vault", "VAULT_RECENT_MARKER")
@@ -343,7 +336,6 @@ async def test_plugin_injects_context_within_budget_without_displacing_builtin_f
         assert "BOUNDARY_FACT_MARKER" in injection
         assert "BOUNDARY_PLUGIN_CONTEXT" in injection
         assert "VAULT_RECENT_MARKER" in injection
-        assert len(injection) <= 3_000
 
 
 async def test_health_and_index_report_lexical_only_without_plugin(tmp_path: Path):

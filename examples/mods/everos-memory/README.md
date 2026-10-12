@@ -67,7 +67,7 @@ remains pending.
 
 ## Context injection
 
-The gateway calls `inject_context` with a query, a scope, a character budget,
+The gateway calls `inject_context` with a query, a scope, a character cap,
 and the harness plus external conversation id. The plugin resolves the exact
 `(harness, conversation id)` pair to an EverOS session, then searches
 `POST /api/v2/memory/search` with `method: "keyword"` and an exact session

@@ -742,25 +742,24 @@ async def test_chat_turn_keeps_context_when_message_storage_fails(config):
 
 
 async def test_chat_turn_survives_a_failed_context_call(config):
-    config.memory.injection_max_chars = 1
     async with _running(config) as rig:
         plugin = await rig.plugin()
+        plugin.gateway.failures = {"/state/v1/context": 500}
         logger.messages.clear()
-        request = await _chat(plugin, "context budget is too small", "m-1", reply="still answering")
+        request = await _chat(plugin, "the context call was refused", "m-1", reply="still answering")
         assert request.system_prompt == "persona"
         assert plugin.gateway.calls[:2] == [
             ("POST", "/state/v1/messages", 200),
-            ("POST", "/state/v1/context", 422),
+            ("POST", "/state/v1/context", None),
         ]
         assert len(logger.messages) == 1 and "Context unavailable" in logger.messages[0]
         stored = await rig.json("GET", f"/state/v1/messages/{plugin.latest_source_message_ids[ROUTE]}")
-        assert stored["text"] == "context budget is too small"
-        assert [item["text"] for item in await rig.search("budget answering")] == [
-            "context budget is too small",
+        assert stored["text"] == "the context call was refused"
+        assert [item["text"] for item in await rig.search("refused answering")] == [
+            "the context call was refused",
             "still answering",
         ]
 
-    config.memory.injection_max_chars = 20_000
     async with _running(config) as rig:
         plugin = await rig.plugin()
         plugin.gateway.failures = {"/state/v1/context": httpx.ReadTimeout("context timed out")}

@@ -76,13 +76,11 @@ class CompanionService:
         )
         self.composer = ContextComposer(
             prompts=self.prompts,
-            budget=config.memory.injection_max_chars,
             identity_text=self.identity_text,
             identity_configured=self.identity_configured,
             identity_revision=self.identity_revision,
             emotions_fingerprint=self.affect.emotions_fingerprint,
             prompts_fingerprint=self.prompts_fingerprint,
-            plugin_context_max_chars=config.memory.plugin_context_max_chars,
             memo_max_items=config.memo.max_items,
             memo_max_chars=config.memo.max_chars,
         )

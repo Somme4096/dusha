@@ -13,7 +13,6 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 
 from .config import AppConfig
-from .context import ContextBudgetError
 from .memory import text_from_content
 from .serialization import canonical
 from .service import CompanionService
@@ -106,17 +105,14 @@ def create_openai_router(cfg: AppConfig, service: CompanionService, authorized) 
             route=route,
         )
 
-        try:
-            state_context = await asyncio.to_thread(
-                service.build_context,
-                query=current_query,
-                harness=harness,
-                conversation_id=conversation_id,
-                exclude_message_ids={current_message_id} if current_message_id else set(),
-                include_recent=False,
-            )
-        except ContextBudgetError as error:
-            raise HTTPException(status_code=422, detail=str(error)) from error
+        state_context = await asyncio.to_thread(
+            service.build_context,
+            query=current_query,
+            harness=harness,
+            conversation_id=conversation_id,
+            exclude_message_ids={current_message_id} if current_message_id else set(),
+            include_recent=False,
+        )
         body["messages"] = _inject_context(messages, state_context["injection"])
         if body.get("stream"):
             return await _proxy_stream(

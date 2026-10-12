@@ -96,11 +96,7 @@ The response carries `injection`, `affect`, `evergreen_facts`, `records`, `searc
 
 You can rename the delimiters in [prompts.json](configuration.md#promptsjson). The serializer escapes `&`, `<`, and `>` in stored text.
 
-The injection fits `memory.injection_max_chars`:
-
-- The identity and the companion state block never shrink. If the two exceed the budget, the endpoint returns `422`.
-- The remaining space fills in order: evergreen facts, memos, the memory plugin block, then session records.
-- Each list stops at the first item that does not fit.
+The injection has no overall cap. Each part has its own limit in [config.json](configuration.md#overrides-in-configjson).
 
 ### 3. Call the provider
 

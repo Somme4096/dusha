@@ -10,7 +10,7 @@ import httpx
 import pytest
 
 from dusha import api, api_openai
-from dusha.config import AppConfig, IdentityPromptConfig, MemoryConfig
+from dusha.config import AppConfig
 
 
 async def _run_inline(function, /, *args, **kwargs):
@@ -54,17 +54,6 @@ def _chat(client, messages, headers=None, **extra):
         "/v1/chat/completions",
         json={"model": "upstream", "messages": messages, **extra},
         headers=headers,
-    )
-
-
-def _budget_cfg(tmp_path):
-    identity_path = tmp_path / "identity.md"
-    identity_path.write_text("IDENTITY_SENTINEL text", encoding="utf-8")
-    return AppConfig(
-        data_dir=tmp_path / "data",
-        timezone="Asia/Taipei",
-        memory=MemoryConfig(recent_messages=2, search_hits=4, context_messages=1, injection_max_chars=64),
-        identity_prompt=IdentityPromptConfig(path=str(identity_path)),
     )
 
 
@@ -553,7 +542,7 @@ async def test_api_context_shape_and_same_state_auth(config, monkeypatch):
     assert allowed.json()["context"]["identity"]["configured"] is False
 
 
-async def test_api_context_budget_and_validation_errors(config, monkeypatch, tmp_path):
+async def test_api_context_validation_errors(config):
     async with _client(api.create_app(config)) as client:
         invalid = await client.post("/state/v1/context", json={"query": 123})
     assert invalid.status_code == 422
@@ -563,12 +552,6 @@ async def test_api_context_budget_and_validation_errors(config, monkeypatch, tmp
     for item in detail:
         assert isinstance(item, dict)
         assert {"loc", "msg", "type"} <= set(item)
-    async with _client(api.create_app(_budget_cfg(tmp_path))) as client:
-        budget = await client.post("/state/v1/context", json={"query": ""})
-    assert budget.status_code == 422
-    budget_detail = budget.json()["detail"]
-    assert isinstance(budget_detail, str)
-    assert "too small for mandatory identity and companion" in budget_detail
 
 
 DOC_FILES = [

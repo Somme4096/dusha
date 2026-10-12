@@ -92,7 +92,6 @@ _BOUNDS: dict[str, dict[str, tuple[float | None, float | None]]] = {
         "recent_messages": (0, None),
         "search_hits": (0, None),
         "context_messages": (0, None),
-        "injection_max_chars": (1, None),
         "plugin_context_max_chars": (0, None),
     },
     "evergreen": {"max_items": (0, None), "max_chars": (0, None)},
@@ -169,7 +168,6 @@ class MemoryConfig:
     recent_messages: int = _MEMORY["recent_messages"]
     search_hits: int = _MEMORY["search_hits"]
     context_messages: int = _MEMORY["context_messages"]
-    injection_max_chars: int = _MEMORY["injection_max_chars"]
     plugin_context_max_chars: int = _MEMORY["plugin_context_max_chars"]
 
     def __post_init__(self) -> None:
