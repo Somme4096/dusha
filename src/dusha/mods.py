@@ -125,7 +125,7 @@ class Mod(Contributor):
         self.blocks = prompts["context_blocks"]
         self.timeout = float(settings.timeout_seconds)
         self.passthrough = tuple(settings.env_passthrough)
-        self.options = dict(settings.options)
+        self.options = {**dict(settings.options), "context_max_chars": int(settings.context_max_chars)}
         self.exports: frozenset[str] = frozenset()
         self.error = ""
         self.suite: Path | None = None
@@ -165,10 +165,15 @@ class Mod(Contributor):
         self.responses = queue.Queue()
         threading.Thread(target=self._read, args=(self.proc, self.responses), daemon=True).start()
         threading.Thread(target=self._drain_stderr, args=(self.proc,), daemon=True).start()
-        handshake = self._call_locked("start", {"options": copy.deepcopy(self.options)})
-        exports = handshake.get("exports") if isinstance(handshake, dict) else None
-        if not isinstance(exports, list):
-            raise ModError("mod returned an invalid start response")
+        try:
+            handshake = self._call_locked("start", {"options": copy.deepcopy(self.options)})
+            exports = handshake.get("exports") if isinstance(handshake, dict) else None
+            if not isinstance(exports, list):
+                raise ModError("mod returned an invalid start response")
+        except ModError:
+            if self.proc.poll() is None:
+                _terminate(self.proc)
+            raise
         self.exports = frozenset(str(item) for item in exports)
         self.error = ""
 
@@ -237,9 +242,9 @@ class Mod(Contributor):
     def _cursor(self) -> int:
         with self.database.connect() as db:
             row = db.execute(
-                "SELECT last_acknowledged_id FROM plugin_ingest_state WHERE plugin=?", (self.name,)
+                "SELECT last_delivered_id FROM mod_delivery_state WHERE mod=?", (self.name,)
             ).fetchone()
-        return int(row["last_acknowledged_id"]) if row else 0
+        return int(row["last_delivered_id"]) if row else 0
 
     def _deliver_locked(self) -> dict[str, Any]:
         cursor = self._cursor()
@@ -254,10 +259,10 @@ class Mod(Contributor):
             delivered += 1
             with self.database.connect() as db:
                 db.execute(
-                    """INSERT INTO plugin_ingest_state(plugin, last_acknowledged_id, updated_at)
+                    """INSERT INTO mod_delivery_state(mod, last_delivered_id, updated_at)
                        VALUES(?,?,?)
-                       ON CONFLICT(plugin) DO UPDATE SET
-                         last_acknowledged_id=excluded.last_acknowledged_id,
+                       ON CONFLICT(mod) DO UPDATE SET
+                         last_delivered_id=excluded.last_delivered_id,
                          updated_at=excluded.updated_at""",
                     (self.name, cursor, isoformat(utc_now())),
                 )
@@ -268,7 +273,7 @@ class Mod(Contributor):
         if "on_context" not in self.exports or cap <= 0:
             return None
         try:
-            result = self.call("on_context", {"request": {**asdict(request), "max_chars": cap}})
+            result = self.call("on_context", {"request": asdict(request)})
         except ModError as error:
             logger.warning("%s on_context failed: %s", self.name, error)
             return None
@@ -327,16 +332,19 @@ class Mod(Contributor):
         return report
 
     def status(self) -> dict[str, Any]:
-        report: dict[str, Any] = {
-            "loaded": self.loaded,
-            "exports": sorted(self.exports),
-            "error": self.error,
-            "status": None,
-        }
-        try:
-            report["status"] = self.call("status")
-        except ModError as error:
-            report["error"] = str(error)
+        with self._lock:
+            report: dict[str, Any] = {
+                "loaded": self.loaded,
+                "exports": sorted(self.exports),
+                "error": self.error,
+                "status": None,
+            }
+            if report["loaded"] and "status" in self.exports:
+                try:
+                    report["status"] = self._call_locked("status", {})
+                except ModError as error:
+                    report["error"] = str(error)
+                    report["loaded"] = self.loaded
         return report
 
     def close(self) -> None:

@@ -44,13 +44,13 @@ Integrations (e.g. opencode-dusha) send each message to `dusha` and add its cont
 
 ## Mod API
 
-A mod is a directory under the mods directory holding `README.md`, `main.py`, `pyproject.toml`, and `uv.lock`. The gateway runs `main.py` in its own `uv` environment as a long-lived child process and calls the hooks it exports. Every hook is optional. `options` is the mod's `options` object from `config.json` plus `database_path`.
+A mod is a directory under the mods directory holding `README.md`, `main.py`, `pyproject.toml`, and `uv.lock`. The gateway runs `main.py` in its own `uv` environment as a long-lived child process and calls the hooks it exports. Every hook is optional. `options` is the mod's `options` object from `config.json` plus `database_path` and `context_max_chars`.
 
 | Hook | Called | Request | Returns |
 | --- | --- | --- | --- |
 | `start(options)` | Once when the mod loads, and again after a restart | | ignored |
 | `on_message(message, options)` | For every stored message, in id order | The stored row: `id`, `conversation_id`, `role`, `text`, `content`, `external_id`, `occurred_at`, `ingested_at`, `sha256`, `harness`, `external_conversation_id`, `route` | ignored. An exception leaves the message undelivered, and the gateway retries it before any later one |
-| `on_context(request, options)` | For every context build | `query`, `harness`, `conversation_id`, `max_chars` | `{"text": "...", "records": [{"source": "...", "text": "..."}]}` or `None` |
+| `on_context(request, options)` | For every context build | `query`, `harness`, `conversation_id` | `{"text": "...", "records": [{"source": "...", "text": "..."}]}` or `None` |
 | `decide(request, options)` | For every new user message while affect is on | `message`, `emotions` (the resolved dimensions), `state` (the affect snapshot), `instruction` | `{"emotion": "<dimension>"}`, `{"deltas": {"<dimension>": <number>}}`, both, or `None` |
 | `tick(options)` | Every `mods.tick_interval_seconds` | | ignored |
 | `status(options)` | On `GET /state/v1/mods` and `dusha mods status` | | any JSON value |

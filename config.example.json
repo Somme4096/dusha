@@ -51,6 +51,11 @@
     "text_max_chars": 4000,
     "reason_max_chars": 1000
   },
+  "mods": {
+    "dir": "",
+    "tick_interval_seconds": 10,
+    "modules": {}
+  },
   "proactive": {
     "poll_interval_seconds": 60,
     "min_silence_minutes": 180,
@@ -61,10 +66,5 @@
     "quiet_end_hour": 8,
     "lease_seconds": 120,
     "retry_delay_minutes": 15
-  },
-  "mods": {
-    "dir": "",
-    "tick_interval_seconds": 10,
-    "modules": {}
   }
 }

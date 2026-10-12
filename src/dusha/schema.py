@@ -36,13 +36,6 @@ class MessageResponse(ExtraAllow):
     route: str
 
 
-class ModStatus(ExtraAllow):
-    loaded: bool
-    exports: list[str]
-    error: str
-    status: Any
-
-
 class ModsStatus(ExtraAllow):
     pass
 

@@ -53,8 +53,8 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         if service.mods:
             tasks.append(
                 asyncio.create_task(
-                    _scheduler(service.tick_mods, cfg.mods.tick_interval_seconds, "mod tick"),
-                    name="mod-tick",
+                    _scheduler(service.tick, cfg.mods.tick_interval_seconds, "tick"),
+                    name="tick",
                 )
             )
         try:

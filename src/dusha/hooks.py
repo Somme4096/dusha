@@ -53,6 +53,12 @@ class Contributor:
     def decide(self, request: DecisionRequest) -> dict[str, Any] | None:
         return None
 
+    def tick(self) -> Any:
+        return None
+
+    def status(self) -> Any:
+        return None
+
 
 class Registry:
     def __init__(self) -> None:
@@ -98,6 +104,24 @@ class Registry:
             if block is not None:
                 blocks.append(block)
         return blocks
+
+    def tick(self) -> dict[str, Any]:
+        return self._collect("tick")
+
+    def status(self) -> dict[str, Any]:
+        return self._collect("status")
+
+    def _collect(self, hook: str) -> dict[str, Any]:
+        results: dict[str, Any] = {}
+        for contributor in self.items:
+            try:
+                value = getattr(contributor, hook)()
+            except Exception:
+                logger.exception("%s %s failed", contributor.name, hook)
+                continue
+            if value is not None:
+                results[contributor.name] = value
+        return results
 
     def dispatch_decision(
         self, request: DecisionRequest, skip: Contributor | None = None

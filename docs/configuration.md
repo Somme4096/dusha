@@ -195,7 +195,7 @@ Each entry under `mods.modules` takes these keys:
 | Key | Default | Notes |
 | --- | --- | --- |
 | `timeout_seconds` | `15` | Deadline per hook call. Keep it above any HTTP timeout in `options`. |
-| `context_max_chars` | `3000` | Cap for the mod's context block. `0` skips `on_context`. |
+| `context_max_chars` | `3000` | Cap for the mod's context block, also passed as `options.context_max_chars`. `0` skips `on_context`. |
 | `env_passthrough` | `[]` | Environment variables the mod may read, such as a proxy setting. |
 | `options` | `{}` | Passed to every hook as written. |
 

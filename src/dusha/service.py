@@ -173,8 +173,8 @@ class CompanionService:
     def mods_status(self) -> dict[str, Any]:
         return {mod.name: mod.status() for mod in self.mods}
 
-    def tick_mods(self) -> dict[str, Any]:
-        return {mod.name: mod.tick() for mod in self.mods}
+    def tick(self) -> dict[str, Any]:
+        return self.hooks.tick()
 
     def memory_reindex(self) -> dict[str, Any]:
         self.messages.rebuild_index()

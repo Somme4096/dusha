@@ -143,9 +143,9 @@ CREATE TABLE IF NOT EXISTS proactive_events (
 CREATE INDEX IF NOT EXISTS proactive_events_poll
 ON proactive_events(status, available_at, created_at);
 
-CREATE TABLE IF NOT EXISTS plugin_ingest_state (
-    plugin TEXT PRIMARY KEY,
-    last_acknowledged_id INTEGER NOT NULL DEFAULT 0 CHECK(last_acknowledged_id >= 0),
+CREATE TABLE IF NOT EXISTS mod_delivery_state (
+    mod TEXT PRIMARY KEY,
+    last_delivered_id INTEGER NOT NULL DEFAULT 0 CHECK(last_delivered_id >= 0),
     updated_at TEXT NOT NULL
 );
 

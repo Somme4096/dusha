@@ -8,7 +8,7 @@ FastAPI serves the field reference at `/docs` and `/openapi.json`. This page cov
 
 | Method | Path | Purpose | Statuses |
 | --- | --- | --- | --- |
-| GET | `/health` | Process and database status, the `companion` name, and the loaded mod names | 200 |
+| GET | `/health` | Process and database status, the `companion` name, and the configured mod names | 200 |
 | POST | `/state/v1/messages` | Store one message, update affect for a new user message | 200, 401, 422 |
 | GET | `/state/v1/messages/{message_id}` | Read one stored message | 200, 401, 404 |
 | POST | `/state/v1/memory/search` | Search the archive with adjacent context | 200, 401, 503 |
@@ -258,7 +258,7 @@ Restart AstrBot or reload the plugin from its manager. Keep AstrBot's chat provi
 | `platform_id` | `""` | AstrBot platform ID allowed to use the gateway. Empty disables the plugin. Run `/sid` through your Discord bot and copy its `Bot ID`. |
 | `api_token` | `""` | The gateway's API token, when auth is on. |
 | `harness` | `astrbot` | Harness name sent to the gateway. A rename starts each chat with empty recent history. |
-| `request_timeout_seconds` | `60` | Minimum 1. Raise it when you raise a plugin `timeout_seconds` on the gateway. |
+| `request_timeout_seconds` | `60` | Minimum 1. Raise it when you raise a mod's `timeout_seconds` on the gateway. |
 | `poll_interval_seconds` | `30` | Seconds between proactive polls. Minimum 5. |
 | `proactive_enabled` | `true` | |
 | `proactive_tool_keywords` | `["donsetch", "fetch"]` | AstrBot tools whose names contain a keyword join proactive generation. |

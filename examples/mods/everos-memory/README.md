@@ -98,6 +98,6 @@ Matching is case insensitive. Dimension names come from your `emotions.json`.
 
 ## Tests
 
-`tests/` holds the end-to-end suites. They need `EVEROS_EXECUTABLE` pointing at
-an EverOS binary and skip without it. `uv run pytest` from the project root
-collects them.
+`tests/` holds the end-to-end suites. All but the sidecar-stub test need
+`EVEROS_EXECUTABLE` pointing at an EverOS binary and skip without it.
+`uv run pytest` from the project root collects them.

@@ -47,6 +47,8 @@ def _note(options, key, value):
 
 
 def start(options):
+    if options.get("start_fail"):
+        raise ValueError("configured start failure")
     _note(options, "start", {
         "database_path": options["database_path"],
         "cwd": os.getcwd(),
@@ -72,7 +74,7 @@ def on_context(request, options):
         raise RuntimeError("configured context failure")
     _note(options, "context", {
         "query": request.query, "harness": request.harness,
-        "conversation_id": request.conversation_id, "max_chars": request.max_chars,
+        "conversation_id": request.conversation_id, "max_chars": options["context_max_chars"],
     })
     return {
         "text": options.get("context_text", "PROBE_CONTEXT"),
@@ -96,6 +98,8 @@ def decide(request, options):
         return {"emotion": choose(request.emotions), "deltas": options["deltas"]}
     if mode == "crash":
         raise RuntimeError("boom")
+    if mode == "die":
+        os.kill(os.getpid(), 9)
     if mode == "sleep_once" and len(_seen(options).get("decide", [])) == 1:
         time.sleep(options["seconds"])
     if mode == "stdout_flood":
@@ -371,11 +375,9 @@ async def test_http_timeout_stops_the_mod_and_the_next_call_restarts_it(tmp_path
         started = time.monotonic()
         first = await _post(client, "slow")
         elapsed = time.monotonic() - started
-        stopped = await client.get("/state/v1/mods")
         second = await _post(client, "quick")
         running = await client.get("/state/v1/mods")
     assert first["affect"] is None and elapsed < 10
-    assert stopped.json()["probe"]["loaded"] is False
     assert "probe decide failed: mod timed out" in caplog.text
     assert "probe is not running, restarting" in caplog.text
     assert second["affect"]["emotion"] == "fear"
@@ -496,3 +498,38 @@ def test_config_rejects_bad_mod_names_fields_and_env_passthrough(tmp_path):
         path.write_text(json.dumps({"data_dir": str(tmp_path / "data"), **raw}), encoding="utf-8")
         with pytest.raises(ValueError, match=message):
             load_config(path)
+
+
+async def test_http_failed_start_terminates_the_worker_and_reports_it(tmp_path, mods, caplog):
+    caplog.set_level(logging.WARNING, logger="dusha")
+    app = api.create_app(_config(tmp_path, mods, start_fail=True))
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            status = await client.get("/state/v1/mods")
+            stored = await _post(client)
+        mod = app.state.service.mods[0]
+        assert mod.proc is not None and mod.proc.poll() is not None
+    assert status.json()["probe"] == {
+        "loaded": False, "exports": [], "error": "configured start failure", "status": None,
+    }
+    assert stored["affect"] is None
+    assert "failed to load mod 'probe': configured start failure" in caplog.text
+
+
+async def test_http_status_reports_a_dead_worker_without_restarting_it(tmp_path, mods, caplog):
+    caplog.set_level(logging.WARNING, logger="dusha")
+    marker = tmp_path / "seen.json"
+    async with _client(_config(tmp_path, mods, marker=str(marker), mode="die")) as client:
+        first = await _post(client, "kill")
+        dead = await client.get("/state/v1/mods")
+        dead_again = await client.get("/state/v1/mods")
+        assert len(_marker(marker)["start"]) == 1
+        second = await _post(client, "again")
+        assert len(_marker(marker)["start"]) == 2
+    assert first["affect"] is None and second["affect"] is None
+    assert dead.json()["probe"]["loaded"] is False
+    assert dead.json()["probe"]["status"] is None and dead.json()["probe"]["error"] == ""
+    assert dead_again.json() == dead.json()
+    assert "probe decide failed: mod closed its output" in caplog.text
+    assert "probe is not running, restarting" in caplog.text

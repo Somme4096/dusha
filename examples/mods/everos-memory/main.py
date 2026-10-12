@@ -29,7 +29,7 @@ def on_context(request: Any, options: dict[str, Any]) -> dict[str, Any]:
         scope=str(request.conversation_id or request.harness),
         harness=str(request.harness),
         conversation_id=str(request.conversation_id),
-        max_chars=int(request.max_chars),
+        max_chars=int(options["context_max_chars"]),
     )
 
 
