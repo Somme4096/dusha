@@ -16,7 +16,7 @@ from dusha import api
 from dusha.config import FeaturesConfig
 from dusha.timeutil import isoformat, utc_now
 
-_INTEGRATION_DIR = Path(__file__).resolve().parents[1] / "integrations" / "astrbot_dusha"
+_INTEGRATION_DIR = Path(__file__).resolve().parent
 PLATFORM = "telegram-dusha"
 ROUTE = "telegram-dusha:FriendMessage:user-1"
 ROUTING_ERROR = {"ok": False, "error": "gateway access is disabled for this platform"}

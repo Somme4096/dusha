@@ -10,7 +10,7 @@ import pytest
 
 from dusha import api
 
-_INTEGRATIONS = Path(__file__).resolve().parents[1] / "integrations"
+_INTEGRATIONS = Path(__file__).resolve().parents[2]
 if str(_INTEGRATIONS) not in sys.path:
     sys.path.insert(0, str(_INTEGRATIONS))
 
