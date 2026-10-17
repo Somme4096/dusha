@@ -29,6 +29,7 @@ def load_identity(identity_config: Any) -> tuple[str, str]:
 
 
 name = "identity"
+inject = ()
 
 
 def apply(ctx: Any, config: Any) -> None:

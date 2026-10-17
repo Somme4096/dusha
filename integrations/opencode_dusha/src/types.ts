@@ -46,7 +46,7 @@ export interface IngestMessageResponse {
   duplicate: boolean;
   conversation_id: number;
   sha256: string;
-  affect: unknown | null;
+  affect?: unknown;
 }
 
 export interface MemorySearchRequest {

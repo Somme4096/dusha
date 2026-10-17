@@ -157,9 +157,20 @@ def _terminate(proc: subprocess.Popen[bytes]) -> None:
 
 
 class Mod:
-    def __init__(self, name: str, settings: ModConfig, mods_dir: Path):
+    def __init__(
+        self,
+        name: str,
+        settings: ModConfig,
+        mods_dir: Path,
+        database: Any,
+        messages: Any,
+        prompts: dict[str, Any],
+    ):
         self.name = name
         self.settings = settings
+        self.database = database
+        self.messages = messages
+        self.prompts = prompts
         self.timeout = float(settings.timeout_seconds)
         self.passthrough = tuple(settings.env_passthrough)
         self.config = {**dict(settings.options), "context_max_chars": int(settings.context_max_chars)}
@@ -193,7 +204,7 @@ class Mod:
             ctx.error = self.problem
             logger.error("failed to load mod %r: %s", self.name, self.problem)
             return
-        ctx.database.migrate(SCHEMA)
+        self.database.migrate(SCHEMA)
         ctx.interval(_DELIVERY_SECONDS, self.deliver)
         ctx.on_dispose(self.close)
         try:
@@ -371,7 +382,7 @@ class Mod:
             return self._deliver_locked()
 
     def _cursor(self) -> int:
-        with self.ctx.database.connect() as db:
+        with self.database.connect() as db:
             row = db.execute(
                 "SELECT last_delivered_id FROM mod_delivery_state WHERE mod=?", (self.name,)
             ).fetchone()
@@ -380,7 +391,7 @@ class Mod:
     def _deliver_locked(self) -> dict[str, Any]:
         cursor = self._cursor()
         delivered = 0
-        for message in self.ctx.messages.after(cursor, _DELIVERY_LIMIT):
+        for message in self.messages.after(cursor, _DELIVERY_LIMIT):
             try:
                 self._call_locked("event", {"event": "message", "args": [message]})
             except ModError as error:
@@ -388,7 +399,7 @@ class Mod:
                 break
             cursor = int(message["id"])
             delivered += 1
-            with self.ctx.database.connect() as db:
+            with self.database.connect() as db:
                 db.execute(
                     """INSERT INTO mod_delivery_state(mod, last_delivered_id, updated_at)
                        VALUES(?,?,?)
@@ -406,7 +417,7 @@ class Mod:
         data = self._normalize(self._event("context", request), cap)
         if data is None:
             return None
-        blocks = self.ctx.prompts["context_blocks"]
+        blocks = self.prompts["context_blocks"]
         return render(self.name, blocks["mod_open_delimiter"], data, blocks["mod_close_delimiter"])
 
     def _normalize(self, result: Any, cap: int) -> dict[str, Any] | None:

@@ -204,7 +204,7 @@ async def _post_expecting_no_decision(config: AppConfig) -> float:
         stored = await _post(client)
         elapsed = time.monotonic() - started
         after = await _base(client)
-    assert stored["affect"] is None
+    assert stored.get("affect") is None
     assert after == pytest.approx(before, abs=1e-3)
     return elapsed
 
@@ -366,7 +366,7 @@ async def test_http_deltas_apply_after_the_decision_sees_the_earlier_state(tmp_p
         before = await _base(client)
         stored = await _post(client, "I love lanterns")
         after = await _base(client)
-    assert stored["affect"] is None
+    assert stored.get("affect") is None
     assert after["elation"] > before["elation"]
     assert "decision deltas name unknown emotion dimension(s): ['bogus']" in caplog.text
 
@@ -405,7 +405,7 @@ async def test_http_timeout_stops_the_mod_and_the_next_call_restarts_it(tmp_path
         elapsed = time.monotonic() - started
         second = await _post(client, "quick")
         running = await client.get("/state/v1/plugins")
-    assert first["affect"] is None and elapsed < 10
+    assert first.get("affect") is None and elapsed < 10
     assert "probe decide failed: mod timed out" in caplog.text
     assert "probe is not running, restarting" in caplog.text
     assert second["affect"]["emotion"] == "fear"
@@ -476,7 +476,7 @@ async def test_http_invalid_mod_directory_is_reported_and_the_gateway_keeps_runn
     async with _client(config) as client:
         stored = await _post(client)
         status = await client.get("/state/v1/plugins")
-    assert stored["affect"] is None
+    assert stored.get("affect") is None
     assert f"failed to load mod {name!r}" in caplog.text and logged in caplog.text
     report = status.json()[name]
     assert report["state"] == "failed" and report["events"] == [] and logged in report["error"]
@@ -490,7 +490,7 @@ async def test_http_decide_mod_is_idle_when_affect_is_off(tmp_path, mods, caplog
         stored = await _post(client)
         affect = await client.get("/state/v1/affect")
         status = await client.get("/state/v1/plugins")
-    assert stored["affect"] is None and affect.status_code == 503
+    assert stored.get("affect") is None and affect.status_code == 503
     assert status.json()["proactive"]["state"] == "inactive"
     seen = _marker(marker)
     assert "decide" not in seen and len(seen["messages"]) == 1
@@ -550,7 +550,7 @@ async def test_http_failed_start_terminates_the_worker_and_reports_it(tmp_path, 
     report = status.json()["probe"]
     assert report["state"] == "failed" and report["events"] == []
     assert report["error"] == "configured start failure"
-    assert stored["affect"] is None
+    assert stored.get("affect") is None
     assert "failed to load mod 'probe': configured start failure" in caplog.text
 
 
@@ -572,7 +572,7 @@ async def test_http_status_reports_a_dead_worker_without_restarting_it(tmp_path,
         assert len(_marker(marker)["start"]) == 1
         second = await _post(client, "again")
         assert len(_marker(marker)["start"]) == 2
-    assert first["affect"] is None and second["affect"] is None
+    assert first.get("affect") is None and second.get("affect") is None
     assert dead.json()["probe"]["state"] == "failed"
     assert dead.json()["probe"]["error"] == "mod closed its output"
     assert dead_again.json() == dead.json()

@@ -291,6 +291,7 @@ class MemoryStore:
 
 
 name = "memory"
+inject = ("messages", "api", "cli")
 
 
 class SearchInput(GatewayInput):

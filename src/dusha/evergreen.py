@@ -443,6 +443,7 @@ class EvergreenStore:
 
 
 name = "evergreen"
+inject = ("database", "prompts", "api", "cli")
 
 
 class RememberFactInput(GatewayInput):

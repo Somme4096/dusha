@@ -167,7 +167,7 @@ async def test_http_disabled_plugins_leave_the_injection_and_close_their_routes(
             "proactive": await client.post("/state/v1/proactive/evaluate"),
         }
         health = await client.get("/health")
-    assert stored["affect"] is None
+    assert stored.get("affect") is None
     assert (result["records"], result["search_hits"]) == ([], [])
     assert result["context"]["blocks"] == {}
     assert result["injection"].startswith("<companion_state>")

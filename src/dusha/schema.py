@@ -45,7 +45,6 @@ class IngestResponse(ExtraAllow):
     duplicate: bool
     conversation_id: int
     sha256: str
-    affect: dict | None
 
 
 class AffectStatusResponse(ExtraAllow):

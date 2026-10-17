@@ -28,6 +28,7 @@ logger = logging.getLogger("dusha")
 Decide = Callable[[DecisionRequest], list[dict[str, Any]]]
 
 name = "affect"
+inject = ("database", "settings", "prompts", "api", "cli")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS affect_state (

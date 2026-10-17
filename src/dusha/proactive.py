@@ -17,7 +17,7 @@ from .serialization import compact_json
 from .timeutil import isoformat, parse_time, utc_now
 
 name = "proactive"
-inject = ("affect",)
+inject = ("affect", "companion", "database", "settings", "prompts", "api", "cli")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS proactive_events (
@@ -89,7 +89,12 @@ def ruling_feeling(base: dict[str, Any], spec: dict[str, Any]) -> dict[str, Any]
         current = float(value)
         deviation = abs(current - neutral)
         if deviation > float(top["deviation"]):
-            top = {"dimension": name, "value": round(current, 4), "neutral": neutral, "deviation": round(deviation, 4)}
+            top = {
+                "dimension": name,
+                "value": round(current, 4),
+                "neutral": neutral,
+                "deviation": round(deviation, 4),
+            }
     return top
 
 

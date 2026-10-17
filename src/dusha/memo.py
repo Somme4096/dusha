@@ -14,6 +14,7 @@ from .serialization import safe_json
 from .timeutil import isoformat, utc_now
 
 name = "memo"
+inject = ("database", "prompts", "api", "cli")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS memo_notes (

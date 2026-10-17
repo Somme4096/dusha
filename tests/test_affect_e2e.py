@@ -70,7 +70,7 @@ async def test_http_affect_starts_at_neutral_and_stays_there_without_a_decision_
         after = await _affect(client)
         description = await _description(client)
     assert initial["base"] == initial["mood"] == NEUTRAL
-    assert stored["affect"] is None
+    assert stored.get("affect") is None
     assert after["base"] == pytest.approx(NEUTRAL, abs=0.001)
     assert description == "Affect is near its usual baseline."
 
@@ -90,7 +90,7 @@ async def test_http_appraisal_raises_one_dimension_by_the_increment_up_to_the_ra
     assert first["affect"]["state"]["base"]["anxiety"] == pytest.approx(0.2, abs=0.001)
     assert duplicate["duplicate"] is True
     assert duplicate["id"] == first["id"]
-    assert duplicate["affect"] is None
+    assert duplicate.get("affect") is None
     assert last["affect"]["state"]["base"]["fear"] == 1.0
 
 
@@ -109,8 +109,8 @@ async def test_http_embedding_outage_keeps_ingest_working_and_cools_down(config,
         calls = embedding_stub.calls
         second = await _say(client, "Still scared.")
         state = await _affect(client)
-    assert first["affect"] is None
-    assert second["affect"] is None
+    assert first.get("affect") is None
+    assert second.get("affect") is None
     assert calls == 1
     assert embedding_stub.calls == calls
     assert state["base"]["fear"] == 0

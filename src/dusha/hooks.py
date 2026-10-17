@@ -165,10 +165,10 @@ class Registry:
         runtime.provides.append(name)
 
     def service(self, name: str, runtime: Runtime) -> Any:
-        if name in self.core:
-            return self.core[name]
         if name not in runtime.inject and name not in runtime.provides:
             raise AttributeError(f"{runtime.name} must inject {name!r} to use it")
+        if name in self.core:
+            return self.core[name]
         if name not in self.services:
             raise AttributeError(f"service {name!r} is not available")
         return self.services[name]

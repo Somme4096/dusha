@@ -118,7 +118,7 @@ async def _post_expecting_no_decision(config: AppConfig) -> None:
         stored = await _post(client)
         after = await _base(client)
     assert stored.status_code == 200, stored.text
-    assert stored.json()["affect"] is None
+    assert stored.json().get("affect") is None
     assert after == pytest.approx(before, abs=1e-3)
 
 

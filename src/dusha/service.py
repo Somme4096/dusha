@@ -57,7 +57,17 @@ class CompanionService:
             elif name in BUILTINS:
                 self.registry.plugin(BUILTINS[name], entry.config)
             else:
-                self.registry.plugin(_mods.Mod(name, entry.config, mods_dir), entry.config)
+                self.registry.plugin(
+                    _mods.Mod(
+                        name,
+                        entry.config,
+                        mods_dir,
+                        database=self.database,
+                        messages=self.messages,
+                        prompts=self.prompts,
+                    ),
+                    entry.config,
+                )
         self.registry.start()
         for runtime in self.registry.runtimes:
             if runtime.state in {"disabled", "inactive"}:
@@ -112,11 +122,11 @@ class CompanionService:
             if stored is not None:
                 results = self.registry.collect("message", stored)
         return {
+            **results,
             "id": message.id,
             "duplicate": message.duplicate,
             "conversation_id": message.conversation_id,
             "sha256": message.sha256,
-            "affect": results.get("affect"),
         }
 
     def build_context(
@@ -136,8 +146,11 @@ class CompanionService:
             include_recent=include_recent,
         )
         composed = self.composer.compose(list(self.registry.collect("context", request).values()))
-        recall = composed["context"]["blocks"].get(memory.name) or {}
-        return {**composed, "search_hits": recall.get("search_hits", [])}
+        hits: list[Any] = []
+        for block in composed["context"]["blocks"].values():
+            if isinstance(block, dict) and isinstance(block.get("search_hits"), list):
+                hits.extend(block["search_hits"])
+        return {**composed, "search_hits": hits}
 
     def latest_route(self) -> dict[str, Any] | None:
         with self.database.connect() as db:

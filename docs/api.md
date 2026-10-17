@@ -60,10 +60,11 @@ One exchange takes four steps. The [OpenAI proxy](#openai-proxy) runs all four f
 }
 ```
 
-The response carries the stored `id`, a `duplicate` flag, `conversation_id`, and `affect`.
+The response carries the stored `id`, a `duplicate` flag, and `conversation_id`, plus one key per plugin
+that returned a result for the message. The affect plugin returns `affect`.
 
 - A new user message cancels unsent proactive events and updates [affect](#affect).
-- `affect` holds `emotion`, `increment`, `decision_id`, and `state` when the message moved an emotion. Otherwise it is `null`.
+- `affect` holds `emotion`, `increment`, `decision_id`, and `state` when the message moved an emotion. Otherwise the key is absent.
 - A repeated `external_id` in the same harness and conversation stores nothing and returns `duplicate: true` with the original `id`.
 - Unknown request fields return `422`.
 
