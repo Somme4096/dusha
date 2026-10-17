@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import socket
+import sqlite3
 import subprocess
 import threading
 import time
@@ -15,7 +16,7 @@ import httpx
 import pytest
 
 from dusha import api
-from dusha.config import AppConfig, EvergreenConfig, MemoryConfig, ModConfig, ModsConfig
+from dusha.config import AppConfig, EvergreenConfig, MemoryConfig, ModConfig
 
 MOD_DIR = Path(__file__).resolve().parents[1]
 
@@ -181,32 +182,52 @@ def flush_proxy(everos_server):
 def _config(data_dir: Path, mods_dir: Path, sidecar: str, *, enabled: bool) -> AppConfig:
     return AppConfig(
         data_dir=data_dir,
-        memory=MemoryConfig(
-            recent_messages=8,
-            search_hits=8,
-            context_messages=1,
-        ),
-        evergreen=EvergreenConfig(max_items=32, max_chars=4_000),
-        mods=ModsConfig(
-            dir=str(mods_dir),
-            tick_interval_seconds=1,
-            modules={
-                "everos_memory": ModConfig(
-                    timeout_seconds=10,
-                    options={"everos": {
-                        "url": sidecar,
-                        "app_id": "dusha-e2e",
-                        "project_id": "phase2",
-                        "instance_namespace": "flush-e2e",
-                        "user_sender_id": "flush-user",
-                        "assistant_sender_id": "flush-assistant",
-                        "timeout_seconds": 5,
-                        "flush_after_ingest": enabled,
-                    }},
-                )
-            },
-        ),
+        mods_dir=str(mods_dir),
+        plugins={
+            "memory": MemoryConfig(recent_messages=8, search_hits=8, context_messages=1),
+            "evergreen": EvergreenConfig(max_items=32, max_chars=4_000),
+            "everos_memory": ModConfig(
+                timeout_seconds=10,
+                options={"interval_seconds": 1, "everos": {
+                    "url": sidecar,
+                    "app_id": "dusha-e2e",
+                    "project_id": "phase2",
+                    "instance_namespace": "flush-e2e",
+                    "user_sender_id": "flush-user",
+                    "assistant_sender_id": "flush-assistant",
+                    "timeout_seconds": 5,
+                    "flush_after_ingest": enabled,
+                }},
+            ),
+        },
     )
+
+
+def _backlog(path: Path) -> dict:
+    if not path.is_file():
+        return {}
+    with sqlite3.connect(path) as db:
+        db.row_factory = sqlite3.Row
+        row = db.execute(
+            """SELECT COUNT(*) FILTER (WHERE delivered_at IS NULL) AS pending,
+               COUNT(*) FILTER (WHERE delivered_at IS NOT NULL) AS buffered,
+               COUNT(*) FILTER (WHERE flush_generation > 0 AND processed_at IS NULL) AS flush_pending,
+               COUNT(*) FILTER (WHERE processed_at IS NOT NULL) AS processed,
+               COALESCE(SUM(attempts), 0) AS attempts, MAX(last_error) AS last_error
+               FROM everos_outbox"""
+        ).fetchone()
+        flush = db.execute(
+            "SELECT COALESCE(SUM(attempts), 0) AS attempts, MAX(last_error) AS last_error "
+            "FROM everos_flush_state"
+        ).fetchone()
+    return {
+        "pending": int(row["pending"]),
+        "buffered": int(row["buffered"]),
+        "flush_pending": int(row["flush_pending"]),
+        "processed": int(row["processed"]),
+        "attempts": int(row["attempts"]) + int(flush["attempts"]),
+        "last_error": flush["last_error"] or row["last_error"],
+    }
 
 
 @asynccontextmanager
@@ -215,6 +236,7 @@ async def _client(config: AppConfig):
     async with application.router.lifespan_context(application):
         transport = httpx.ASGITransport(app=application, raise_app_exceptions=False)
         async with httpx.AsyncClient(transport=transport, base_url="http://dusha") as client:
+            client.everos_database = config.data_dir / "plugins" / "everos_memory" / "everos.sqlite3"
             yield client
 
 
@@ -230,9 +252,7 @@ async def _add(client: httpx.AsyncClient, conversation: str, content: str, role:
 
 
 async def _status(client: httpx.AsyncClient) -> dict:
-    response = await client.get("/state/v1/mods")
-    assert response.status_code == 200, response.text
-    return response.json()["everos_memory"]["status"]
+    return _backlog(client.everos_database)
 
 
 async def _wait_status(client: httpx.AsyncClient, predicate) -> dict:

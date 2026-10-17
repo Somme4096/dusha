@@ -32,7 +32,7 @@ async def _running(config):
 def _appraising(config, stub, increment):
     config.embedding.base_url = stub.url
     config.embedding.model = "stub"
-    config.affect.increment = increment
+    config.plugin("affect").increment = increment
     return config
 
 

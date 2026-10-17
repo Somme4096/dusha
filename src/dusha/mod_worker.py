@@ -2,17 +2,26 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import importlib
 import io
 import json
 import sys
 import traceback
+from collections.abc import Callable
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
-HOOKS = ("start", "on_message", "on_context", "decide", "tick", "status", "close")
-_REQUEST_HOOKS = {"on_context", "decide"}
 _OUTPUT_LIMIT = 1_048_576
+_ERRORS: dict[str, type[Exception]] = {
+    "ValueError": ValueError,
+    "KeyError": KeyError,
+    "PermissionError": PermissionError,
+    "AttributeError": AttributeError,
+}
+
+
+class RemoteError(RuntimeError):
+    pass
 
 
 class _BoundedOutput(io.StringIO):
@@ -22,62 +31,146 @@ class _BoundedOutput(io.StringIO):
         return super().write(value)
 
 
+class Record(dict):
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return self[name]
+        except KeyError as error:
+            raise AttributeError(name) from error
+
+
 def _json_value(value: Any) -> Any:
-    if dataclasses.is_dataclass(value):
-        return {key: _json_value(item) for key, item in dataclasses.asdict(value).items()}
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return _json_value(dataclasses.asdict(value))
     if isinstance(value, dict):
         return {str(key): _json_value(item) for key, item in value.items()}
     if isinstance(value, (list, tuple, set)):
         return [_json_value(item) for item in value]
     if hasattr(value, "isoformat") and callable(value.isoformat):
         return value.isoformat()
-    if hasattr(value, "__dict__"):
-        return _json_value(vars(value))
     return value
 
 
-class _Mod:
-    def __init__(self, suite: Path, database: str):
+class Channel:
+    def __init__(self, reader: Any, writer: Any):
+        self.reader = reader
+        self.writer = writer
+        self.next_call = 1
+
+    def send(self, payload: dict[str, Any]) -> None:
+        self.writer.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n")
+        self.writer.flush()
+
+    def receive(self) -> dict[str, Any] | None:
+        line = self.reader.readline()
+        return json.loads(line) if line else None
+
+    def call(self, service: str, method: str, args: list[Any], kwargs: dict[str, Any]) -> Any:
+        ident = self.next_call
+        self.next_call += 1
+        self.send({"call": ident, "service": service, "method": method, "args": args, "kwargs": kwargs})
+        while True:
+            message = self.receive()
+            if message is None:
+                raise RemoteError("host closed the connection")
+            if message.get("reply") != ident:
+                continue
+            if "error" in message:
+                raise _ERRORS.get(str(message.get("error_type")), RemoteError)(str(message["error"]))
+            return message.get("result")
+
+
+class Service:
+    def __init__(self, channel: Channel, name: str):
+        self._channel = channel
+        self._name = name
+
+    def __getattr__(self, method: str) -> Callable[..., Any]:
+        if method.startswith("_"):
+            raise AttributeError(method)
+
+        def invoke(*args: Any, **kwargs: Any) -> Any:
+            return self._channel.call(self._name, method, _json_value(list(args)), _json_value(kwargs))
+
+        return invoke
+
+
+class Context:
+    def __init__(self, channel: Channel, data_dir: str):
+        self._channel = channel
+        self.data_dir = Path(data_dir)
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.listeners: dict[str, list[Callable[..., Any]]] = {}
+        self.intervals: list[tuple[float, Callable[[], Any]]] = []
+        self.disposables: list[Callable[[], Any]] = []
+
+    def on(self, event: str, listener: Callable[..., Any]) -> None:
+        self.listeners.setdefault(event, []).append(listener)
+
+    def interval(self, seconds: float, callback: Callable[[], Any]) -> None:
+        self.intervals.append((float(seconds), callback))
+
+    def on_dispose(self, callback: Callable[[], Any]) -> None:
+        self.disposables.append(callback)
+
+    def __getattr__(self, name: str) -> Service:
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return Service(self._channel, name)
+
+
+class Worker:
+    def __init__(self, suite: Path, channel: Channel):
         self.suite = suite.resolve()
-        self.database = database
-        self.namespace: dict[str, Any] = {}
-        self.options: dict[str, Any] = {}
+        self.channel = channel
+        self.ctx: Context | None = None
 
-    def start(self, options: dict[str, Any]) -> dict[str, Any]:
-        if not self.suite.is_dir() or not (self.suite / "main.py").is_file():
-            raise RuntimeError("invalid mod directory")
-        sys.path.insert(0, str(self.suite))
-        source = self.suite / "main.py"
-        self.namespace = {"__name__": "dusha_mod", "__file__": str(source)}
-        exec(compile(source.read_text(encoding="utf-8"), str(source), "exec"), self.namespace)
-        self.options = {**options, "database_path": self.database}
-        if callable(self.namespace.get("start")):
-            self.namespace["start"](self.options)
-        return {"exports": [name for name in HOOKS if callable(self.namespace.get(name))]}
+    def start(self, entry: str, config: dict[str, Any], data_dir: str) -> dict[str, Any]:
+        for path in (self.suite / "src", self.suite):
+            if path.is_dir():
+                sys.path.insert(0, str(path))
+        module = importlib.import_module(entry)
+        apply = getattr(module, "apply", None)
+        if not callable(apply):
+            raise RuntimeError(f"mod entry {entry!r} does not define apply(ctx, config)")
+        self.ctx = Context(self.channel, data_dir)
+        apply(self.ctx, config)
+        intervals = [seconds for seconds, _ in self.ctx.intervals]
+        return {"events": sorted(self.ctx.listeners), "intervals": intervals}
 
-    def call(self, method: str, params: dict[str, Any]) -> Any:
+    def handle(self, method: str, params: dict[str, Any]) -> Any:
         if method == "start":
-            return self.start(dict(params.get("options") or {}))
-        function = self.namespace.get(method)
-        if method not in HOOKS or not callable(function):
-            raise ValueError(f"mod does not export {method}")
-        if method == "on_message":
-            return function(params["message"], self.options)
-        if method in _REQUEST_HOOKS:
-            return function(SimpleNamespace(**params["request"]), self.options)
-        return function(self.options)
+            return self.start(str(params["entry"]), dict(params.get("config") or {}), str(params["data_dir"]))
+        if self.ctx is None:
+            raise RuntimeError("mod is not started")
+        if method == "event":
+            args = [Record(item) if isinstance(item, dict) else item for item in params.get("args", [])]
+            for listener in self.ctx.listeners.get(str(params["event"]), []):
+                result = listener(*args)
+                if result is not None:
+                    return result
+            return None
+        if method == "interval":
+            return self.ctx.intervals[int(params["index"])][1]()
+        if method == "dispose":
+            for dispose in reversed(self.ctx.disposables):
+                dispose()
+            return None
+        raise ValueError(f"unknown method {method!r}")
 
 
 def main() -> int:
-    if len(sys.argv) != 3:
-        raise RuntimeError("usage: mod_worker.py SUITE DATABASE")
-    mod = _Mod(Path(sys.argv[1]), str(Path(sys.argv[2]).expanduser()))
-    for line in sys.stdin:
-        request: dict[str, Any] = {}
+    if len(sys.argv) != 2:
+        raise RuntimeError("usage: mod_worker.py SUITE")
+    channel = Channel(sys.stdin, sys.stdout)
+    worker = Worker(Path(sys.argv[1]), channel)
+    while True:
+        request = channel.receive()
+        if request is None:
+            return 0
         try:
-            request = json.loads(line)
             with contextlib.redirect_stdout(_BoundedOutput()):
-                result = mod.call(request["method"], request.get("params") or {})
+                result = worker.handle(str(request["method"]), request.get("params") or {})
             response = {"id": request.get("id"), "result": _json_value(result)}
         except (ValueError, KeyError) as error:
             response = {"id": request.get("id"), "error": str(error), "error_type": type(error).__name__}
@@ -89,9 +182,7 @@ def main() -> int:
                 "error": f"{type(error).__name__}: {error}",
                 "error_type": type(error).__name__,
             }
-        sys.stdout.write(json.dumps(response, ensure_ascii=False, separators=(",", ":")) + "\n")
-        sys.stdout.flush()
-    return 0
+        channel.send(response)
 
 
 if __name__ == "__main__":

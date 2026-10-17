@@ -8,7 +8,7 @@ from urllib.parse import urljoin
 
 import httpx
 
-__all__ = ["SystemOneModError", "decide"]
+__all__ = ["SystemOneModError", "apply", "decide"]
 
 _DEFAULT_TIMEOUT_SECONDS = 10.0
 _SYSTEM_ONE_PATH = "/v1/systemone"
@@ -157,3 +157,7 @@ def decide(request: Any, options: Mapping[str, Any]) -> dict[str, str] | None:
     except ValueError as exc:
         raise SystemOneModError("system_one provider returned a non-JSON response") from exc
     return {"emotion": _extract_choice(payload, emotions)}
+
+
+def apply(ctx: Any, config: Mapping[str, Any]) -> None:
+    ctx.on("decide", lambda request: decide(request, config))

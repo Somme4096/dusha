@@ -6,3 +6,6 @@ dependencies = ["httpx>=0.27,<1"]
 
 [tool.uv]
 package = false
+
+[tool.dusha]
+entry = "everos_memory"

@@ -57,110 +57,6 @@ CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE OF text ON messages BEGIN
     INSERT INTO messages_fts(rowid, text) VALUES (new.id, new.text);
 END;
 
-CREATE TABLE IF NOT EXISTS memory_chunks (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
-    chunker_key TEXT NOT NULL,
-    ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
-    start_char INTEGER NOT NULL CHECK(start_char >= 0),
-    end_char INTEGER NOT NULL CHECK(end_char > start_char),
-    created_at TEXT NOT NULL,
-    UNIQUE(message_id, chunker_key, ordinal)
-);
-CREATE INDEX IF NOT EXISTS memory_chunks_message
-ON memory_chunks(message_id, chunker_key, ordinal);
-
-CREATE TABLE IF NOT EXISTS memory_chunk_embeddings (
-    chunk_id INTEGER NOT NULL REFERENCES memory_chunks(id) ON DELETE CASCADE,
-    embedding_key TEXT NOT NULL,
-    dimensions INTEGER NOT NULL CHECK(dimensions > 0),
-    embedding BLOB NOT NULL,
-    created_at TEXT NOT NULL,
-    PRIMARY KEY(chunk_id, embedding_key)
-);
-CREATE INDEX IF NOT EXISTS memory_chunk_embeddings_key
-ON memory_chunk_embeddings(embedding_key, dimensions, chunk_id);
-
-CREATE TABLE IF NOT EXISTS evergreen_fact_revisions (
-    revision_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    fact_id TEXT NOT NULL,
-    revision INTEGER NOT NULL CHECK(revision > 0),
-    fact_key TEXT NOT NULL,
-    text TEXT NOT NULL,
-    state TEXT NOT NULL CHECK(state IN ('active', 'forgotten')),
-    priority INTEGER NOT NULL DEFAULT 50 CHECK(priority BETWEEN 0 AND 100),
-    source_message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
-    reason TEXT NOT NULL DEFAULT '',
-    review_after TEXT,
-    expires_at TEXT,
-    created_at TEXT NOT NULL,
-    created_by TEXT NOT NULL CHECK(created_by IN ('agent', 'operator', 'api')),
-    UNIQUE(fact_id, revision)
-);
-CREATE INDEX IF NOT EXISTS evergreen_fact_key
-ON evergreen_fact_revisions(fact_key, revision DESC);
-CREATE INDEX IF NOT EXISTS evergreen_fact_history
-ON evergreen_fact_revisions(fact_id, revision);
-
-CREATE TABLE IF NOT EXISTS affect_state (
-    id INTEGER PRIMARY KEY CHECK(id = 1),
-    state_json TEXT NOT NULL,
-    last_updated_at TEXT NOT NULL,
-    last_user_message_at TEXT,
-    last_interaction_at TEXT,
-    last_proactive_sent_at TEXT,
-    unanswered_proactive INTEGER NOT NULL DEFAULT 0,
-    revision INTEGER NOT NULL DEFAULT 0
-);
-
-CREATE TABLE IF NOT EXISTS affect_decisions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    source_message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
-    emotion TEXT NOT NULL,
-    increment REAL NOT NULL,
-    occurred_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS affect_decisions_message
-ON affect_decisions(source_message_id, id);
-
-CREATE TABLE IF NOT EXISTS proactive_events (
-    id TEXT PRIMARY KEY,
-    conversation_id INTEGER REFERENCES conversations(id) ON DELETE SET NULL,
-    route TEXT NOT NULL,
-    reason TEXT NOT NULL,
-    dedup_key TEXT NOT NULL UNIQUE,
-    payload_json TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'pending',
-    consumer TEXT,
-    available_at TEXT NOT NULL,
-    lease_until TEXT,
-    attempts INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    sent_at TEXT,
-    last_error TEXT NOT NULL DEFAULT ''
-);
-CREATE INDEX IF NOT EXISTS proactive_events_poll
-ON proactive_events(status, available_at, created_at);
-
-CREATE TABLE IF NOT EXISTS mod_delivery_state (
-    mod TEXT PRIMARY KEY,
-    last_delivered_id INTEGER NOT NULL DEFAULT 0 CHECK(last_delivered_id >= 0),
-    updated_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS memo_notes (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    text TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'archived')),
-    reason TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    archived_at TEXT
-);
-CREATE INDEX IF NOT EXISTS memo_notes_status_created
-ON memo_notes(status, created_at);
-
 PRAGMA user_version = 5;
 """
 
@@ -189,8 +85,7 @@ class Database:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._prepare_schema()
-        with self.connect() as db:
-            db.executescript(SCHEMA)
+        self.migrate(SCHEMA)
 
     def _prepare_schema(self) -> None:
         if not self.path.exists():
@@ -205,6 +100,10 @@ class Database:
                 f"database schema version {version} is incompatible. "
                 f"Use an empty data directory or restore a schema version {SCHEMA_VERSION} backup"
             )
+
+    def migrate(self, script: str) -> None:
+        with self.connect() as db:
+            db.executescript(script)
 
     def connect(self) -> _ClosingConnection:
         db = sqlite3.connect(self.path, timeout=10)

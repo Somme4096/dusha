@@ -10,7 +10,7 @@ import type {
   IngestMessageResponse,
   ListFactsQuery,
   ListFactsResponse,
-  ModsStatusResponse,
+  PluginsStatusResponse,
   MemorySearchRequest,
   MemorySearchResponse,
   RememberFactRequest,
@@ -213,8 +213,8 @@ export class DushaClient {
     });
   }
 
-  modsStatus(): Promise<ModsStatusResponse> {
-    return this.request<ModsStatusResponse>("GET", "/state/v1/mods");
+  pluginsStatus(): Promise<PluginsStatusResponse> {
+    return this.request<PluginsStatusResponse>("GET", "/state/v1/plugins");
   }
 
   buildContext(body: ContextBuildRequest): Promise<ContextBuildResponse> {

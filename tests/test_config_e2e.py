@@ -50,38 +50,39 @@ def _prompts_file(tmp_path, mutate, name="prompts.json"):
     [
         ('{"host": "a", "host": "b"}', "duplicate key"),
         ('{"host": "a", "nonsense": 1}', "unknown top-level field"),
-        ('{"memory": {"bogus": 1}}', r"unknown field\(s\) under memory"),
-        ('{"memory": {"retrieval_mode": "lexical"}}', r"unknown field\(s\) under memory"),
-        ('{"affect": {"bogus": 1}}', r"unknown field\(s\) under affect"),
-        ('{"emotions": {"bogus": 1}}', r"unknown field\(s\) under emotions"),
+        ('{"plugins": {"memory": {"bogus": 1}}}', r"unknown field\(s\) under plugins.memory"),
+        ('{"plugins": {"memory": {"retrieval_mode": "x"}}}', r"unknown field\(s\) under plugins.memory"),
+        ('{"plugins": {"affect": {"bogus": 1}}}', r"unknown field\(s\) under plugins.affect"),
+        ('{"plugins": {"affect": {"emotions": {"bogus": 1}}}}', r"under plugins.affect.emotions"),
         ('{"upstream": {"timeout_seconds": NaN}}', "non-finite"),
         ('{"host": "a" // jsonc comment\n}', "invalid JSON"),
         ('{"port": "abc"}', "port must be int"),
-        ('{"features": {"proactive": "yes"}}', "features.proactive must be bool"),
-        ('{"memory": {"recent_messages": true}}', "recent_messages must be int"),
-        ('{"affect": {"increment": -1}}', "affect.increment"),
-        ('{"affect": {"increment": 0}}', "affect.increment"),
-        ('{"affect": {"increment": "fast"}}', "increment"),
-        ('{"mods": {"bogus": 1}}', r"unknown field\(s\) under mods"),
-        ('{"affect": {"emotions_path": "x.json"}}', "Use emotions.path"),
-        ('{"affect": {"mood_follow_hours": 0}}', "mood_follow_hours must be positive"),
-        ('{"affect": {"dimensions": {"bogus": {"neutral": 0.1}}}}', "unknown dimension"),
-        ('{"affect": {"dimensions": {"fear": {"neutral": 0.1, "bogus": 2}}}}', "unknown field"),
-        ('{"proactive": {"thresholds": {"fear": 5.0}}}', "within value_range"),
-        ('{"proactive": {"thresholds": {"play": 0.5}}}', "without a proactive trigger"),
-        ('{"proactive": {"quiet_start_hour": 99}}', "proactive.quiet_start_hour must be at least 0"),
-        ('{"proactive": {"poll_interval_seconds": -5}}', "proactive.poll_interval_seconds"),
-        ('{"evergreen": {"max_items": -3}}', "evergreen.max_items"),
+        ('{"plugins": {"proactive": {"disabled": "yes"}}}', "plugins.proactive.disabled must be bool"),
+        ('{"plugins": {"memory": {"recent_messages": true}}}', "recent_messages must be int"),
+        ('{"plugins": {"affect": {"increment": -1}}}', "plugins.affect.increment"),
+        ('{"plugins": {"affect": {"increment": 0}}}', "plugins.affect.increment"),
+        ('{"plugins": {"affect": {"increment": "fast"}}}', "increment"),
+        ('{"mods": {"bogus": 1}}', r"unknown top-level field\(s\)"),
+        ('{"plugins": {"affect": {"emotions_path": "x.json"}}}', "Use plugins.affect.emotions.path"),
+        ('{"plugins": {"affect": {"mood_follow_hours": 0}}}', "mood_follow_hours must be positive"),
+        ('{"plugins": {"affect": {"dimensions": {"bogus": {"neutral": 0.1}}}}}', "unknown dimension"),
+        ('{"plugins": {"affect": {"dimensions": {"fear": {"neutral": 0.1, "bogus": 2}}}}}', "unknown field"),
+        ('{"plugins": {"proactive": {"thresholds": {"fear": 5.0}}}}', "within value_range"),
+        ('{"plugins": {"proactive": {"thresholds": {"play": 0.5}}}}', "without a proactive trigger"),
+        ('{"plugins": {"proactive": {"quiet_start_hour": 99}}}', "plugins.proactive.quiet_start_hour"),
+        ('{"plugins": {"proactive": {"poll_interval_seconds": -5}}}', "plugins.proactive.poll_interval"),
+        ('{"plugins": {"evergreen": {"max_items": -3}}}', "plugins.evergreen.max_items"),
         ('{"upstream": {"timeout_seconds": 0}}', "upstream.timeout_seconds must be above 0"),
         ('{"upstream": {"allowed_hosts": ["*"]}}', r"unknown field\(s\) under upstream"),
         ('{"api_token_env": "COMPANION_TOKEN"}', "unknown top-level field"),
         ('{"api_token": 42}', "api_token must be str"),
-        ('{"memo": {"text_max_chars": 0}}', "memo.text_max_chars"),
+        ('{"plugins": {"memo": {"text_max_chars": 0}}}', "plugins.memo.text_max_chars"),
         ('{"port": 70000}', "port must be"),
         ('{"timezone": "Not/AZone"}', "timezone is not a known IANA zone"),
-        ('{"features": {"bogus": true}}', r"unknown field\(s\) under features"),
-        ('{"features": {"affect": false}}', "features.proactive requires features.affect"),
-        ('{"identity_prompt": {"path": ""}}', "identity_prompt.path is empty"),
+        ('{"features": {"affect": false}}', r"unknown top-level field\(s\)"),
+        ('{"plugins": {"identity": {"path": ""}}}', "plugins.identity.path is empty"),
+        ('{"plugins": {"identity": {"bogus": 1}}}', r"unknown field\(s\) under plugins.identity"),
+        ('{"plugins": "all"}', "plugins must be an object"),
         ('{"storage": {"enabled": true}}', "unknown top-level field"),
     ],
 )
@@ -95,9 +96,9 @@ def test_startup_rejects_invalid_config(tmp_path, body, pattern):
     [
         ({}, True, "HOME_IDENTITY"),
         ({}, False, ""),
-        ({"features": {"identity": False}}, True, ""),
-        ({"features": {"identity": False}, "identity_prompt": {"path": ""}}, True, ""),
-        ({"identity_prompt": {"path": "named.md"}}, True, "NAMED_IDENTITY"),
+        ({"plugins": {"identity": {"disabled": True}}}, True, ""),
+        ({"plugins": {"identity": {"disabled": True, "path": ""}}}, True, ""),
+        ({"plugins": {"identity": {"path": "named.md"}}}, True, "NAMED_IDENTITY"),
     ],
 )
 async def test_identity_defaults_to_identity_md_in_the_companion_home(tmp_path, raw, present, expected):
@@ -108,8 +109,7 @@ async def test_identity_defaults_to_identity_md_in_the_companion_home(tmp_path, 
         (home / "identity.md").write_text("HOME_IDENTITY", encoding="utf-8")
     async with _client(_start(tmp_path, raw)) as client:
         context = (await client.post("/state/v1/context", json={"query": ""})).json()["context"]
-    assert context["identity"]["text"] == expected
-    assert context["identity"]["configured"] is bool(expected)
+    assert context["blocks"].get("identity", {}).get("text", "") == expected
 
 
 @pytest.mark.parametrize(
@@ -146,7 +146,7 @@ async def test_identity_defaults_to_identity_md_in_the_companion_home(tmp_path, 
 def test_startup_rejects_invalid_emotions_file(tmp_path, mutate, message):
     path = _emotions_file(tmp_path, mutate)
     with pytest.raises(ValueError, match=message):
-        _start(tmp_path, {"emotions": {"path": str(path)}})
+        _start(tmp_path, {"plugins": {"affect": {"emotions": {"path": str(path)}}}})
 
 
 @pytest.mark.parametrize(
@@ -162,7 +162,7 @@ def test_startup_rejects_unreadable_emotions_file(tmp_path, text, message):
     if text is not None:
         path.write_text(text, encoding="utf-8")
     with pytest.raises(ValueError, match=message):
-        _start(tmp_path, {"emotions": {"path": str(path)}})
+        _start(tmp_path, {"plugins": {"affect": {"emotions": {"path": str(path)}}}})
 
 
 @pytest.mark.parametrize(
@@ -207,8 +207,10 @@ async def test_http_config_paths_resolve_beside_the_config_file_or_stay_absolute
 
     app = _start(tmp_path, {
         "data_dir": located("store"),
-        "identity_prompt": {"path": located("identity.md")},
-        "emotions": {"path": located("emotions.json")},
+        "plugins": {
+            "identity": {"path": located("identity.md")},
+            "affect": {"emotions": {"path": located("emotions.json")}},
+        },
         "prompts": {"path": located("prompts.json")},
     })
     async with _client(app) as client:
@@ -226,11 +228,12 @@ async def test_http_config_override_beats_the_custom_emotions_file(tmp_path):
     )
     pinned = {"path": str(path), "expected_version": "0.2.0-custom"}
     with pytest.raises(ValueError, match="version mismatch"):
-        _start(tmp_path, {"emotions": {"path": str(path), "expected_version": "other"}})
-    async with _client(_start(tmp_path, {"emotions": pinned})) as client:
+        mismatched = {"path": str(path), "expected_version": "other"}
+        _start(tmp_path, {"plugins": {"affect": {"emotions": mismatched}}})
+    async with _client(_start(tmp_path, {"plugins": {"affect": {"emotions": pinned}}})) as client:
         from_file = (await client.get("/state/v1/affect")).json()
     patch = {"dimensions": {"fear": {"neutral": 0.05}}}
-    override = {"data_dir": "overridden", "emotions": pinned, "affect": patch}
+    override = {"data_dir": "overridden", "plugins": {"affect": {"emotions": pinned, **patch}}}
     async with _client(_start(tmp_path, override)) as client:
         overridden = (await client.get("/state/v1/affect")).json()
     assert from_file["base"]["fear"] == 0.25

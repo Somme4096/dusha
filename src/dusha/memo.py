@@ -3,18 +3,47 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+from fastapi import APIRouter, Query
+
+from . import schema as _schema
 from .config import MemoConfig
 from .database import Database
-from .hooks import Block, ContextRequest, Contributor, render
+from .hooks import Block, ContextRequest, render
+from .interfaces import GatewayInput, call, errors
 from .serialization import safe_json
 from .timeutil import isoformat, utc_now
 
+name = "memo"
 
-class MemoStore(Contributor):
-    name = "memo"
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS memo_notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    text TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'archived')),
+    reason TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    archived_at TEXT
+);
+CREATE INDEX IF NOT EXISTS memo_notes_status_created
+ON memo_notes(status, created_at);
+"""
+
+
+class MemoAddInput(GatewayInput):
+    text: str
+
+
+class MemoDoneInput(GatewayInput):
+    reason: str
+
+
+class MemoStore:
+    name = name
 
     def __init__(self, database: Database, config: MemoConfig, prompts: dict[str, Any]):
         self.database = database
+        database.migrate(SCHEMA)
         self.config = config
         self.blocks = prompts["context_blocks"]
 
@@ -92,3 +121,60 @@ class MemoStore(Contributor):
         if status not in {"active", "archived"}:
             raise ValueError("status must be active or archived")
         return status
+
+
+def apply(ctx: Any, config: MemoConfig) -> None:
+    store = MemoStore(ctx.database, config, ctx.prompts)
+    ctx.provide("memo", store)
+    ctx.on("context", store.on_context)
+    _routes(ctx.api, store)
+    _commands(ctx.cli, store)
+
+
+def _routes(router: APIRouter, store: MemoStore) -> None:
+    @router.post(
+        "/state/v1/memo/add",
+        tags=["state"],
+        response_model=_schema.MemoEnvelope,
+        summary="Add an agent memo",
+        responses=errors(422, 503),
+    )
+    async def memo_add(body: MemoAddInput) -> dict[str, Any]:
+        return {"memo": await call(store.add, body.text, errors=(ValueError,))}
+
+    @router.get(
+        "/state/v1/memo/list",
+        tags=["state"],
+        response_model=_schema.MemosEnvelope,
+        responses=errors(422, 503),
+    )
+    async def memo_list(status: str = "active", limit: int = Query(20, ge=1, le=500)) -> dict[str, Any]:
+        return {"memos": await call(store.list, status=status, limit=limit, errors=(ValueError,))}
+
+    @router.post(
+        "/state/v1/memo/{note_id}/done",
+        tags=["state"],
+        response_model=_schema.MemoEnvelope,
+        summary="Archive an agent memo with a reason",
+        responses=errors(404, 422, 503),
+    )
+    async def memo_done(note_id: int, body: MemoDoneInput) -> dict[str, Any]:
+        memo = await call(
+            store.done, note_id, body.reason, errors=(KeyError, ValueError), not_found="memo not found"
+        )
+        return {"memo": memo}
+
+
+def _commands(cli: Any, store: MemoStore) -> None:
+    commands = cli.command("memo", "Manage agent memos").add_subparsers(dest="memo_command", required=True)
+    add = commands.add_parser("add")
+    add.add_argument("text")
+    add.set_defaults(run=lambda args: {"memo": store.add(args.text)})
+    listing = commands.add_parser("list")
+    listing.add_argument("--status", default="active", choices=["active", "archived"])
+    listing.add_argument("--limit", type=int, default=20)
+    listing.set_defaults(run=lambda args: {"memos": store.list(args.status, args.limit)})
+    done = commands.add_parser("done")
+    done.add_argument("note_id", type=int)
+    done.add_argument("reason")
+    done.set_defaults(run=lambda args: {"memo": store.done(args.note_id, args.reason)})

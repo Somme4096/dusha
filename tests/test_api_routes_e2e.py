@@ -538,7 +538,7 @@ async def test_api_context_shape_and_same_state_auth(config, monkeypatch):
         )
     assert denied.status_code == 401
     assert allowed.status_code == 200
-    assert allowed.json()["context"]["identity"]["configured"] is False
+    assert "identity" not in allowed.json()["context"]["blocks"]
 
 
 async def test_api_context_validation_errors(config):
@@ -578,7 +578,7 @@ async def test_openapi_paths_are_documented(config, monkeypatch):
         paths = openapi["paths"]
         for path in [
             "/health", "/state/v1/messages", "/state/v1/messages/{message_id}",
-            "/state/v1/mods", "/state/v1/memory/search", "/state/v1/memory/{message_id}",
+            "/state/v1/plugins", "/state/v1/memory/search", "/state/v1/memory/{message_id}",
             "/state/v1/evergreen/facts", "/state/v1/evergreen/facts/{fact_id}/history",
             "/state/v1/evergreen/facts/{fact_id}/revisions", "/state/v1/evergreen/facts/{fact_id}/forget",
             "/state/v1/memo/add", "/state/v1/memo/list", "/state/v1/memo/{note_id}/done",
@@ -638,9 +638,10 @@ async def test_endpoint_response_keys_and_conflict_flow(config, monkeypatch):
         missing = await client.get("/state/v1/messages/999999")
         assert missing.status_code == 404
         assert isinstance(missing.json()["detail"], str)
-        mods = await client.get("/state/v1/mods")
-        assert mods.status_code == 200
-        assert mods.json() == {}
+        plugins = await client.get("/state/v1/plugins")
+        assert plugins.status_code == 200
+        assert list(plugins.json()) == ["identity", "memory", "evergreen", "memo", "affect", "proactive"]
+        assert {report["state"] for report in plugins.json().values()} == {"active"}
         search = await client.post("/state/v1/memory/search", json={"query": "amber window", "limit": 2})
         assert search.status_code == 200
         for hit in search.json()["results"]:
@@ -652,7 +653,7 @@ async def test_endpoint_response_keys_and_conflict_flow(config, monkeypatch):
 
 
 PROTECTED_ROUTES = [
-    ("GET", "/state/v1/mods", None, None),
+    ("GET", "/state/v1/plugins", None, None),
     ("POST", "/state/v1/messages",
      {"harness": "api", "conversation_id": "auth", "role": "user", "content": "hi"}, None),
     ("GET", "/state/v1/messages/1", None, None),

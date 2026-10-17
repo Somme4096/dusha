@@ -37,26 +37,34 @@ Integrations (e.g. opencode-dusha) send each message to `dusha` and add its cont
 - Evergreen: Long-term facts that you edit from the CLI and your companion edits through integration tools. No automatic extraction 
 	* think of it as a USER.md that actually has good lifecycle management and duplication prevention
 - Affect: A deterministic emotion engine with decay and silence drift. Proactive messages fire on thresholds. 
-	* And yeah, message intent analysis can be a mod too: drop Jev or any other classifier into the mods directory and its `decide` hook picks which emotion each user message moves.
+	* And yeah, message intent analysis can be a mod too: drop Jev or any other classifier into the mods directory and its `decide` listener picks which emotion each user message moves.
 - Identity: `identity.md`, or name one your own.
 
 </details>
 
 ## Mod API
 
-A mod is a directory under the mods directory holding `README.md`, `main.py`, `pyproject.toml`, and `uv.lock`. The gateway runs `main.py` in its own `uv` environment as a long-lived child process and calls the hooks it exports. Every hook is optional. `options` is the mod's `options` object from `config.json` plus `database_path` and `context_max_chars`.
+Every part of Dusha is a plugin: identity, memory, evergreen, memo, affect, and proactive are built in, and a mod is a plugin you add. A mod is a directory under the mods directory holding `pyproject.toml` and `uv.lock`. The gateway installs it into its own `uv` environment, runs it as a long-lived child process, and imports the module named in `[tool.dusha]`:
 
-| Hook | Called | Request | Returns |
-| --- | --- | --- | --- |
-| `start(options)` | Once when the mod loads, and again after a restart | | ignored |
-| `on_message(message, options)` | For every stored message, in id order | The stored row: `id`, `conversation_id`, `role`, `text`, `content`, `external_id`, `occurred_at`, `ingested_at`, `sha256`, `harness`, `external_conversation_id`, `route` | ignored. An exception leaves the message undelivered, and the gateway retries it before any later one |
-| `on_context(request, options)` | For every context build | `query`, `harness`, `conversation_id` | `{"text": "...", "records": [{"source": "...", "text": "..."}]}` or `None` |
-| `decide(request, options)` | For every new user message while affect is on | `message`, `emotions` (the resolved dimensions), `state` (the affect snapshot), `instruction` | `{"emotion": "<dimension>"}`, `{"deltas": {"<dimension>": <number>}}`, both, or `None` |
-| `tick(options)` | Every `mods.tick_interval_seconds` | | ignored |
-| `status(options)` | On `GET /state/v1/mods` and `dusha mods status` | | any JSON value |
-| `close(options)` | On shutdown | | ignored |
+```toml
+[tool.dusha]
+entry = "my_mod"
+inject = ["messages"]
+```
 
-The first `emotion` among the mods in `mods.modules` order wins. `deltas` from every mod merge and apply after the increment. Dimension names come from your `emotions.json`.
+The module defines `apply(ctx, config)`, which runs when the mod loads and again after a restart. `config` is the mod's `options` from `config.json` plus `context_max_chars`. `inject` lists the services the mod calls, and a mod whose service is missing stays inactive.
+
+| Call | Effect |
+| --- | --- |
+| `ctx.on("message", fn)` | `fn(message)` runs for every stored message, in id order, with the stored row: `id`, `conversation_id`, `role`, `text`, `content`, `external_id`, `occurred_at`, `ingested_at`, `sha256`, `harness`, `external_conversation_id`, `route`. An exception leaves the message undelivered, and the gateway retries it before any later one. |
+| `ctx.on("context", fn)` | `fn(request)` runs for every context build with `query`, `harness`, `conversation_id`, `exclude_message_ids`, and `include_recent`. Return `{"text": "...", "records": [{"source": "...", "text": "..."}]}` or `None`. |
+| `ctx.on("decide", fn)` | `fn(request)` runs for every new user message while affect is on, with `message`, `emotions` (the resolved dimensions), `state` (the affect snapshot), and `instruction`. Return `{"emotion": "<dimension>"}`, `{"deltas": {"<dimension>": <number>}}`, both, or `None`. |
+| `ctx.interval(seconds, fn)` | `fn()` runs on that interval while the gateway serves. |
+| `ctx.on_dispose(fn)` | `fn()` runs on shutdown. |
+| `ctx.data_dir` | A private directory, `plugins/<name>` under `data_dir`. |
+| `ctx.<service>.<method>(...)` | Calls a method of an injected service and returns its JSON result: `messages` (`get`, `recent`, `search`, `context`, `after`), `companion` (`ingest_message`, `build_context`, `latest_route`), `affect` (`status`), `evergreen` (`remember`, `revise`, `forget`, `list_current`, `history`), `memo` (`add`, `list`, `done`), `proactive` (`evaluate`, `poll`, `acknowledge`). |
+
+The first `emotion` in `plugins` order wins. `deltas` from every plugin merge and apply after the increment. Dimension names come from your `emotions.json`.
 
 ## Documentation
 

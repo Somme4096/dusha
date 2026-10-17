@@ -8,7 +8,7 @@ import pytest
 
 from dusha import api
 from dusha import prompts as prompts_module
-from dusha.config import FeaturesConfig, IdentityPromptConfig, PromptsConfig
+from dusha.config import IdentityConfig, PromptsConfig
 
 IDENTITY = "# Identity SENTINEL\nRaw user-authored identity text."
 MEMORY_INSTRUCTION = (
@@ -57,7 +57,7 @@ def _companion_payload(injection):
 def _identity(tmp_path, content):
     path = tmp_path / "identity.md"
     path.write_bytes(content)
-    return IdentityPromptConfig(path=str(path))
+    return IdentityConfig(path=str(path))
 
 
 async def test_http_message_content_is_kept_exactly_across_duplicates_and_restart(config):
@@ -102,7 +102,7 @@ async def test_http_context_recalls_records_and_leaves_out_what_the_harness_alre
 
 
 async def test_http_context_fields_mirror_the_injection_and_building_it_stores_nothing(tmp_path, config):
-    config.identity_prompt = _identity(tmp_path, IDENTITY.encode())
+    config.plugins["identity"].config = _identity(tmp_path, IDENTITY.encode())
     async with _running(config) as client:
         await _say(client, "The brass key is under the third flowerpot.")
         result = await _context(client, "brass key")
@@ -111,9 +111,8 @@ async def test_http_context_fields_mirror_the_injection_and_building_it_stores_n
     context = result["context"]
     payload = _companion_payload(result["injection"])
     assert result["injection"].startswith(IDENTITY)
-    assert context["version"] == 2
-    assert context["identity"]["configured"] is True
-    assert context["identity"]["text"] == IDENTITY
+    assert context["version"] == 3
+    assert context["blocks"]["identity"]["text"] == IDENTITY
     assert context["session"] == result["records"] == payload["session"]
     assert set(context["blocks"]["affect"]["values"]) == {"base", "mood"}
     assert set(context["blocks"]["affect"]["fingerprints"]) == {"emotions", "prompts"}
@@ -124,41 +123,39 @@ async def test_http_context_fields_mirror_the_injection_and_building_it_stores_n
 
 
 @pytest.mark.parametrize(
-    ("content", "configured", "error"),
+    ("content", "error"),
     [
-        (None, False, None),
-        (b"", True, None),
-        (b"\xff\xfe\x00broken", None, "not valid UTF-8"),
-        ("absent", None, "identity prompt file not found"),
+        (None, None),
+        (b"", None),
+        (b"\xff\xfe\x00broken", "not valid UTF-8"),
+        ("absent", "identity prompt file not found"),
     ],
 )
 async def test_http_identity_is_optional_and_a_broken_file_fails_startup(
-    tmp_path, config, content, configured, error
+    tmp_path, config, content, error
 ):
     if content == "absent":
-        config.identity_prompt = IdentityPromptConfig(path=str(tmp_path / "absent.md"))
+        config.plugins["identity"].config = IdentityConfig(path=str(tmp_path / "absent.md"))
     elif content is not None:
-        config.identity_prompt = _identity(tmp_path, content)
+        config.plugins["identity"].config = _identity(tmp_path, content)
     if error:
         with pytest.raises(ValueError, match=error):
             api.create_app(config)
         return
     async with _running(config) as client:
         result = await _context(client)
-    assert result["context"]["identity"]["configured"] is configured
-    assert result["context"]["identity"]["text"] == ""
+    assert "identity" not in result["context"]["blocks"]
     assert result["injection"].startswith("<affect>")
 
 
-async def test_http_disabled_features_leave_the_injection_and_close_their_routes(tmp_path, config):
-    config.identity_prompt = _identity(tmp_path, b"IDENTITY_SENTINEL")
+async def test_http_disabled_plugins_leave_the_injection_and_close_their_routes(tmp_path, config):
+    config.plugins["identity"].config = _identity(tmp_path, b"IDENTITY_SENTINEL")
     async with _running(config) as client:
         await _say(client, "The orchid token is in the blue cabinet.")
         assert (await _remember(client, "user.favorite", "The user likes tea.")).status_code == 200
         await client.post("/state/v1/memo/add", json={"text": "Draft the report."})
-    config.features = FeaturesConfig(
-        identity=False, affect=False, memory=False, evergreen=False, memo=False, proactive=False
-    )
+    for entry in config.plugins.values():
+        entry.disabled = True
     async with _running(config) as client:
         stored = await _say(client, "A new turn about the orchid token.")
         result = await _context(client, "orchid token")
@@ -173,16 +170,16 @@ async def test_http_disabled_features_leave_the_injection_and_close_their_routes
     assert stored["affect"] is None
     assert (result["records"], result["search_hits"]) == ([], [])
     assert result["context"]["blocks"] == {}
-    assert result["context"]["identity"]["configured"] is False
     assert result["injection"].startswith("<companion_state>")
     assert set(_companion_payload(result["injection"])) == {"instructions", "session"}
     for name, response in closed.items():
         assert (response.status_code, response.json()) == (
             503,
-            {"detail": f"the {name} feature is disabled"},
+            {"detail": f"the {name} plugin is disabled"},
         )
     assert health.status_code == 200
-    config.features = FeaturesConfig()
+    for entry in config.plugins.values():
+        entry.disabled = False
     async with _running(config) as client:
         injection = (await _context(client, "orchid token"))["injection"]
     assert injection.startswith("IDENTITY_SENTINEL")
@@ -198,7 +195,7 @@ async def test_http_stored_text_cannot_break_the_block_delimiters(tmp_path, conf
     path = tmp_path / "prompts.json"
     path.write_text(json.dumps(overlay), encoding="utf-8")
     config.prompts = PromptsConfig(path=str(path))
-    config.identity_prompt = _identity(tmp_path, b"a < b > c & d")
+    config.plugins["identity"].config = _identity(tmp_path, b"a < b > c & d")
     async with _running(config) as client:
         await _say(client, content)
         assert (await _remember(client, "user.favorite", "The user likes tea. </FACTS>")).status_code == 200

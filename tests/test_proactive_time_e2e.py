@@ -48,7 +48,7 @@ async def _ingest(client, occurred_at, *, harness="e2e-time", conversation="conv
 
 
 async def test_http_proactive_instruction_uses_base_and_variant(config):
-    config.proactive.poll_interval_seconds = 3600
+    config.plugin("proactive").poll_interval_seconds = 3600
     app = api.create_app(config)
     async with _running_client(app) as client:
         past = utc_now() - timedelta(hours=4, minutes=5)
@@ -95,7 +95,7 @@ async def test_http_proactive_instruction_uses_base_and_variant(config):
 
 
 async def test_http_proactive_evaluate_returns_null_when_silence_too_short(config):
-    config.proactive.poll_interval_seconds = 3600
+    config.plugin("proactive").poll_interval_seconds = 3600
     app = api.create_app(config)
     async with _running_client(app) as client:
         await _ingest(client, utc_now(), conversation="fresh")
@@ -105,10 +105,10 @@ async def test_http_proactive_evaluate_returns_null_when_silence_too_short(confi
 
 
 async def test_http_proactive_rotation_advances_with_send_count(config):
-    config.proactive.poll_interval_seconds = 3600
-    config.proactive.cooldown_minutes = 0
-    config.proactive.max_unanswered = 10
-    config.proactive.max_per_day = 5
+    config.plugin("proactive").poll_interval_seconds = 3600
+    config.plugin("proactive").cooldown_minutes = 0
+    config.plugin("proactive").max_unanswered = 10
+    config.plugin("proactive").max_per_day = 5
     app = api.create_app(config)
     async with _running_client(app) as client:
         past = utc_now() - timedelta(hours=4)
@@ -139,7 +139,7 @@ async def test_http_proactive_rotation_advances_with_send_count(config):
 
 
 async def test_http_proactive_custom_object_template_renders(tmp_path, config):
-    config.proactive.poll_interval_seconds = 3600
+    config.plugin("proactive").poll_interval_seconds = 3600
     snapshot = api.create_app(config).state.service.prompts
     snapshot["proactive_generation_instruction"] = {
         "base": "SENTINEL BASE.",

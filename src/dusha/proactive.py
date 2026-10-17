@@ -3,16 +3,51 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from zoneinfo import ZoneInfo
 
-from .config import AppConfig
-from .hooks import Contributor
+from fastapi import APIRouter, Query
+
+from . import schema as _schema
+from .config import ProactiveConfig
+from .database import Database
+from .emotions import with_thresholds
+from .interfaces import GatewayInput, call, errors
 from .serialization import compact_json
 from .timeutil import isoformat, parse_time, utc_now
 
-if TYPE_CHECKING:
-    from .service import CompanionService
+name = "proactive"
+inject = ("affect",)
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS proactive_events (
+    id TEXT PRIMARY KEY,
+    conversation_id INTEGER REFERENCES conversations(id) ON DELETE SET NULL,
+    route TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    dedup_key TEXT NOT NULL UNIQUE,
+    payload_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    consumer TEXT,
+    available_at TEXT NOT NULL,
+    lease_until TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    sent_at TEXT,
+    last_error TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS proactive_events_poll
+ON proactive_events(status, available_at, created_at);
+"""
+
+
+class AckInput(GatewayInput):
+    consumer: str
+    outcome: str
+    text: str = ""
+    external_id: str = ""
+    error: str = ""
 
 
 def format_silence(minutes: float) -> str:
@@ -71,19 +106,26 @@ def build_proactive_instruction(
     return f"{base.rstrip()}\n{ruling}\n{ladder}\n{approach}"
 
 
-class ProactiveEngine(Contributor):
-    name = "proactive"
+class ProactiveEngine:
+    name = name
 
-    def __init__(self, service: CompanionService, config: AppConfig):
-        self.service = service
-        self.database = service.database
-        self.config = config
-        self.rules = config.proactive
-        self.timezone = ZoneInfo(config.timezone)
-
-    @property
-    def _emotional(self) -> dict[str, Any]:
-        return self.service.affect.emotions["proactive"]
+    def __init__(
+        self,
+        database: Database,
+        config: ProactiveConfig,
+        timezone: str,
+        prompts: dict[str, Any],
+        affect: Any,
+        companion: Any,
+    ):
+        self.database = database
+        database.migrate(SCHEMA)
+        self.rules = config
+        self.timezone = ZoneInfo(timezone)
+        self.prompts = prompts
+        self.affect = affect
+        self.companion = companion
+        self.triggers = with_thresholds(affect.emotions, config.thresholds)["proactive"]["triggers"]
 
     def on_message(self, message: dict[str, Any]) -> None:
         if message.get("role") != "user":
@@ -119,9 +161,9 @@ class ProactiveEngine(Contributor):
 
     def evaluate(self, now: datetime | None = None) -> dict[str, Any] | None:
         current = now or utc_now()
-        if not self.config.features.proactive or self._quiet(current):
+        if self._quiet(current):
             return None
-        state = self.service.affect.status(current)
+        state = self.affect.status(current)
         if not state["last_user_message_at"]:
             return None
         last_user = parse_time(state["last_user_message_at"])
@@ -136,7 +178,7 @@ class ProactiveEngine(Contributor):
             elapsed = (current - parse_time(state["last_proactive_sent_at"])).total_seconds() / 60
             if elapsed < self.rules.cooldown_minutes:
                 return None
-        route = self.service.latest_route()
+        route = self.companion.latest_route()
         if not route:
             return None
         with self.database.connect() as db:
@@ -150,7 +192,7 @@ class ProactiveEngine(Contributor):
         reason = next(
             (
                 trigger["reason"]
-                for trigger in self._emotional["triggers"]
+                for trigger in self.triggers
                 if state["base"][trigger["dimension"]] >= trigger["threshold"]
             ),
             None,
@@ -158,8 +200,8 @@ class ProactiveEngine(Contributor):
         if reason is None:
             return None
 
-        framing = self.service.prompts["proactive_framing"]
-        context = self.service.build_context(
+        framing = self.prompts["proactive_framing"]
+        context = self.companion.build_context(
             query=str(framing["context_query"]),
             harness=route["harness"],
             conversation_id=route["external_id"],
@@ -176,10 +218,10 @@ class ProactiveEngine(Contributor):
         )
         event_id = str(uuid.uuid4())
         silence_text = format_silence(silence_minutes)
-        spec = self.service.prompts["proactive_generation_instruction"]
+        spec = self.prompts["proactive_generation_instruction"]
         base = str(spec["base"])
         variant_index, variant = select_proactive_variant(spec, sent_today)
-        feeling = ruling_feeling(state["base"], self.service.affect.spec)
+        feeling = ruling_feeling(state["base"], self.affect.spec)
         ladder_stage, ladder = ladder_line(framing["ladder"], int(state["unanswered_proactive"]))
         generation_instruction = build_proactive_instruction(base, variant, framing, feeling, ladder)
         payload = {
@@ -309,14 +351,14 @@ class ProactiveEngine(Contributor):
                     (isoformat(available), isoformat(current), error[:1000], event_id),
                 )
         if outcome == "sent":
-            self.service.affect.on_proactive_sent(current)
+            self.affect.on_proactive_sent(current)
             if text.strip():
                 with self.database.connect() as db:
                     conversation = db.execute(
                         "SELECT * FROM conversations WHERE id=?", (row["conversation_id"],)
                     ).fetchone()
                 if conversation:
-                    self.service.ingest_message(
+                    self.companion.ingest_message(
                         harness=str(conversation["harness"]),
                         conversation_id=str(conversation["external_id"]),
                         role="assistant",
@@ -326,3 +368,81 @@ class ProactiveEngine(Contributor):
                         occurred_at=current,
                     )
         return {"id": event_id, "outcome": outcome}
+
+
+def apply(ctx: Any, config: ProactiveConfig) -> None:
+    engine = ProactiveEngine(
+        ctx.database, config, ctx.settings.timezone, ctx.prompts, ctx.affect, ctx.companion
+    )
+    ctx.provide("proactive", engine)
+    ctx.on("message", engine.on_message)
+    ctx.interval(max(5, config.poll_interval_seconds), engine.evaluate)
+    _routes(ctx.api, engine)
+    _commands(ctx.cli, engine)
+
+
+def _routes(router: APIRouter, engine: ProactiveEngine) -> None:
+    @router.post(
+        "/state/v1/proactive/evaluate",
+        tags=["state"],
+        response_model=_schema.ProactiveEvaluateResponse,
+        responses=errors(503),
+    )
+    async def evaluate_proactive() -> dict[str, Any]:
+        return {"event": await call(engine.evaluate)}
+
+    @router.get(
+        "/state/v1/proactive/events",
+        tags=["state"],
+        response_model=_schema.ProactivePollResponse,
+        summary="Poll and lease proactive events",
+        responses=errors(503),
+    )
+    async def poll_proactive(
+        consumer: str = Query(..., min_length=1),
+        harness: str = "",
+        limit: int = Query(1, ge=1, le=20),
+    ) -> dict[str, Any]:
+        return {"events": await call(engine.poll, consumer, limit, None, harness)}
+
+    @router.post(
+        "/state/v1/proactive/events/{event_id}/ack",
+        tags=["state"],
+        response_model=_schema.AckResponse,
+        responses=errors(404, 409, 503),
+    )
+    async def acknowledge_proactive(event_id: str, body: AckInput) -> dict[str, Any]:
+        return await call(
+            engine.acknowledge,
+            event_id,
+            body.consumer,
+            body.outcome,
+            text=body.text,
+            external_id=body.external_id,
+            error=body.error,
+            errors=(KeyError, ValueError),
+            not_found="event not found",
+            invalid=409,
+        )
+
+
+def _commands(cli: Any, engine: ProactiveEngine) -> None:
+    commands = cli.command("proactive", "Manage proactive events").add_subparsers(
+        dest="proactive_command", required=True
+    )
+    commands.add_parser("evaluate").set_defaults(run=lambda args: {"event": engine.evaluate()})
+    poll = commands.add_parser("poll")
+    poll.add_argument("--consumer", default="cli")
+    poll.add_argument("--limit", type=int, default=1)
+    poll.set_defaults(run=lambda args: {"events": engine.poll(args.consumer, args.limit)})
+    ack = commands.add_parser("ack")
+    ack.add_argument("event_id")
+    ack.add_argument("outcome", choices=["sent", "failed", "release"])
+    ack.add_argument("--consumer", default="cli")
+    ack.add_argument("--text", default="")
+    ack.add_argument("--error", default="")
+    ack.set_defaults(
+        run=lambda args: engine.acknowledge(
+            args.event_id, args.consumer, args.outcome, text=args.text, error=args.error
+        )
+    )

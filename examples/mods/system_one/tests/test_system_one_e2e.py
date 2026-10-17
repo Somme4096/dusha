@@ -12,7 +12,7 @@ import httpx
 import pytest
 
 from dusha import api
-from dusha.config import AffectConfig, AppConfig, ModConfig, ModsConfig
+from dusha.config import AffectConfig, AppConfig, ModConfig
 
 MOD_DIR = Path(__file__).resolve().parents[1]
 
@@ -94,8 +94,8 @@ async def _client(config: AppConfig):
 def _config(tmp_path: Path, mods: Path, **options) -> AppConfig:
     return AppConfig(
         data_dir=tmp_path / "data",
-        affect=AffectConfig(increment=0.25),
-        mods=ModsConfig(dir=str(mods), modules={"system_one": ModConfig(options=options)}),
+        mods_dir=str(mods),
+        plugins={"affect": AffectConfig(increment=0.25), "system_one": ModConfig(options=options)},
     )
 
 
@@ -129,11 +129,11 @@ async def test_system_one_asks_the_classifier_and_applies_its_choice(tmp_path, m
     async with _client(_config(tmp_path, mods, **options)) as client:
         before = await _base(client)
         stored = await _post(client)
-        status = await client.get("/state/v1/mods")
+        status = await client.get("/state/v1/plugins")
     assert stored.status_code == 200, stored.text
     assert stored.json()["affect"]["emotion"] == "fear"
     assert stored.json()["affect"]["state"]["base"]["fear"] == pytest.approx(before["fear"] + 0.25, abs=1e-3)
-    assert status.json()["system_one"]["exports"] == ["decide"]
+    assert status.json()["system_one"]["events"] == ["decide"]
     assert len(server.requests) == 1
     request = server.requests[0]
     assert request["path"] == "/v1/systemone"

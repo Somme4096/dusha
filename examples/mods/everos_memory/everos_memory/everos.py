@@ -167,10 +167,11 @@ class EverOSMirror:
                 )
                 db.execute(
                     """INSERT INTO everos_outbox
-                       (message_id, session_id, app_id, project_id, sender_id, role, text, timestamp)
-                       VALUES(?,?,?,?,?,?,?,?)""",
+                       (message_id, session_id, app_id, project_id, sender_id, role, text, timestamp,
+                        queued_at)
+                       VALUES(?,?,?,?,?,?,?,?,?)""",
                     (message_id, session_id, self.app_id, self.project_id,
-                     sender_id, role, text, timestamp),
+                     sender_id, role, text, timestamp, str(record.get("ingested_at", ""))),
                 )
                 inserted += 1
         return inserted
@@ -480,9 +481,8 @@ class EverOSMirror:
         now = self._now().isoformat()
         with self.database.connect() as db:
             add = db.execute(
-                """SELECT o.*, m.ingested_at AS queued_at
-                   FROM everos_outbox o JOIN messages m ON m.id=o.message_id
-                   WHERE o.delivered_at IS NULL ORDER BY o.attempts, o.id LIMIT 1"""
+                """SELECT * FROM everos_outbox
+                   WHERE delivered_at IS NULL ORDER BY attempts, id LIMIT 1"""
             ).fetchone()
             flush = db.execute(
                 """SELECT * FROM everos_flush_state
@@ -507,33 +507,6 @@ class EverOSMirror:
         return {
             "attempted": 1, "delivered": 0, "failed": 0,
             "flushed": 0, "flush_failed": 0,
-        }
-
-    def status(self) -> dict[str, Any]:
-        with self.database.connect() as db:
-            row = db.execute(
-                """SELECT COUNT(*) FILTER (WHERE delivered_at IS NULL) AS pending,
-                   COUNT(*) FILTER (WHERE delivered_at IS NOT NULL) AS buffered,
-                   COUNT(*) FILTER (WHERE flush_generation > 0 AND processed_at IS NULL) AS flush_pending,
-                   COUNT(*) FILTER (WHERE processed_at IS NOT NULL) AS processed,
-                   COALESCE(SUM(attempts), 0) AS attempts, MAX(last_error) AS last_error
-                   FROM everos_outbox"""
-            ).fetchone()
-            flush = db.execute(
-                "SELECT COALESCE(SUM(attempts), 0) AS attempts, "
-                "MAX(last_error) AS last_error, MAX(last_result) AS last_result "
-                "FROM everos_flush_state"
-            ).fetchone()
-        return {
-            "enabled": True,
-            "pending": int(row["pending"]),
-            "buffered": int(row["buffered"]),
-            "flush_pending": int(row["flush_pending"]),
-            "processed": int(row["processed"]),
-            "attempts": int(row["attempts"]) + int(flush["attempts"]),
-            "last_error": flush["last_error"] or row["last_error"],
-            "last_result": flush["last_result"],
-            "flush_after_ingest": self.flush_after_ingest,
         }
 
     def close(self) -> None:

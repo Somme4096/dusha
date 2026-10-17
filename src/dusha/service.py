@@ -4,77 +4,85 @@ import logging
 from datetime import datetime
 from typing import Any
 
-from . import identity as _identity
+from fastapi import APIRouter, HTTPException
+
+from . import affect, evergreen, identity, memo, memory, proactive
 from . import mods as _mods
 from . import prompts as _prompts
-from .affect import AffectEngine
 from .config import AppConfig
 from .context import ContextComposer
 from .database import Database
-from .evergreen import EvergreenStore
-from .hooks import ContextRequest, Contributor, Registry
-from .memo import MemoStore
+from .hooks import ContextRequest, Registry
+from .interfaces import CommandError, Commands
 from .memory import MemoryStore
-from .proactive import ProactiveEngine
 
 logger = logging.getLogger("dusha")
 
+BUILTINS = {plugin.name: plugin for plugin in (identity, memory, evergreen, memo, affect, proactive)}
 
-class FeatureDisabledError(RuntimeError):
+
+class Disabled:
     def __init__(self, name: str):
-        super().__init__(f"the {name} feature is disabled")
+        self.name = name
+
+    def apply(self, ctx: Any, config: Any) -> None:
+        return None
 
 
 class CompanionService:
-    def __init__(self, config: AppConfig):
+    def __init__(self, config: AppConfig, commands: Commands | None = None):
         self.config = config
-        self.features = config.features
         self.database = Database(config.database_path)
         self.prompts = _prompts.resolve_prompts(config.prompts)
-        self.identity_text, self.identity_revision = "", ""
-        if self.features.identity:
-            self.identity_text, self.identity_revision = _identity.load_identity(
-                config.identity_prompt
-            )
-        self.identity_configured = bool(self.features.identity and config.identity_prompt.path)
-        self.composer = ContextComposer(
-            prompts=self.prompts,
-            identity_text=self.identity_text,
-            identity_configured=self.identity_configured,
-            identity_revision=self.identity_revision,
-        )
         self.messages = MemoryStore(self.database)
-        self.evergreen = EvergreenStore(self.database, config.evergreen, self.prompts)
-        self.memo = MemoStore(self.database, config.memo, self.prompts)
-        self.affect = AffectEngine(self.database, config, self.prompts) if self.features.affect else None
-        self.proactive = ProactiveEngine(self, config)
+        self.composer = ContextComposer(prompts=self.prompts)
+        self.router = APIRouter()
+        self.commands = commands or Commands()
+        self.registry = Registry(
+            {
+                "settings": config,
+                "database": self.database,
+                "prompts": self.prompts,
+                "messages": self.messages,
+                "companion": self,
+                "api": self.router,
+                "cli": self.commands,
+            },
+            config.data_dir / "plugins",
+        )
         mods_dir = _mods.resolve_mods_dir(config)
-        self.mods = [
-            _mods.Mod(name, settings, mods_dir, self.database, self.prompts)
-            for name, settings in config.mods.modules.items()
-        ]
-        self.hooks = Registry()
-        if self.features.evergreen:
-            self.hooks.add(self.evergreen)
-        for mod in self.mods:
-            self.hooks.add(mod)
-        for enabled, contributor in (
-            (self.features.memo, self.memo),
-            (self.features.affect, self.affect),
-            (self.features.proactive, self.proactive),
-        ):
-            if enabled:
-                self.hooks.add(contributor)
-        if self.affect is not None:
-            self.affect.registry = self.hooks
-        self.hooks.start()
+        for name, entry in config.plugins.items():
+            if entry.disabled:
+                self.registry.plugin(Disabled(name), entry.config).state = "disabled"
+            elif name in BUILTINS:
+                self.registry.plugin(BUILTINS[name], entry.config)
+            else:
+                self.registry.plugin(_mods.Mod(name, entry.config, mods_dir), entry.config)
+        self.registry.start()
+        for runtime in self.registry.runtimes:
+            if runtime.state in {"disabled", "inactive"}:
+                self._placeholder(runtime.name, runtime.state, runtime.error)
 
-    def register(self, contributor: Contributor) -> None:
-        self.hooks.add(contributor)
+    def _placeholder(self, name: str, state: str, error: str) -> None:
+        detail = f"the {name} plugin is {state}" + (f", {error}" if error else "")
 
-    def require(self, name: str) -> None:
-        if not getattr(self.features, name):
-            raise FeatureDisabledError(name)
+        async def unavailable() -> None:
+            raise HTTPException(status_code=503, detail=detail)
+
+        for path in (f"/state/v1/{name}", f"/state/v1/{name}/{{rest:path}}"):
+            self.router.add_api_route(
+                path, unavailable, methods=["GET", "POST"], include_in_schema=False
+            )
+
+        def refuse(args: Any) -> None:
+            raise CommandError(detail)
+
+        parser = self.commands.command(name, f"Unavailable, {detail}")
+        parser.add_argument("rest", nargs="*")
+        parser.set_defaults(run=refuse)
+
+    def get(self, name: str) -> Any:
+        return self.registry.get(name)
 
     def ingest_message(
         self,
@@ -102,7 +110,7 @@ class CompanionService:
         if not message.duplicate:
             stored = self.messages.get(message.id)
             if stored is not None:
-                results = self.hooks.dispatch_message(stored)
+                results = self.registry.collect("message", stored)
         return {
             "id": message.id,
             "duplicate": message.duplicate,
@@ -120,87 +128,16 @@ class CompanionService:
         exclude_message_ids: set[int] | None = None,
         include_recent: bool = True,
     ) -> dict[str, Any]:
-        excluded = exclude_message_ids or set()
-        internal_conversation = None
-        if harness and conversation_id:
-            internal_conversation = self.messages.conversation_id(harness, conversation_id)
-
-        recent: list[dict[str, Any]] = []
-        if self.features.memory:
-            recent = self.messages.recent(
-                conversation_id=internal_conversation,
-                limit=self.config.memory.recent_messages,
-                exclude_ids=excluded,
-            )
-        recent_ids = {item["id"] for item in recent}
-        hits = (
-            self.messages.search(
-                query,
-                self.config.memory.search_hits,
-                self.config.memory.context_messages,
-                excluded | recent_ids,
-            )
-            if self.features.memory and query.strip()
-            else []
+        request = ContextRequest(
+            query=query,
+            harness=harness,
+            conversation_id=conversation_id,
+            exclude_message_ids=tuple(sorted(exclude_message_ids or ())),
+            include_recent=include_recent,
         )
-
-        records: list[dict[str, Any]] = []
-        seen: set[int] = set()
-        if include_recent:
-            for message in recent:
-                if message["id"] not in seen:
-                    records.append(self._record(message, "recent"))
-                    seen.add(message["id"])
-        else:
-            seen.update(recent_ids)
-        for hit in hits:
-            for message in hit["messages"]:
-                if message["id"] not in seen and message["id"] not in excluded:
-                    records.append(self._record(message, "recalled"))
-                    seen.add(message["id"])
-
-        blocks = self.hooks.dispatch_context(
-            ContextRequest(query=query, harness=harness, conversation_id=conversation_id)
-        )
-        composed = self.composer.compose(session_records=records, blocks=blocks)
-        return {
-            "injection": composed["injection"],
-            "records": composed["records"],
-            "search_hits": hits,
-            "context": composed["context"],
-        }
-
-    def mods_status(self) -> dict[str, Any]:
-        return {mod.name: mod.status() for mod in self.mods}
-
-    def tick(self) -> dict[str, Any]:
-        return self.hooks.tick()
-
-    def memory_reindex(self) -> dict[str, Any]:
-        self.messages.rebuild_index()
-        return {"status": "rebuilt"}
-
-    def memo_add(self, text: str, now: datetime | None = None) -> dict[str, Any]:
-        self.require("memo")
-        return self.memo.add(text, now)
-
-    def memo_list(self, status: str = "active", limit: int = 20) -> list[dict[str, Any]]:
-        self.require("memo")
-        return self.memo.list(status, limit)
-
-    def memo_done(self, note_id: int, reason: str, now: datetime | None = None) -> dict[str, Any]:
-        self.require("memo")
-        return self.memo.done(note_id, reason, now)
-
-    @staticmethod
-    def _record(message: dict[str, Any], source: str) -> dict[str, Any]:
-        return {
-            "memory_id": message["id"],
-            "source": source,
-            "time": message["occurred_at"],
-            "role": message["role"],
-            "text": message["text"],
-        }
+        composed = self.composer.compose(list(self.registry.collect("context", request).values()))
+        recall = composed["context"]["blocks"].get(memory.name) or {}
+        return {**composed, "search_hits": recall.get("search_hits", [])}
 
     def latest_route(self) -> dict[str, Any] | None:
         with self.database.connect() as db:
@@ -212,8 +149,14 @@ class CompanionService:
             ).fetchone()
         return dict(row) if row else None
 
+    def plugins_status(self) -> dict[str, Any]:
+        return self.registry.status()
+
+    def tick(self) -> None:
+        self.registry.run_jobs()
+
     def backup(self, destination: str) -> str:
         return str(self.database.backup(destination))
 
     def close(self) -> None:
-        self.hooks.close()
+        self.registry.close()

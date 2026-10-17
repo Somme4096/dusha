@@ -13,7 +13,6 @@ import httpx
 import pytest
 
 from dusha import api
-from dusha.config import FeaturesConfig
 from dusha.timeutil import isoformat, utc_now
 
 _INTEGRATION_DIR = Path(__file__).resolve().parent
@@ -377,10 +376,10 @@ async def _poll_until(plugin, suffix):
 
 
 def _proactive_config(config):
-    config.proactive.poll_interval_seconds = 3600
-    config.proactive.cooldown_minutes = 0
-    config.proactive.max_unanswered = 10
-    config.proactive.max_per_day = 20
+    config.plugin("proactive").poll_interval_seconds = 3600
+    config.plugin("proactive").cooldown_minutes = 0
+    config.plugin("proactive").max_unanswered = 10
+    config.plugin("proactive").max_per_day = 20
     return config
 
 
@@ -643,18 +642,20 @@ async def test_tool_gateway_statuses_map_to_ok_false_with_status(config, monkeyp
         assert [item["text"] for item in await rig.facts()] == ["Ada drinks tea"]
         assert await rig.memos() == []
 
-    config.features = FeaturesConfig(memory=False, evergreen=False, memo=False)
+    for name in ("memory", "evergreen", "memo"):
+        config.plugins[name].disabled = True
     async with _running(config) as rig:
         plugin = await rig.plugin()
         for name, (_, arguments) in TOOL_CALLS.items():
             feature = "evergreen" if "evergreen" in name else "memo" if "yumecho" in name else "memory"
             assert await _tool(plugin, name, **arguments) == {
                 "ok": False,
-                "error": f"the {feature} feature is disabled",
+                "error": f"the {feature} plugin is disabled",
                 "status": 503,
             }
 
-    config.features = FeaturesConfig()
+    for name in ("memory", "evergreen", "memo"):
+        config.plugins[name].disabled = False
     config.api_token = "right-secret"
     async with _running(config) as rig:
         denied = await rig.plugin(api_token="wrong-secret")

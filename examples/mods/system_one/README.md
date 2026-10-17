@@ -1,8 +1,8 @@
 # SystemOne mod
 
-This mod exports `decide`. It calls a running [llama.cpp server](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md)
+This mod listens for `decide`. It calls a running [llama.cpp server](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md)
 with decision-model support (`POST /v1/systemone`) and returns the emotion the
-server picks. The hook contract is in the project
+server picks. The mod contract is in the project
 [README](https://github.com/Somme4096/dusha#mod-api).
 
 ## Install
@@ -14,14 +14,12 @@ cp -R examples/mods/system_one ~/.config/dusha/dusha/mods/system_one
 
 ```json
 {
-  "mods": {
-    "modules": {
-      "system_one": {
-        "timeout_seconds": 15,
-        "options": {
-          "base_url": "http://127.0.0.1:8000",
-          "timeout_seconds": 10
-        }
+  "plugins": {
+    "system_one": {
+      "timeout_seconds": 15,
+      "options": {
+        "base_url": "http://127.0.0.1:8000",
+        "timeout_seconds": 10
       }
     }
   }

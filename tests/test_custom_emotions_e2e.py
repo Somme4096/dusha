@@ -46,11 +46,11 @@ async def _running_client(app):
 
 
 def _emotions(config, tmp_path, write_json, snapshot, name="emotions.json"):
-    config.affect = AffectConfig(
-        emotions_path=str(write_json(tmp_path / name, snapshot)), increment=config.affect.increment
+    config.plugins["affect"].config = AffectConfig(
+        emotions_path=str(write_json(tmp_path / name, snapshot)), increment=config.plugin("affect").increment
     )
-    config.proactive.thresholds = {}
-    config.proactive.poll_interval_seconds = 3600
+    config.plugin("proactive").thresholds = {}
+    config.plugin("proactive").poll_interval_seconds = 3600
     return config
 
 
@@ -134,7 +134,7 @@ def _scaled(value):
 
 
 async def _decide(app, emotion, now):
-    return app.state.service.affect.record_user_message(
+    return app.state.service.get("affect").record_user_message(
         message="x", source_message_id=None, decide=lambda _: [{"emotion": emotion}], instruction="", now=now
     )
 
@@ -196,7 +196,7 @@ async def test_http_silence_drift_never_lowers_a_raised_feeling(tmp_path, config
 
 
 def test_startup_rejects_config_increment_beyond_range(tmp_path, config, write_json):
-    config.affect.increment = 2.0
+    config.plugin("affect").increment = 2.0
     with pytest.raises(ValueError, match="decision.increment.*value_range span"):
         api.create_app(_emotions(config, tmp_path, write_json, CUSTOM))
 
@@ -204,8 +204,8 @@ def test_startup_rejects_config_increment_beyond_range(tmp_path, config, write_j
 def test_config_increment_overrides_file_default_but_not_dimension(tmp_path, config, write_json):
     snapshot = json.loads(json.dumps(CUSTOM))
     snapshot["dimensions"]["worry"]["increment"] = 0.3
-    config.affect.increment = 0.2
-    affect = api.create_app(_emotions(config, tmp_path, write_json, snapshot)).state.service.affect
+    config.plugin("affect").increment = 0.2
+    affect = api.create_app(_emotions(config, tmp_path, write_json, snapshot)).state.service.get("affect")
     assert (affect.increment_for("warmth"), affect.increment_for("worry")) == (0.2, 0.3)
 
 
@@ -227,12 +227,14 @@ def test_startup_rejects_rule_for_missing_dimension(tmp_path, config, write_json
 async def test_http_config_overrides_patch_silence_and_thresholds(tmp_path, write_json):
     path = write_json(tmp_path / "config.json", {
         "data_dir": "data",
-        "affect": {"silence": {"longing": {"rate_per_hour": 0.2}}},
-        "proactive": {"thresholds": {"fear": 0.9, "longing": 0.31}, "poll_interval_seconds": 3600},
+        "plugins": {
+            "affect": {"silence": {"longing": {"rate_per_hour": 0.2}}},
+            "proactive": {"thresholds": {"fear": 0.9, "longing": 0.31}, "poll_interval_seconds": 3600},
+        },
     })
     config = load_config(path)
     app = api.create_app(config)
-    triggers = app.state.service.affect.emotions["proactive"]["triggers"]
+    triggers = app.state.service.get("proactive").triggers
     assert [item["threshold"] for item in triggers] == [0.9, 0.31]
     async with _running_client(app) as client:
         await _silent_since(app, client, utc_now() - timedelta(hours=1))
@@ -256,7 +258,7 @@ async def test_http_custom_framing_and_block_delimiters_render(tmp_path, config,
         },
     }
     config.prompts = PromptsConfig(path=str(write_json(tmp_path / "prompts.json", overlay)))
-    config.proactive.poll_interval_seconds = 3600
+    config.plugin("proactive").poll_interval_seconds = 3600
     app = api.create_app(config)
     async with _running_client(app) as client:
         await _silent_since(app, client, utc_now() - timedelta(hours=4))

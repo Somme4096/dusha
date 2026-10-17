@@ -4,10 +4,8 @@ import sqlite3
 from pathlib import Path
 
 _EXTENSION_SCHEMA = """
-PRAGMA foreign_keys = ON;
-
 CREATE TABLE IF NOT EXISTS everos_sessions (
-    conversation_id INTEGER PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
+    conversation_id INTEGER PRIMARY KEY,
     session_id TEXT NOT NULL UNIQUE,
     app_id TEXT NOT NULL,
     project_id TEXT NOT NULL
@@ -28,7 +26,7 @@ ON everos_session_map(external_conversation_id);
 
 CREATE TABLE IF NOT EXISTS everos_outbox (
     id INTEGER PRIMARY KEY,
-    message_id INTEGER NOT NULL UNIQUE REFERENCES messages(id) ON DELETE CASCADE,
+    message_id INTEGER NOT NULL UNIQUE,
     session_id TEXT NOT NULL,
     app_id TEXT NOT NULL,
     project_id TEXT NOT NULL,
@@ -36,6 +34,7 @@ CREATE TABLE IF NOT EXISTS everos_outbox (
     role TEXT NOT NULL,
     text TEXT NOT NULL,
     timestamp INTEGER NOT NULL,
+    queued_at TEXT NOT NULL,
     attempts INTEGER NOT NULL DEFAULT 0,
     last_error TEXT,
     delivered_at TEXT,
@@ -71,11 +70,6 @@ class Database:
     def _ensure_extension_tables(self) -> None:
         with self.connect() as db:
             db.executescript(_EXTENSION_SCHEMA)
-            columns = {row[1] for row in db.execute("PRAGMA table_info(everos_outbox)")}
-            if "flush_generation" not in columns:
-                db.execute("ALTER TABLE everos_outbox ADD COLUMN flush_generation INTEGER NOT NULL DEFAULT 0")
-            if "processed_at" not in columns:
-                db.execute("ALTER TABLE everos_outbox ADD COLUMN processed_at TEXT")
 
     def connect(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.path, timeout=10)

@@ -242,7 +242,8 @@ async def test_http_memo_limits_follow_config_and_default_data_dir_sits_beside_c
     monkeypatch.chdir(elsewhere)
     path = home / "config.json"
     path.write_text(
-        json.dumps({"memo": {"max_items": 1, "text_max_chars": 12, "reason_max_chars": 5}}), encoding="utf-8"
+        json.dumps({"plugins": {"memo": {"max_items": 1, "text_max_chars": 12, "reason_max_chars": 5}}}),
+        encoding="utf-8",
     )
     config = load_config(path)
     assert config.data_dir == home / "data"

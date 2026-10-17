@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import socket
+import sqlite3
 import subprocess
 import threading
 import time
@@ -16,7 +17,7 @@ import httpx
 import pytest
 
 from dusha import api
-from dusha.config import AppConfig, EvergreenConfig, MemoryConfig, ModConfig, ModsConfig
+from dusha.config import AppConfig, EvergreenConfig, MemoryConfig, ModConfig
 
 MOD_DIR = Path(__file__).resolve().parents[1]
 
@@ -235,33 +236,54 @@ def _config(
 ) -> AppConfig:
     return AppConfig(
         data_dir=data_dir,
-        memory=MemoryConfig(
-            recent_messages=8,
-            search_hits=8,
-            context_messages=1,
-        ),
-        evergreen=EvergreenConfig(max_items=32, max_chars=4_000),
-        mods=ModsConfig(
-            dir=str(mods_dir),
-            tick_interval_seconds=1,
-            modules={
-                "everos_memory": ModConfig(
-                    timeout_seconds=gateway_timeout_seconds,
-                    options={
-                        "everos": {
-                            "url": sidecar_url,
-                            "app_id": "dusha-e2e",
-                            "project_id": "phase1",
-                            "instance_namespace": instance_namespace,
-                            "user_sender_id": user_sender_id,
-                            "assistant_sender_id": assistant_sender_id,
-                            "timeout_seconds": timeout_seconds,
-                        }
-                    },
-                )
-            },
-        ),
+        mods_dir=str(mods_dir),
+        plugins={
+            "memory": MemoryConfig(recent_messages=8, search_hits=8, context_messages=1),
+            "evergreen": EvergreenConfig(max_items=32, max_chars=4_000),
+            "everos_memory": ModConfig(
+                timeout_seconds=gateway_timeout_seconds,
+                options={
+                    "interval_seconds": 1,
+                    "everos": {
+                        "url": sidecar_url,
+                        "app_id": "dusha-e2e",
+                        "project_id": "phase1",
+                        "instance_namespace": instance_namespace,
+                        "user_sender_id": user_sender_id,
+                        "assistant_sender_id": assistant_sender_id,
+                        "timeout_seconds": timeout_seconds,
+                    }
+                },
+            ),
+        },
     )
+
+
+def _backlog(path: Path) -> dict:
+    if not path.is_file():
+        return {}
+    with sqlite3.connect(path) as db:
+        db.row_factory = sqlite3.Row
+        row = db.execute(
+            """SELECT COUNT(*) FILTER (WHERE delivered_at IS NULL) AS pending,
+               COUNT(*) FILTER (WHERE delivered_at IS NOT NULL) AS buffered,
+               COUNT(*) FILTER (WHERE flush_generation > 0 AND processed_at IS NULL) AS flush_pending,
+               COUNT(*) FILTER (WHERE processed_at IS NOT NULL) AS processed,
+               COALESCE(SUM(attempts), 0) AS attempts, MAX(last_error) AS last_error
+               FROM everos_outbox"""
+        ).fetchone()
+        flush = db.execute(
+            "SELECT COALESCE(SUM(attempts), 0) AS attempts, MAX(last_error) AS last_error "
+            "FROM everos_flush_state"
+        ).fetchone()
+    return {
+        "pending": int(row["pending"]),
+        "buffered": int(row["buffered"]),
+        "flush_pending": int(row["flush_pending"]),
+        "processed": int(row["processed"]),
+        "attempts": int(row["attempts"]) + int(flush["attempts"]),
+        "last_error": flush["last_error"] or row["last_error"],
+    }
 
 
 @asynccontextmanager
@@ -270,6 +292,7 @@ async def _client(config: AppConfig):
     async with application.router.lifespan_context(application):
         transport = httpx.ASGITransport(app=application, raise_app_exceptions=False)
         async with httpx.AsyncClient(transport=transport, base_url="http://dusha") as client:
+            client.everos_database = config.data_dir / "plugins" / "everos_memory" / "everos.sqlite3"
             yield client
 
 
@@ -320,9 +343,7 @@ async def _everos_search(url: str, session_id: str, query: str, user_id: str = "
 
 
 async def _everos_status(client: httpx.AsyncClient) -> dict:
-    response = await client.get("/state/v1/mods")
-    assert response.status_code == 200, response.text
-    return response.json()["everos_memory"]["status"]
+    return _backlog(client.everos_database)
 
 
 async def _wait_everos(client: httpx.AsyncClient, predicate) -> dict:
@@ -397,7 +418,6 @@ async def test_real_everos_projection_failure_retry_isolation_and_restart(tmp_pa
         history_text = [item["text"] for item in history_context.json()["records"]]
         assert history_text.index("Historical older event.") < history_text.index("Historical newer event.")
         delivered = await _pending_status(client, expected=0)
-        assert delivered["enabled"] is True
         assert delivered["pending"] == 0
 
     restart_everos()
@@ -422,7 +442,6 @@ async def test_real_everos_projection_failure_retry_isolation_and_restart(tmp_pa
         failed_status = await _wait_everos(
             client, lambda value: value.get("pending") == 1 and value.get("attempts", 0) >= 1
         )
-        assert failed_status["enabled"] is True
         assert failed_status["pending"] == 1
         assert failed_status["attempts"] >= 1
         local = await client.post("/state/v1/memory/search", json={"query": "amber lantern"})
@@ -434,7 +453,6 @@ async def test_real_everos_projection_failure_retry_isolation_and_restart(tmp_pa
         retry = await _ingest(client, "one", "Conversation one adds a brass compass.")
         assert retry["id"] > outage["id"]
         recovered = await _pending_status(client, expected=0)
-        assert recovered["enabled"] is True
         assert recovered["pending"] == 0
         persisted = await client.get(f"/state/v1/messages/{first['id']}")
         assert persisted.status_code == 200
@@ -557,7 +575,6 @@ async def test_external_malformed_and_slow_sidecars_keep_worker_alive(tmp_path: 
             break
     assert recovered is not None
     assert recovered["pending"] == 0
-    assert recovered["enabled"] is True
 
 
 @pytest.mark.asyncio
@@ -573,7 +590,6 @@ async def test_real_everos_rejection_does_not_block_later_delivery(tmp_path: Pat
         later = await _ingest(client, "later", "This later message is delivered.")
         status = await _wait_everos(client, lambda value: value.get("pending") == 1)
         assert status["pending"] == 1
-        assert status["enabled"] is True
 
     async with _client(config) as client:
         status = await _pending_status(client, expected=1)

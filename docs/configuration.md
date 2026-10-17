@@ -44,26 +44,30 @@ Rules for the file:
 
 [Passthrough](api.md#passthrough) under `/v1/to/*` takes the provider address from the request path. It has no keys of its own, ignores `upstream.base_url`, and never sends the `upstream.api_key_env` key.
 
-## Features
+## Plugins
 
-Each key turns one part of the companion on or off. A part that is off leaves the injection, and its routes return `503`. Stored rows stay on disk, and messages are always stored.
+Every part of the companion is a plugin under `plugins`, keyed by name. The built-in plugins are `identity`, `memory`, `evergreen`, `memo`, `affect`, and `proactive`. Any other name is a [mod](#mods). Messages are always stored.
 
-| Key | Default | Notes |
-| --- | --- | --- |
-| `features.identity` | `true` | The identity text. |
-| `features.affect` | `true` | Emotion state. Off also skips every mod's `decide` hook. |
-| `features.memory` | `true` | Recent and recalled messages, and the memory search routes. |
-| `features.evergreen` | `true` | Evergreen facts. |
-| `features.memo` | `true` | Memos. |
-| `features.proactive` | `true` | Proactive events. Needs `features.affect`. |
+- Plugins run in the order you list them, which is also the order of their blocks in the injection. Built-in plugins you leave out keep their packaged order ahead of the ones you list.
+- `"disabled": true` turns a plugin off and keeps the rest of its settings. A plugin that is off leaves the injection, its routes return `503`, and its commands exit with `1`. Stored rows stay on disk.
+- A plugin that needs a service another plugin provides stays inactive while that plugin is off. `proactive` needs `affect`.
+
+```json
+{
+  "plugins": {
+    "memo": {"disabled": true},
+    "system_one": {"options": {"base_url": "http://127.0.0.1:8000"}}
+  }
+}
+```
 
 ## Identity, emotions, and prompts
 
 | Key | Default | Notes |
 | --- | --- | --- |
-| `identity_prompt.path` | unset | Markdown file. The service prepends it verbatim to every context. Leave the key out to use `identity.md` next to `config.json`, when that file exists. An empty value fails startup while `features.identity` is on. |
-| `emotions.path` | `""` | Custom emotions file. Empty uses the packaged one. |
-| `emotions.expected_version` | `""` | Startup fails unless the file's `emotion_version` matches. Empty accepts any version. |
+| `plugins.identity.path` | unset | Markdown file. The service prepends it verbatim to every context. Leave the key out to use `identity.md` next to `config.json`, when that file exists. An empty value fails startup unless `plugins.identity.disabled` is `true`. |
+| `plugins.affect.emotions.path` | `""` | Custom emotions file. Empty uses the packaged one. |
+| `plugins.affect.emotions.expected_version` | `""` | Startup fails unless the file's `emotion_version` matches. Empty accepts any version. |
 | `prompts.path` | `""` | Overlay for the packaged prompt text. |
 
 A path that points at a missing file fails startup.
@@ -77,8 +81,10 @@ python -c "import json, dusha.prompts as p; d=p.default_prompts(); d.pop('schema
 
 ```json
 {
-  "identity_prompt": {"path": "identity.md"},
-  "emotions": {"path": "emotions.json", "expected_version": "0.4.0"},
+  "plugins": {
+    "identity": {"path": "identity.md"},
+    "affect": {"emotions": {"path": "emotions.json", "expected_version": "0.4.0"}}
+  },
   "prompts": {"path": "prompts.json"}
 }
 ```
@@ -108,25 +114,27 @@ Patch single values without a custom emotions file:
 
 ```json
 {
-  "affect": {
-    "mood_follow_hours": 12,
-    "mood_return_hours": 72,
-    "increment": 0.1,
-    "dimensions": {"fear": {"neutral": 0.05}},
-    "silence": {"longing": {"rate_per_hour": 0.02}}
-  },
-  "proactive": {"thresholds": {"longing": 0.4}}
+  "plugins": {
+    "affect": {
+      "mood_follow_hours": 12,
+      "mood_return_hours": 72,
+      "increment": 0.1,
+      "dimensions": {"fear": {"neutral": 0.05}},
+      "silence": {"longing": {"rate_per_hour": 0.02}}
+    },
+    "proactive": {"thresholds": {"longing": 0.4}}
+  }
 }
 ```
 
 | Key | Patches |
 | --- | --- |
-| `affect.increment` | `decision.increment`, the step a decision adds. A per-dimension `increment` still wins. |
-| `affect.dimensions` | `neutral`, `floor`, `tau`, or `increment` of an existing dimension. |
-| `affect.silence` | A silence rule. A new dimension name adds a rule. |
-| `proactive.thresholds` | The trigger threshold for that dimension. The dimension needs a trigger in the file. |
+| `plugins.affect.increment` | `decision.increment`, the step a decision adds. A per-dimension `increment` still wins. |
+| `plugins.affect.dimensions` | `neutral`, `floor`, `tau`, or `increment` of an existing dimension. |
+| `plugins.affect.silence` | A silence rule. A new dimension name adds a rule. |
+| `plugins.proactive.thresholds` | The trigger threshold for that dimension. The dimension needs a trigger in the file. |
 
-An override beats `emotions.path`, and `emotions.path` beats the packaged file.
+An override beats `plugins.affect.emotions.path`, and that file beats the packaged one.
 
 ### prompts.json
 
@@ -141,7 +149,7 @@ The overlay replaces whole slots. A slot you include must carry every key of tha
 | `context_blocks` | Delimiters for the memo and mod blocks. |
 | `proactive_framing` | `ruling`, `ladder`, `approach`, and `context_query` for proactive messages. |
 | `proactive_generation_instruction` | `base` plus `variants`. The gateway rotates one variant per send. |
-| `decision_instruction` | Selection criteria sent to a mod's `decide` hook. |
+| `decision_instruction` | Selection criteria sent with every `decide` event. |
 
 Placeholders in `proactive_framing`:
 
@@ -156,15 +164,15 @@ Search is lexical and uses SQLite FTS5.
 
 | Key | Default | Notes |
 | --- | --- | --- |
-| `memory.recent_messages` | `8` | Recent messages in the injection. |
-| `memory.search_hits` | `4` | |
-| `memory.context_messages` | `1` | Neighbors added around each search hit. |
-| `evergreen.max_items` | `32` | |
-| `evergreen.max_chars` | `4000` | |
-| `memo.max_items` | `10` | Memos per injection. |
-| `memo.max_chars` | `2000` | Size of the memo block. |
-| `memo.text_max_chars` | `4000` | Longest memo the API accepts. |
-| `memo.reason_max_chars` | `1000` | Longest archive reason the API accepts. |
+| `plugins.memory.recent_messages` | `8` | Recent messages in the injection. |
+| `plugins.memory.search_hits` | `4` | |
+| `plugins.memory.context_messages` | `1` | Neighbors added around each search hit. |
+| `plugins.evergreen.max_items` | `32` | |
+| `plugins.evergreen.max_chars` | `4000` | |
+| `plugins.memo.max_items` | `10` | Memos per injection. |
+| `plugins.memo.max_chars` | `2000` | Size of the memo block. |
+| `plugins.memo.text_max_chars` | `4000` | Longest memo the API accepts. |
+| `plugins.memo.reason_max_chars` | `1000` | Longest archive reason the API accepts. |
 
 ## Embedding
 
@@ -182,48 +190,37 @@ Optional. Set `base_url` and `model` to turn on semantic appraisal. The gateway 
 
 ## Mods
 
-A mod is a directory under the mods directory. The [README](../README.md#mod-api) describes the hooks, and [examples/mods](../examples/mods/README.md) holds two working mods. Mods need `uv` on the gateway's `PATH`.
+A mod is a plugin that lives in a directory under the mods directory and runs in its own process. The [README](../README.md#mod-api) describes the contract, and [examples/mods](../examples/mods/README.md) holds two working mods. Mods need `uv` on the gateway's `PATH`.
 
 | Key | Default | Notes |
 | --- | --- | --- |
-| `mods.dir` | `""` | Empty uses `mods` in the companion home. `DUSHA_MODS_DIR` overrides it. |
-| `mods.tick_interval_seconds` | `10` | Interval of the `tick` hook and of message delivery retries. |
-| `mods.modules` | `{}` | One entry per mod, keyed by directory name, in the order the gateway calls them. |
+| `mods_dir` | `""` | Empty uses `mods` in the companion home. `DUSHA_MODS_DIR` overrides it. |
 
-Each entry under `mods.modules` takes these keys:
+A mod's entry under `plugins` is keyed by its directory name and takes these keys:
 
 | Key | Default | Notes |
 | --- | --- | --- |
-| `timeout_seconds` | `15` | Deadline per hook call. Keep it above any HTTP timeout in `options`. |
-| `context_max_chars` | `3000` | Cap for the mod's context block, also passed as `options.context_max_chars`. `0` skips `on_context`. |
+| `timeout_seconds` | `15` | Deadline per call into the mod. Keep it above any HTTP timeout in `options`. |
+| `context_max_chars` | `3000` | Cap for the mod's context block, also passed as `config.context_max_chars`. `0` skips its `context` listener. |
 | `env_passthrough` | `[]` | Environment variables the mod may read, such as a proxy setting. |
-| `options` | `{}` | Passed to every hook as written. |
+| `options` | `{}` | Passed to the mod's `apply` as `config`. |
+| `disabled` | `false` | |
 
-```json
-{
-  "mods": {
-    "modules": {
-      "system_one": {"options": {"base_url": "http://127.0.0.1:8000"}}
-    }
-  }
-}
-```
-
-Mods run as child processes with your OS permissions and no sandbox. Install mods you wrote or reviewed. The gateway logs a failing mod, reports it under `GET /state/v1/mods`, and keeps storing messages without it.
+Mods run as child processes with your OS permissions and no sandbox. Install mods you wrote or reviewed. The gateway logs a failing mod, reports it under `GET /state/v1/plugins`, and keeps storing messages without it.
 
 ## Proactive
 
 | Key | Default | Notes |
 | --- | --- | --- |
-| `proactive.poll_interval_seconds` | `60` | |
-| `proactive.min_silence_minutes` | `180` | |
-| `proactive.cooldown_minutes` | `360` | Gap after a send. |
-| `proactive.max_per_day` | `2` | |
-| `proactive.max_unanswered` | `2` | Sends stop after this many ignored messages. |
-| `proactive.quiet_start_hour` | `1` | Local hour. |
-| `proactive.quiet_end_hour` | `8` | Local hour. |
-| `proactive.lease_seconds` | `120` | Time a harness holds a polled event before it returns to pending. |
-| `proactive.retry_delay_minutes` | `15` | Wait after a failed delivery. |
+| `plugins.proactive.poll_interval_seconds` | `60` | |
+| `plugins.proactive.min_silence_minutes` | `180` | |
+| `plugins.proactive.cooldown_minutes` | `360` | Gap after a send. |
+| `plugins.proactive.max_per_day` | `2` | |
+| `plugins.proactive.max_unanswered` | `2` | Sends stop after this many ignored messages. |
+| `plugins.proactive.quiet_start_hour` | `1` | Local hour. |
+| `plugins.proactive.quiet_end_hour` | `8` | Local hour. |
+| `plugins.proactive.lease_seconds` | `120` | Time a harness holds a polled event before it returns to pending. |
+| `plugins.proactive.retry_delay_minutes` | `15` | Wait after a failed delivery. |
 
 The emotional triggers live in [emotions.json](#emotionsjson). Limits survive a restart.
 

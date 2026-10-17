@@ -9,13 +9,17 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
+from fastapi import APIRouter
+
 from . import emotions as _emotions
 from . import prompts as _prompts
+from . import schema as _schema
 from .affect_semantic import SemanticAppraisal
-from .config import AppConfig
+from .config import AffectConfig, EmbeddingConfig
 from .database import Database
 from .embedding import OpenAIEmbeddingClient
-from .hooks import Block, ContextRequest, Contributor, DecisionRequest, Registry, render
+from .hooks import Block, ContextRequest, DecisionRequest, render
+from .interfaces import call, errors
 from .serialization import compact_json
 from .timeutil import isoformat, parse_time, utc_now
 
@@ -23,22 +27,56 @@ logger = logging.getLogger("dusha")
 
 Decide = Callable[[DecisionRequest], list[dict[str, Any]]]
 
-class AffectEngine(Contributor):
-    name = "affect"
+name = "affect"
 
-    def __init__(self, database: Database, config: AppConfig, prompts: dict[str, Any]):
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS affect_state (
+    id INTEGER PRIMARY KEY CHECK(id = 1),
+    state_json TEXT NOT NULL,
+    last_updated_at TEXT NOT NULL,
+    last_user_message_at TEXT,
+    last_interaction_at TEXT,
+    last_proactive_sent_at TEXT,
+    unanswered_proactive INTEGER NOT NULL DEFAULT 0,
+    revision INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS affect_decisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+    emotion TEXT NOT NULL,
+    increment REAL NOT NULL,
+    occurred_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS affect_decisions_message
+ON affect_decisions(source_message_id, id);
+"""
+
+
+class AffectEngine:
+    name = name
+
+    def __init__(
+        self,
+        database: Database,
+        config: AffectConfig,
+        embedding: EmbeddingConfig,
+        prompts: dict[str, Any],
+        proposals: Decide | None = None,
+    ):
         self.database = database
-        self.config = config.affect
+        database.migrate(SCHEMA)
+        self.config = config
         self.prompts = prompts
         self.prompts_fingerprint = _prompts.fingerprint(prompts)
-        self.registry: Registry | None = None
+        self.proposals = proposals or (lambda request: [])
         self.appraisal = (
-            SemanticAppraisal(OpenAIEmbeddingClient(config.embedding))
-            if config.embedding.base_url and config.embedding.model
+            SemanticAppraisal(OpenAIEmbeddingClient(embedding))
+            if embedding.base_url and embedding.model
             else None
         )
         self._lock = threading.RLock()
-        self.emotions = _emotions.resolve_emotions(config.affect, config.proactive, config.affect.increment)
+        self.emotions = _emotions.resolve_emotions(config, None, config.increment)
         self.emotions_version = str(self.emotions["emotion_version"])
         self.emotions_fingerprint = _emotions.fingerprint(self.emotions)
         self.spec = {name: values.copy() for name, values in self.emotions["dimensions"].items()}
@@ -176,11 +214,6 @@ class AffectEngine(Contributor):
             values.append(value)
         db.execute(f"UPDATE affect_state SET {', '.join(assignments)} WHERE id=1", values)
 
-    def _proposals(self, request: DecisionRequest) -> list[dict[str, Any]]:
-        if self.registry is None:
-            return []
-        return self.registry.dispatch_decision(request, skip=self)
-
     def record_user_message(
         self,
         *,
@@ -214,7 +247,7 @@ class AffectEngine(Contributor):
         request = DecisionRequest(str(message), copy.deepcopy(self.spec), snapshot, instruction)
         emotion: str | None = None
         deltas: dict[str, Any] = {}
-        for proposal in (decide or self._proposals)(request):
+        for proposal in (decide or self.proposals)(request):
             choice = proposal.get("emotion")
             if emotion is None and choice is not None:
                 if isinstance(choice, str) and choice in self.spec:
@@ -363,3 +396,33 @@ class AffectEngine(Contributor):
             "last_proactive_sent_at": row["last_proactive_sent_at"] if row else None,
             "unanswered_proactive": int(row["unanswered_proactive"]) if row else 0,
         }
+
+
+def apply(ctx: Any, config: AffectConfig) -> None:
+    engine = AffectEngine(
+        ctx.database,
+        config,
+        ctx.settings.embedding,
+        ctx.prompts,
+        lambda request: list(ctx.collect("decide", request).values()),
+    )
+    ctx.provide("affect", engine)
+    ctx.on("message", engine.on_message)
+    ctx.on("context", engine.on_context)
+    ctx.on_dispose(engine.close)
+    _routes(ctx.api, engine)
+    commands = ctx.cli.command("affect", "Inspect affect")
+    commands = commands.add_subparsers(dest="affect_command", required=True)
+    commands.add_parser("show").set_defaults(run=lambda args: engine.status())
+
+
+def _routes(router: APIRouter, engine: AffectEngine) -> None:
+    @router.get(
+        "/state/v1/affect",
+        tags=["state"],
+        response_model=_schema.AffectStatusResponse,
+        summary="Read affect state (advances decay)",
+        responses=errors(503),
+    )
+    async def affect_status() -> dict[str, Any]:
+        return await call(engine.status)

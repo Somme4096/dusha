@@ -27,7 +27,7 @@ export interface HealthResponse {
   companion?: string;
   database: string;
   upstream_configured: boolean;
-  mods?: string[];
+  plugins?: string[];
   [key: string]: unknown;
 }
 
@@ -71,7 +71,7 @@ export interface MemorySearchResponse {
   results: MemorySearchResult[];
 }
 
-export interface ModsStatusResponse {
+export interface PluginsStatusResponse {
   [key: string]: unknown;
 }
 
@@ -83,29 +83,15 @@ export interface ContextBuildRequest {
   include_recent?: boolean;
 }
 
-export interface ContextIdentity {
-  configured: boolean;
-  text: string;
-  revision: string;
-}
-
 export interface ContextInjection {
   version: number;
-  identity: ContextIdentity;
   instructions: Record<string, unknown>;
-  memory: { evergreen: unknown[]; session: unknown[] };
-  emotion: {
-    values: Record<string, number>;
-    description: string;
-    preface: string;
-    fingerprints: Record<string, unknown>;
-  };
+  session: unknown[];
+  blocks: Record<string, unknown>;
 }
 
 export interface ContextBuildResponse {
   injection: string;
-  affect: AffectState | Record<string, unknown>;
-  evergreen_facts: EvergreenFact[];
   records: unknown[];
   search_hits: unknown[];
   context: ContextInjection;

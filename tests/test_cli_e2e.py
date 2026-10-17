@@ -268,22 +268,26 @@ def test_cli_serve_rejects_a_bad_companion_name_without_creating_anything(tmp_pa
     assert not (tmp_path / "dusha").exists()
 
 
-def test_cli_reports_disabled_features(tmp_path: Path) -> None:
+def test_cli_reports_disabled_plugins(tmp_path: Path) -> None:
     config = tmp_path / "config.json"
     config.write_text(
-        json.dumps({"data_dir": str(tmp_path / "data"), "features": {"memory": False, "evergreen": False}}),
+        json.dumps({
+            "data_dir": str(tmp_path / "data"),
+            "plugins": {"memory": {"disabled": True}, "evergreen": {"disabled": True}},
+        }),
         encoding="utf-8",
     )
-    for args in (
-        ("memory", "recent"),
-        ("memory", "show", "1"),
-        ("memory", "search", "anything"),
-        ("evergreen", "list"),
-        ("evergreen", "remember", "key", "value"),
+    for args, name in (
+        (("memory", "recent"), "memory"),
+        (("memory", "show", "1"), "memory"),
+        (("memory", "search", "anything"), "memory"),
+        (("memory", "reindex"), "memory"),
+        (("evergreen", "list"), "evergreen"),
+        (("evergreen", "remember", "key", "value"), "evergreen"),
     ):
         result = _run(config, *args)
-        assert result.returncode != 0, result.stdout
-        assert "feature is disabled" in (result.stdout + result.stderr).lower(), result.stderr
-    reindex = _run(config, "memory", "reindex")
-    assert reindex.returncode == 0, reindex.stderr
-    assert json.loads(reindex.stdout) == {"status": "rebuilt"}
+        assert result.returncode == 1, result.stdout
+        assert f"the {name} plugin is disabled" in result.stderr, result.stderr
+    memo = _run(config, "memo", "list")
+    assert memo.returncode == 0, memo.stderr
+    assert json.loads(memo.stdout) == {"memos": []}

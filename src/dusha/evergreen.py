@@ -5,9 +5,15 @@ import uuid
 from datetime import datetime
 from typing import Any
 
+from fastapi import APIRouter, Query
+from pydantic import Field
+
 from . import prompts as _prompts
+from . import schema as _schema
+from .config import EvergreenConfig
 from .database import Database
-from .hooks import Block, ContextRequest, Contributor
+from .hooks import Block, ContextRequest
+from .interfaces import GatewayInput, call, errors
 from .serialization import safe_json
 from .timeutil import isoformat, parse_time, utc_now
 
@@ -15,16 +21,40 @@ _KEY_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,119}$")
 _KEEP = object()
 _DEFAULT_EVERGREEN = _prompts.default_prompts()["evergreen"]
 
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS evergreen_fact_revisions (
+    revision_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fact_id TEXT NOT NULL,
+    revision INTEGER NOT NULL CHECK(revision > 0),
+    fact_key TEXT NOT NULL,
+    text TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('active', 'forgotten')),
+    priority INTEGER NOT NULL DEFAULT 50 CHECK(priority BETWEEN 0 AND 100),
+    source_message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    review_after TEXT,
+    expires_at TEXT,
+    created_at TEXT NOT NULL,
+    created_by TEXT NOT NULL CHECK(created_by IN ('agent', 'operator', 'api')),
+    UNIQUE(fact_id, revision)
+);
+CREATE INDEX IF NOT EXISTS evergreen_fact_key
+ON evergreen_fact_revisions(fact_key, revision DESC);
+CREATE INDEX IF NOT EXISTS evergreen_fact_history
+ON evergreen_fact_revisions(fact_id, revision);
+"""
+
 
 class EvergreenConflict(ValueError):
     pass
 
 
-class EvergreenStore(Contributor):
+class EvergreenStore:
     name = "evergreen"
 
     def __init__(self, database: Database, config: Any = None, prompts: dict[str, Any] | None = None):
         self.database = database
+        database.migrate(SCHEMA)
         self.config = config
         self.delimiters = (prompts or {}).get("evergreen") or _DEFAULT_EVERGREEN
 
@@ -410,3 +440,236 @@ class EvergreenStore(Contributor):
             ),
         )
         return cursor.lastrowid
+
+
+name = "evergreen"
+
+
+class RememberFactInput(GatewayInput):
+    key: str
+    text: str
+    priority: int = Field(default=50, ge=0, le=100)
+    source_message_id: int | None = None
+    reason: str = ""
+    review_after: str | None = None
+    expires_at: str | None = None
+
+
+class ReviseFactInput(GatewayInput):
+    expected_revision: int = Field(ge=1)
+    text: str
+    priority: int | None = Field(default=None, ge=0, le=100)
+    source_message_id: int | None = None
+    reason: str = ""
+    review_after: str | None = None
+    expires_at: str | None = None
+
+
+class ForgetFactInput(GatewayInput):
+    expected_revision: int = Field(ge=1)
+    reason: str
+    source_message_id: int | None = None
+
+
+def apply(ctx: Any, config: EvergreenConfig) -> None:
+    store = EvergreenStore(ctx.database, config, ctx.prompts)
+    ctx.provide("evergreen", store)
+    ctx.on("context", store.on_context)
+    _routes(ctx.api, store)
+    _commands(ctx.cli, store)
+
+
+def _routes(router: APIRouter, store: EvergreenStore) -> None:
+    @router.post(
+        "/state/v1/evergreen/facts",
+        tags=["state"],
+        response_model=_schema.FactEnvelope,
+        summary="Remember an evergreen fact",
+        responses=errors(409, 422, 503),
+    )
+    async def remember_fact(body: RememberFactInput) -> dict[str, Any]:
+        fact = await call(
+            store.remember,
+            key=body.key,
+            text=body.text,
+            priority=body.priority,
+            source_message_id=body.source_message_id,
+            reason=body.reason,
+            review_after=body.review_after,
+            expires_at=body.expires_at,
+            created_by="agent",
+            errors=(EvergreenConflict, ValueError),
+            conflict=EvergreenConflict,
+        )
+        return {"fact": fact}
+
+    @router.get(
+        "/state/v1/evergreen/facts",
+        tags=["state"],
+        response_model=_schema.FactsEnvelope,
+        responses=errors(503),
+    )
+    async def list_facts(
+        include_inactive: bool = False,
+        due_only: bool = False,
+        limit: int = Query(100, ge=1, le=500),
+    ) -> dict[str, Any]:
+        facts = await call(
+            store.list_current, include_inactive=include_inactive, due_only=due_only, limit=limit
+        )
+        return {"facts": facts}
+
+    @router.get(
+        "/state/v1/evergreen/facts/{fact_id}/history",
+        tags=["state"],
+        response_model=_schema.RevisionsEnvelope,
+        responses=errors(404, 503),
+    )
+    async def fact_history(fact_id: str) -> dict[str, Any]:
+        revisions = await call(
+            store.history, fact_id, errors=(KeyError,), not_found="evergreen fact not found"
+        )
+        return {"revisions": revisions}
+
+    @router.post(
+        "/state/v1/evergreen/facts/{fact_id}/revisions",
+        tags=["state"],
+        response_model=_schema.FactEnvelope,
+        summary="Revise an evergreen fact",
+        responses=errors(404, 409, 422, 503),
+    )
+    async def revise_fact(fact_id: str, body: ReviseFactInput) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {
+            "fact_id": fact_id,
+            "expected_revision": body.expected_revision,
+            "text": body.text,
+            "priority": body.priority,
+            "source_message_id": body.source_message_id,
+            "reason": body.reason,
+            "created_by": "agent",
+        }
+        if "review_after" in body.model_fields_set:
+            kwargs["review_after"] = body.review_after
+        if "expires_at" in body.model_fields_set:
+            kwargs["expires_at"] = body.expires_at
+        fact = await call(
+            store.revise,
+            **kwargs,
+            errors=(KeyError, EvergreenConflict, ValueError),
+            not_found="evergreen fact not found",
+            conflict=EvergreenConflict,
+        )
+        return {"fact": fact}
+
+    @router.post(
+        "/state/v1/evergreen/facts/{fact_id}/forget",
+        tags=["state"],
+        response_model=_schema.FactEnvelope,
+        responses=errors(404, 409, 422, 503),
+    )
+    async def forget_fact(fact_id: str, body: ForgetFactInput) -> dict[str, Any]:
+        fact = await call(
+            store.forget,
+            fact_id=fact_id,
+            expected_revision=body.expected_revision,
+            reason=body.reason,
+            source_message_id=body.source_message_id,
+            created_by="agent",
+            errors=(KeyError, EvergreenConflict, ValueError),
+            not_found="evergreen fact not found",
+            conflict=EvergreenConflict,
+        )
+        return {"fact": fact}
+
+
+def _commands(cli: Any, store: EvergreenStore) -> None:
+    commands = cli.command("evergreen", "Inspect or update evergreen facts").add_subparsers(
+        dest="evergreen_command", required=True
+    )
+    listing = commands.add_parser("list")
+    listing.add_argument("--include-inactive", action="store_true")
+    listing.add_argument("--due-only", action="store_true")
+    listing.add_argument("--limit", type=int, default=100)
+    listing.set_defaults(
+        run=lambda args: {
+            "facts": store.list_current(
+                include_inactive=args.include_inactive, due_only=args.due_only, limit=args.limit
+            )
+        }
+    )
+    history = commands.add_parser("history")
+    history.add_argument("fact_id")
+    history.set_defaults(run=lambda args: {"revisions": store.history(args.fact_id)})
+    remember = commands.add_parser("remember")
+    remember.add_argument("key")
+    remember.add_argument("text")
+    remember.add_argument("--priority", type=int, default=50)
+    remember.add_argument("--source-message-id", type=int)
+    remember.add_argument("--reason", default="")
+    remember.add_argument("--review-after")
+    remember.add_argument("--expires-at")
+    remember.set_defaults(
+        run=lambda args: {
+            "fact": store.remember(
+                key=args.key,
+                text=args.text,
+                priority=args.priority,
+                source_message_id=args.source_message_id,
+                reason=args.reason,
+                review_after=args.review_after,
+                expires_at=args.expires_at,
+                created_by="operator",
+            )
+        }
+    )
+    revise = commands.add_parser("revise")
+    revise.add_argument("fact_id")
+    revise.add_argument("expected_revision", type=int)
+    revise.add_argument("text")
+    revise.add_argument("--priority", type=int)
+    revise.add_argument("--source-message-id", type=int)
+    revise.add_argument("--reason", default="")
+    review_group = revise.add_mutually_exclusive_group()
+    review_group.add_argument("--review-after")
+    review_group.add_argument("--clear-review-after", action="store_true")
+    expiry_group = revise.add_mutually_exclusive_group()
+    expiry_group.add_argument("--expires-at")
+    expiry_group.add_argument("--clear-expires-at", action="store_true")
+    revise.set_defaults(run=lambda args: {"fact": store.revise(**_revise_kwargs(args))})
+    forget = commands.add_parser("forget")
+    forget.add_argument("fact_id")
+    forget.add_argument("expected_revision", type=int)
+    forget.add_argument("--source-message-id", type=int)
+    forget.add_argument("--reason", required=True)
+    forget.set_defaults(
+        run=lambda args: {
+            "fact": store.forget(
+                fact_id=args.fact_id,
+                expected_revision=args.expected_revision,
+                reason=args.reason,
+                source_message_id=args.source_message_id,
+                created_by="operator",
+            )
+        }
+    )
+
+
+def _revise_kwargs(args: Any) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "fact_id": args.fact_id,
+        "expected_revision": args.expected_revision,
+        "text": args.text,
+        "priority": args.priority,
+        "source_message_id": args.source_message_id,
+        "reason": args.reason,
+        "created_by": "operator",
+    }
+    if args.clear_review_after:
+        kwargs["review_after"] = None
+    elif args.review_after is not None:
+        kwargs["review_after"] = args.review_after
+    if args.clear_expires_at:
+        kwargs["expires_at"] = None
+    elif args.expires_at is not None:
+        kwargs["expires_at"] = args.expires_at
+    return kwargs

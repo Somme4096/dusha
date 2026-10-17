@@ -19,14 +19,13 @@ _DEFAULTS = all_defaults()
 _EMOTIONS = _emotions.default_emotions()
 _UPSTREAM = _DEFAULTS["upstream"]
 _API_OPENAI = _DEFAULTS["api_openai"]
-_MEMORY = _DEFAULTS["memory"]
+_PLUGINS = _DEFAULTS["plugins"]
+_MEMORY = _PLUGINS["memory"]
 _EMBEDDING = _DEFAULTS["embedding"]
-_EVERGREEN = _DEFAULTS["evergreen"]
-_MEMO = _DEFAULTS["memo"]
-_FEATURES = _DEFAULTS["features"]
-_MODS = _DEFAULTS["mods"]
+_EVERGREEN = _PLUGINS["evergreen"]
+_MEMO = _PLUGINS["memo"]
 _AFFECT_KNOBS = _EMOTIONS["affect"]
-_PROACTIVE = _DEFAULTS["proactive"]
+_PROACTIVE = _PLUGINS["proactive"]
 _PROMPTS = _DEFAULTS["prompts"]
 
 
@@ -35,7 +34,7 @@ IDENTITY_FILE = "identity.md"
 HOME_ENV = "DUSHA_HOME"
 COMPANION_ENV = "DUSHA_COMPANION"
 _COMPANION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
-_MODULE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+PLUGIN_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
 def config_root() -> Path:
@@ -50,7 +49,7 @@ def companion_home(name: str) -> Path:
 
 
 def create_default_config(home: Path) -> Path:
-    raw = {"emotions": {"path": "", "expected_version": ""}, **all_defaults(), "data_dir": "data"}
+    raw = {**all_defaults(), "data_dir": "data"}
     home.mkdir(parents=True, exist_ok=True)
     path = home / CONFIG_FILE
     path.write_text(json.dumps(raw, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -66,6 +65,7 @@ def list_companions() -> list[str]:
 
 _UNSET: Any = _emotions.UNSET
 _EMOTIONS_FILE_FIELDS = {"emotions_path", "expected_emotion_version"}
+_ENTRY_FIELDS = {"disabled"}
 
 
 def _fill_unset(config_obj: Any, knobs: dict[str, Any], explicit_attr: str) -> None:
@@ -87,19 +87,19 @@ _BOUNDS: dict[str, dict[str, tuple[float | None, float | None]]] = {
         "batch_size": (1, None),
         "failure_cooldown_seconds": (0, None),
     },
-    "memory": {
+    "plugins.memory": {
         "recent_messages": (0, None),
         "search_hits": (0, None),
         "context_messages": (0, None),
     },
-    "evergreen": {"max_items": (0, None), "max_chars": (0, None)},
-    "memo": {
+    "plugins.evergreen": {"max_items": (0, None), "max_chars": (0, None)},
+    "plugins.memo": {
         "max_items": (0, 500),
         "max_chars": (0, None),
         "text_max_chars": (1, None),
         "reason_max_chars": (1, None),
     },
-    "proactive": {
+    "plugins.proactive": {
         "poll_interval_seconds": (1, None),
         "min_silence_minutes": (0, None),
         "cooldown_minutes": (0, None),
@@ -111,7 +111,6 @@ _BOUNDS: dict[str, dict[str, tuple[float | None, float | None]]] = {
         "retry_delay_minutes": (0, None),
     },
     "mod": {"timeout_seconds": (0, None), "context_max_chars": (0, None)},
-    "mods": {"tick_interval_seconds": (1, None)},
 }
 _EXCLUSIVE_ZERO = {"timeout_seconds"}
 
@@ -169,7 +168,7 @@ class MemoryConfig:
     context_messages: int = _MEMORY["context_messages"]
 
     def __post_init__(self) -> None:
-        _check_bounds(self, "memory")
+        _check_bounds(self, "plugins.memory")
 
 
 @dataclass(slots=True)
@@ -178,7 +177,7 @@ class EvergreenConfig:
     max_chars: int = _EVERGREEN["max_chars"]
 
     def __post_init__(self) -> None:
-        _check_bounds(self, "evergreen")
+        _check_bounds(self, "plugins.evergreen")
 
 
 @dataclass(slots=True)
@@ -189,17 +188,7 @@ class MemoConfig:
     reason_max_chars: int = _MEMO["reason_max_chars"]
 
     def __post_init__(self) -> None:
-        _check_bounds(self, "memo")
-
-
-@dataclass(slots=True)
-class FeaturesConfig:
-    identity: bool = _FEATURES["identity"]
-    affect: bool = _FEATURES["affect"]
-    memory: bool = _FEATURES["memory"]
-    evergreen: bool = _FEATURES["evergreen"]
-    memo: bool = _FEATURES["memo"]
-    proactive: bool = _FEATURES["proactive"]
+        _check_bounds(self, "plugins.memo")
 
 
 @dataclass(slots=True)
@@ -218,9 +207,9 @@ class AffectConfig:
         value = self.increment
         if value is not None:
             if isinstance(value, bool) or not isinstance(value, (int, float)):
-                raise ValueError("affect.increment must be null or a finite positive number")
+                raise ValueError("plugins.affect.increment must be null or a finite positive number")
             if not math.isfinite(float(value)) or value <= 0:
-                raise ValueError("affect.increment must be null or a finite positive number")
+                raise ValueError("plugins.affect.increment must be null or a finite positive number")
             self.increment = float(value)
 
 
@@ -237,23 +226,6 @@ class ModConfig:
 
 
 @dataclass(slots=True)
-class ModsConfig:
-    dir: str = _MODS["dir"]
-    tick_interval_seconds: int = _MODS["tick_interval_seconds"]
-    modules: dict[str, ModConfig] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        _check_bounds(self, "mods")
-        for name, value in list(self.modules.items()):
-            if not _MODULE_NAME.fullmatch(str(name)):
-                raise ValueError(f"mods.modules key must be a plain directory name, got {name!r}")
-            if isinstance(value, dict):
-                self.modules[name] = _strict_section(ModConfig, value, f"mods.modules.{name}")
-            elif not isinstance(value, ModConfig):
-                raise ValueError(f"mods.modules.{name} must be an object")
-
-
-@dataclass(slots=True)
 class ProactiveConfig:
     poll_interval_seconds: int = _PROACTIVE["poll_interval_seconds"]
     min_silence_minutes: int = _PROACTIVE["min_silence_minutes"]
@@ -267,12 +239,46 @@ class ProactiveConfig:
     retry_delay_minutes: int = _PROACTIVE["retry_delay_minutes"]
 
     def __post_init__(self) -> None:
-        _check_bounds(self, "proactive")
+        _check_bounds(self, "plugins.proactive")
 
 
 @dataclass(slots=True)
-class IdentityPromptConfig:
+class IdentityConfig:
     path: str = ""
+
+
+BUILTIN_CONFIGS: dict[str, type[Any]] = {
+    "identity": IdentityConfig,
+    "memory": MemoryConfig,
+    "evergreen": EvergreenConfig,
+    "memo": MemoConfig,
+    "affect": AffectConfig,
+    "proactive": ProactiveConfig,
+}
+
+
+@dataclass(slots=True)
+class PluginEntry:
+    config: Any
+    disabled: bool = False
+
+
+def _plugin_entries(plugins: dict[str, Any]) -> dict[str, PluginEntry]:
+    entries: dict[str, PluginEntry] = {}
+    for name, value in plugins.items():
+        if not PLUGIN_NAME.fullmatch(str(name)):
+            raise ValueError(f"plugin name must be a plain directory name, got {name!r}")
+        if value is False:
+            default = BUILTIN_CONFIGS.get(name, ModConfig)
+            value = PluginEntry(default(), disabled=True)
+        elif not isinstance(value, PluginEntry):
+            value = PluginEntry(value)
+        expected = BUILTIN_CONFIGS.get(name, ModConfig)
+        if not isinstance(value.config, expected):
+            raise ValueError(f"plugins.{name} must be a {expected.__name__}")
+        entries[name] = value
+    missing = {name: PluginEntry(cls()) for name, cls in BUILTIN_CONFIGS.items() if name not in entries}
+    return {**missing, **entries}
 
 
 @dataclass(slots=True)
@@ -288,24 +294,15 @@ class AppConfig:
     port: int = _DEFAULTS["port"]
     timezone: str = _DEFAULTS["timezone"]
     api_token: str = _DEFAULTS["api_token"]
+    mods_dir: str = _DEFAULTS["mods_dir"]
     api_openai: ApiOpenAIConfig = field(default_factory=ApiOpenAIConfig)
-    identity_prompt: IdentityPromptConfig = field(
-        default_factory=lambda: IdentityPromptConfig()
-    )
     prompts: PromptsConfig = field(default_factory=lambda: PromptsConfig())
     upstream: UpstreamConfig = field(default_factory=UpstreamConfig)
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
-    memory: MemoryConfig = field(default_factory=MemoryConfig)
-    evergreen: EvergreenConfig = field(default_factory=EvergreenConfig)
-    memo: MemoConfig = field(default_factory=MemoConfig)
-    features: FeaturesConfig = field(default_factory=FeaturesConfig)
-    affect: AffectConfig = field(default_factory=lambda: AffectConfig())
-    proactive: ProactiveConfig = field(default_factory=lambda: ProactiveConfig())
-    mods: ModsConfig = field(default_factory=lambda: ModsConfig())
+    plugins: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if self.features.proactive and not self.features.affect:
-            raise ValueError("features.proactive requires features.affect")
+        self.plugins = _plugin_entries(self.plugins)
         if isinstance(self.port, bool) or not 0 <= self.port <= 65535:
             raise ValueError("port must be at least 0 and at most 65535")
         try:
@@ -316,6 +313,9 @@ class AppConfig:
     @property
     def database_path(self) -> Path:
         return self.data_dir / "state.sqlite3"
+
+    def plugin(self, name: str) -> Any:
+        return self.plugins[name].config
 
 
 
@@ -382,66 +382,97 @@ def _path_section(cls: type[Any], raw: Any, name: str, source_dir: Path) -> Any:
     return section
 
 
+def _resolve_path(value: str, source_dir: Path) -> str:
+    if not value:
+        return ""
+    resolved = Path(value).expanduser()
+    if not resolved.is_absolute():
+        resolved = source_dir / resolved
+    return str(resolved.resolve())
+
+
+def _identity_section(raw: dict[str, Any], label: str, source_dir: Path) -> IdentityConfig:
+    identity = _strict_section(IdentityConfig, raw, label)
+    if "path" in raw and not identity.path:
+        raise ValueError(
+            f"{label}.path is empty. Remove the key to use {IDENTITY_FILE}, "
+            f"or set {label}.disabled to true"
+        )
+    if identity.path:
+        identity.path = _resolve_path(identity.path, source_dir)
+    elif (source_dir / IDENTITY_FILE).is_file():
+        identity.path = str((source_dir / IDENTITY_FILE).resolve())
+    return identity
+
+
+def _affect_section(raw: dict[str, Any], label: str, source_dir: Path) -> AffectConfig:
+    misplaced = sorted(set(raw) & _EMOTIONS_FILE_FIELDS)
+    if misplaced:
+        raise ValueError(
+            f"unknown field(s) under {label}: {misplaced}. "
+            f"Use {label}.emotions.path and {label}.emotions.expected_version"
+        )
+    fields = dict(raw)
+    emotions_raw = fields.pop("emotions", None) or {}
+    if not isinstance(emotions_raw, dict):
+        raise ValueError(f"{label}.emotions must be an object")
+    unknown = sorted(set(emotions_raw) - {"path", "expected_version"})
+    if unknown:
+        raise ValueError(f"unknown field(s) under {label}.emotions: {unknown}")
+    affect = _strict_section(AffectConfig, fields, label)
+    path_value = emotions_raw.get("path", "")
+    if not isinstance(path_value, str):
+        raise ValueError(f"{label}.emotions.path must be a string")
+    affect.emotions_path = _resolve_path(path_value, source_dir)
+    version = emotions_raw.get("expected_version", "")
+    if not isinstance(version, str):
+        raise ValueError(f"{label}.emotions.expected_version must be a string")
+    affect.expected_emotion_version = version
+    return affect
+
+
+def _plugin_section(name: str, raw: Any, source_dir: Path) -> PluginEntry:
+    label = f"plugins.{name}"
+    if not PLUGIN_NAME.fullmatch(name):
+        raise ValueError(f"plugin name must be a plain directory name, got {name!r}")
+    if not isinstance(raw, dict):
+        raise ValueError(f"{label} must be an object")
+    fields = dict(raw)
+    disabled = fields.pop("disabled", False)
+    if not isinstance(disabled, bool):
+        raise ValueError(f"{label}.disabled must be bool")
+    if name == "identity":
+        config: Any = _identity_section(fields, label, source_dir) if not disabled else IdentityConfig()
+    elif name == "affect":
+        config = _affect_section(fields, label, source_dir)
+    else:
+        config = _strict_section(BUILTIN_CONFIGS.get(name, ModConfig), fields, label)
+    return PluginEntry(config, disabled)
+
+
 def _app_config_from_raw(raw: dict[str, Any], source_dir: Path) -> AppConfig:
-    allowed = (set(typing.get_type_hints(AppConfig)) | {"emotions"}) - {"home"}
+    allowed = set(typing.get_type_hints(AppConfig)) - {"home"}
     unknown = sorted(set(raw) - allowed)
     if unknown:
         raise ValueError(f"unknown top-level field(s): {unknown}")
 
-    affect_raw = raw.get("affect")
-    misplaced = sorted(set(affect_raw) & _EMOTIONS_FILE_FIELDS) if isinstance(affect_raw, dict) else []
-    if misplaced:
-        raise ValueError(
-            f"unknown field(s) under affect: {misplaced}. Use emotions.path and emotions.expected_version"
-        )
-    affect = _strict_section(AffectConfig, raw.get("affect"), "affect")
-    features = _strict_section(FeaturesConfig, raw.get("features"), "features")
-    identity_prompt = _path_section(
-        IdentityPromptConfig, raw.get("identity_prompt"), "identity_prompt", source_dir
-    )
-    identity_raw = raw.get("identity_prompt")
-    if features.identity and not identity_prompt.path:
-        if isinstance(identity_raw, dict) and "path" in identity_raw:
-            raise ValueError(
-                f"identity_prompt.path is empty. Remove the key to use {IDENTITY_FILE}, "
-                "or set features.identity to false"
-            )
-        if (source_dir / IDENTITY_FILE).is_file():
-            identity_prompt.path = str((source_dir / IDENTITY_FILE).resolve())
+    plugins_raw = raw.get("plugins") or {}
+    if not isinstance(plugins_raw, dict):
+        raise ValueError("plugins must be an object")
+    missing = [name for name in BUILTIN_CONFIGS if name not in plugins_raw]
+    plugins = {name: _plugin_section(name, {}, source_dir) for name in missing}
+    for name, section in plugins_raw.items():
+        plugins[str(name)] = _plugin_section(str(name), section, source_dir)
     prompts = _path_section(PromptsConfig, raw.get("prompts"), "prompts", source_dir)
-    mods = _strict_section(ModsConfig, raw.get("mods"), "mods")
-    if mods.dir and not Path(mods.dir).is_absolute():
-        mods.dir = str((source_dir / Path(mods.dir).expanduser()).resolve())
-    emotions_raw = raw.get("emotions")
-    if emotions_raw is not None:
-        if not isinstance(emotions_raw, dict):
-            raise ValueError("emotions must be an object")
-        emo_unknown = sorted(set(emotions_raw) - {"path", "expected_version"})
-        if emo_unknown:
-            raise ValueError(f"unknown field(s) under emotions: {emo_unknown}")
-        if "path" in emotions_raw:
-            path_value = emotions_raw["path"]
-            if not isinstance(path_value, str):
-                raise ValueError("emotions.path must be a string")
-            if path_value:
-                resolved = Path(path_value).expanduser()
-                if not resolved.is_absolute():
-                    resolved = source_dir / resolved
-                affect.emotions_path = str(resolved)
-            else:
-                affect.emotions_path = ""
-        if "expected_version" in emotions_raw:
-            version = emotions_raw["expected_version"]
-            if not isinstance(version, str):
-                raise ValueError("emotions.expected_version must be a string")
-            affect.expected_emotion_version = version
 
     hints = typing.get_type_hints(AppConfig)
     kwargs: dict[str, Any] = {}
-    for key in ("host", "port", "timezone", "api_token"):
+    for key in ("host", "port", "timezone", "api_token", "mods_dir"):
         if key in raw:
             _validate_value(key, raw[key], hints[key])
             kwargs[key] = raw[key]
+    if kwargs.get("mods_dir"):
+        kwargs["mods_dir"] = _resolve_path(kwargs["mods_dir"], source_dir)
     if "data_dir" in raw:
         _validate_value("data_dir", raw["data_dir"], Path)
         data_dir = Path(raw["data_dir"]).expanduser()
@@ -453,18 +484,11 @@ def _app_config_from_raw(raw: dict[str, Any], source_dir: Path) -> AppConfig:
 
     return AppConfig(
         **kwargs,
-        identity_prompt=identity_prompt,
         prompts=prompts,
         upstream=_strict_section(UpstreamConfig, raw.get("upstream"), "upstream"),
         embedding=_strict_section(EmbeddingConfig, raw.get("embedding"), "embedding"),
         api_openai=_strict_section(ApiOpenAIConfig, raw.get("api_openai"), "api_openai"),
-        memory=_strict_section(MemoryConfig, raw.get("memory"), "memory"),
-        evergreen=_strict_section(EvergreenConfig, raw.get("evergreen"), "evergreen"),
-        memo=_strict_section(MemoConfig, raw.get("memo"), "memo"),
-        features=features,
-        affect=affect,
-        proactive=_strict_section(ProactiveConfig, raw.get("proactive"), "proactive"),
-        mods=mods,
+        plugins=plugins,
     )
 
 
@@ -513,18 +537,14 @@ def load_config(
 
 def _validate_packaged_defaults() -> None:
     hints = typing.get_type_hints(AppConfig)
-    for key in ("data_dir", "host", "port", "timezone", "api_token"):
+    for key in ("data_dir", "host", "port", "timezone", "api_token", "mods_dir"):
         _validate_value(f"packaged defaults {key}", _DEFAULTS[key], hints[key])
     _strict_section(UpstreamConfig, _DEFAULTS["upstream"], "packaged defaults upstream")
     _strict_section(EmbeddingConfig, _DEFAULTS["embedding"], "packaged defaults embedding")
     _strict_section(ApiOpenAIConfig, _DEFAULTS["api_openai"], "packaged defaults api_openai")
-    _strict_section(MemoryConfig, _DEFAULTS["memory"], "packaged defaults memory")
-    _strict_section(EvergreenConfig, _DEFAULTS["evergreen"], "packaged defaults evergreen")
-    _strict_section(MemoConfig, _DEFAULTS["memo"], "packaged defaults memo")
-    _strict_section(FeaturesConfig, _DEFAULTS["features"], "packaged defaults features")
-    _strict_section(ProactiveConfig, _DEFAULTS["proactive"], "packaged defaults proactive")
-    _strict_section(ModsConfig, _DEFAULTS["mods"], "packaged defaults mods")
     _strict_section(PromptsConfig, _DEFAULTS["prompts"], "packaged defaults prompts")
+    for name, raw in _DEFAULTS["plugins"].items():
+        _plugin_section(name, raw, Path.cwd())
 
 
 _validate_packaged_defaults()

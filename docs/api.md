@@ -8,12 +8,12 @@ FastAPI serves the field reference at `/docs` and `/openapi.json`. This page cov
 
 | Method | Path | Purpose | Statuses |
 | --- | --- | --- | --- |
-| GET | `/health` | Process and database status, the `companion` name, and the configured mod names | 200 |
+| GET | `/health` | Process and database status, the `companion` name, and the names of the active plugins | 200 |
 | POST | `/state/v1/messages` | Store one message, update affect for a new user message | 200, 401, 422 |
 | GET | `/state/v1/messages/{message_id}` | Read one stored message | 200, 401, 404 |
 | POST | `/state/v1/memory/search` | Search the archive with adjacent context | 200, 401, 503 |
 | GET | `/state/v1/memory/{message_id}` | Read a message plus neighbors | 200, 401, 404, 503 |
-| GET | `/state/v1/mods` | Report each mod's status | 200, 401 |
+| GET | `/state/v1/plugins` | Report each plugin's state | 200, 401 |
 | POST | `/state/v1/context` | Build the injection | 200, 401, 422 |
 | GET | `/state/v1/affect` | Read affect state and advance decay | 200, 401, 503 |
 | POST | `/state/v1/evergreen/facts` | Remember a fact | 200, 401, 409, 422, 503 |
@@ -35,7 +35,7 @@ FastAPI serves the field reference at `/docs` and `/openapi.json`. This page cov
 Statuses that depend on config:
 
 - `401` applies with [auth](guide.md#auth) on. Send the token in `X-Companion-Token`. Proxy clients that cannot set headers can put it in the [base URL](#token-in-the-base-url).
-- `503` on a `/state/v1/*` route means its [feature](configuration.md#features) is off. The `detail` names the feature.
+- `503` on a `/state/v1/*` route means its [plugin](configuration.md#plugins) is disabled or inactive. The `detail` names the plugin.
 - `/v1/*` returns `404` when `api_openai.enabled` is `false` and `503` when `upstream.base_url` is empty.
 - Every proxy route returns `502` when the provider cannot be reached or times out. The `detail` carries the reason.
 - `/v1/to/*` does not need `upstream.base_url`. It returns `422` for an address that is not a valid host and path.
@@ -84,18 +84,18 @@ The response carries the stored `id`, a `duplicate` flag, `conversation_id`, and
 - `include_recent` defaults to `true`. Pass `false` when your provider conversation holds the recent history.
 - `exclude_message_ids` removes messages you send yourself.
 
-The response carries `injection`, `records`, `search_hits`, and `context`. Prepend `injection` to your system prompt, or read `context` for the same data as fields: `version`, `identity`, `instructions`, `session`, and `blocks`.
+The response carries `injection`, `records`, `search_hits`, and `context`. Prepend `injection` to your system prompt, or read `context` for the same data as fields: `version`, `instructions`, `session`, and `blocks`.
 
-`injection` holds these parts in this order:
+`injection` holds one part per [plugin](configuration.md#plugins) in `plugins` order, then the state block. With the packaged order and mods listed after the built-in plugins:
 
 1. The identity text
 2. `<evergreen_facts>`, a JSON list of facts
-3. `<mod_context>`, one block per mod that returns context
-4. `<memo_notes>`, a JSON list of active memos
-5. `<affect>`, the emotion values and the Affect line
-6. `<companion_state>`, a JSON object with the instructions and session records
+3. `<memo_notes>`, a JSON list of active memos
+4. `<affect>`, the emotion values and the Affect line
+5. `<mod_context>`, one block per mod that returns context
+6. `<companion_state>`, a JSON object with the instructions and the session records from `memory`
 
-`context.blocks` holds parts 2 to 5 as data, keyed `evergreen`, each mod's name, `memo`, and `affect`. A [feature](configuration.md#features) that is off contributes no part and no key, and so does a part with nothing to say.
+`context.blocks` holds each part as data, keyed by plugin name. `identity` carries `text` and `revision`, and `memory` carries the `search_hits`. A plugin that is off contributes no part and no key, and so does a part with nothing to say.
 
 You can rename the delimiters in [prompts.json](configuration.md#promptsjson). The serializer escapes `&`, `<`, and `>` in stored text.
 
@@ -123,7 +123,7 @@ Call `POST /state/v1/messages` with `role: "assistant"`. Assistant and tool mess
 
 A new user message moves affect in up to two steps:
 
-1. Each [mod](configuration.md#mods) with a `decide` hook proposes an emotion, deltas, or nothing. The first emotion wins. With [embedding](configuration.md#embedding) configured, semantic appraisal picks when no mod proposes one. The engine raises the picked dimension by its increment and reports it in the ingest `affect` field.
+1. Each [plugin](configuration.md#plugins) that listens for `decide` proposes an emotion, deltas, or nothing. The first emotion wins. With [embedding](configuration.md#embedding) configured, semantic appraisal picks when no mod proposes one. The engine raises the picked dimension by its increment and reports it in the ingest `affect` field.
 2. The merged `deltas` apply next. A delta can be negative, and one message can move several dimensions. The ingest `affect` field does not report these.
 
 ## Evergreen facts
@@ -156,7 +156,7 @@ The fact object carries `fact_id`, `revision`, `state`, `effective_state`, `prio
 
 Memos are short notes the agent leaves for itself, such as a loose end to raise in a later proactive message. They belong to the whole companion, so the routes take no harness or conversation. Each context build injects the active memos, oldest first.
 
-`POST /state/v1/memo/add` stores one memo. A blank `text`, or one longer than `memo.text_max_chars`, returns `422`.
+`POST /state/v1/memo/add` stores one memo. A blank `text`, or one longer than `plugins.memo.text_max_chars`, returns `422`.
 
 ```json
 {
@@ -190,11 +190,18 @@ Response:
 }
 ```
 
-An unknown `note_id` returns `404`. A blank `reason`, one longer than `memo.reason_max_chars`, or a memo you archived before returns `422`.
+An unknown `note_id` returns `404`. A blank `reason`, one longer than `plugins.memo.reason_max_chars`, or a memo you archived before returns `422`.
 
-## Mod status
+## Plugin status
 
-`GET /state/v1/mods` returns one object per entry in `mods.modules`, keyed by name: `loaded`, `exports` (the hooks its `main.py` defines), `error` (the load failure, if any), and `status` (what its `status` hook returned, or `null`). `/health` lists the names under `mods`.
+`GET /state/v1/plugins` returns one object per plugin, keyed by name, in `plugins` order:
+
+- `state`: `active`, `disabled`, `inactive` when a service it injects is missing, or `failed` when a mod could not load or its process stopped
+- `error`: the reason for `inactive` or `failed`, otherwise empty
+- `inject` and `provides`: the services it uses and offers
+- `events`: the events it listens for
+
+`/health` lists the active plugins under `plugins`.
 
 ## Proactive delivery
 
@@ -230,7 +237,7 @@ Acknowledge with `POST /state/v1/proactive/events/{event_id}/ack`:
 | `outcome` | Effect |
 | --- | --- |
 | `sent` | Stores the text as an assistant message and counts the send. |
-| `failed` | Returns the event to pending after `proactive.retry_delay_minutes`. |
+| `failed` | Returns the event to pending after `plugins.proactive.retry_delay_minutes`. |
 | `release` | Returns the event to pending at once. |
 
 A consumer that does not hold the lease gets `409`. A user reply cancels unsent events and resets the unanswered count.

@@ -7,7 +7,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from fastapi import APIRouter, HTTPException, Query
+
+from . import schema as _schema
+from .config import MemoryConfig
 from .database import Database
+from .hooks import Block, ContextRequest
+from .interfaces import CommandError, GatewayInput, call, errors
 from .serialization import compact_json
 from .timeutil import isoformat, parse_time, utc_now
 
@@ -282,3 +288,121 @@ class MemoryStore:
         result["content"] = json.loads(result.pop("content_json"))
         result["external_id"] = result.get("external_id") or ""
         return result
+
+
+name = "memory"
+
+
+class SearchInput(GatewayInput):
+    query: str
+    limit: int = 8
+    context_messages: int = 1
+
+
+def _record(message: dict[str, Any], source: str) -> dict[str, Any]:
+    return {
+        "memory_id": message["id"],
+        "source": source,
+        "time": message["occurred_at"],
+        "role": message["role"],
+        "text": message["text"],
+    }
+
+
+def recall(store: MemoryStore, config: MemoryConfig, request: ContextRequest) -> Block | None:
+    excluded = set(request.exclude_message_ids)
+    internal = None
+    if request.harness and request.conversation_id:
+        internal = store.conversation_id(request.harness, request.conversation_id)
+    recent = store.recent(conversation_id=internal, limit=config.recent_messages, exclude_ids=excluded)
+    recent_ids = {item["id"] for item in recent}
+    hits = (
+        store.search(request.query, config.search_hits, config.context_messages, excluded | recent_ids)
+        if request.query.strip()
+        else []
+    )
+    records: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    if request.include_recent:
+        for message in recent:
+            records.append(_record(message, "recent"))
+            seen.add(message["id"])
+    else:
+        seen.update(recent_ids)
+    for hit in hits:
+        for message in hit["messages"]:
+            if message["id"] not in seen and message["id"] not in excluded:
+                records.append(_record(message, "recalled"))
+                seen.add(message["id"])
+    if not records and not hits:
+        return None
+    return Block(name, "", {"search_hits": hits}, tuple(records))
+
+
+def apply(ctx: Any, config: MemoryConfig) -> None:
+    store: MemoryStore = ctx.messages
+    ctx.on("context", lambda request: recall(store, config, request))
+    _routes(ctx.api, store)
+    _commands(ctx.cli, store)
+
+
+def _routes(router: APIRouter, store: MemoryStore) -> None:
+    @router.post(
+        "/state/v1/memory/search",
+        tags=["state"],
+        response_model=_schema.SearchResponse,
+        summary="Search archived memory",
+        responses=errors(503),
+    )
+    async def search_memory(body: SearchInput) -> dict[str, Any]:
+        results = await call(
+            store.search,
+            body.query,
+            max(1, min(body.limit, 50)),
+            max(0, min(body.context_messages, 10)),
+        )
+        return {"results": results}
+
+    @router.get(
+        "/state/v1/memory/{message_id}",
+        tags=["state"],
+        response_model=_schema.MemoryContextResponse,
+        responses=errors(404, 503),
+    )
+    async def memory_context(
+        message_id: int, context_messages: int = Query(1, ge=0, le=10)
+    ) -> dict[str, Any]:
+        messages = await call(store.context, message_id, context_messages)
+        if not messages:
+            raise HTTPException(status_code=404, detail="memory record not found")
+        return {"messages": messages}
+
+
+def _commands(cli: Any, store: MemoryStore) -> None:
+    commands = cli.command("memory", "Inspect canonical memory").add_subparsers(
+        dest="memory_command", required=True
+    )
+    search = commands.add_parser("search")
+    search.add_argument("query")
+    search.add_argument("--limit", type=int, default=8)
+    search.set_defaults(run=lambda args: {"results": store.search(args.query, args.limit)})
+    show = commands.add_parser("show")
+    show.add_argument("message_id", type=int)
+    show.set_defaults(run=lambda args: _show(store, args.message_id))
+    recent = commands.add_parser("recent")
+    recent.add_argument("--limit", type=int, default=20)
+    recent.set_defaults(run=lambda args: {"messages": store.recent(limit=args.limit)})
+    reindex = commands.add_parser("reindex")
+    reindex.set_defaults(run=lambda args: _reindex(store))
+
+
+def _show(store: MemoryStore, message_id: int) -> dict[str, Any]:
+    message = store.get(message_id)
+    if message is None:
+        raise CommandError("message not found")
+    return message
+
+
+def _reindex(store: MemoryStore) -> dict[str, Any]:
+    store.rebuild_index()
+    return {"status": "rebuilt"}

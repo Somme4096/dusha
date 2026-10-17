@@ -4,6 +4,8 @@ import hashlib
 from pathlib import Path
 from typing import Any
 
+from .hooks import Block
+
 
 class IdentityError(ValueError):
     pass
@@ -24,3 +26,14 @@ def load_identity(identity_config: Any) -> tuple[str, str]:
         raise IdentityError(f"cannot read identity prompt file {source}: {error}") from error
     revision = hashlib.sha256(text.encode("utf-8")).hexdigest()
     return text, revision
+
+
+name = "identity"
+
+
+def apply(ctx: Any, config: Any) -> None:
+    text, revision = load_identity(config)
+    if not text:
+        return
+    block = Block(name, text, {"text": text, "revision": revision})
+    ctx.on("context", lambda request: block)

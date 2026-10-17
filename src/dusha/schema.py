@@ -18,7 +18,7 @@ class HealthResponse(ExtraAllow):
     companion: str = ""
     database: str
     upstream_configured: bool
-    mods: list[str]
+    plugins: list[str]
 
 
 class MessageResponse(ExtraAllow):
@@ -36,7 +36,7 @@ class MessageResponse(ExtraAllow):
     route: str
 
 
-class ModsStatus(ExtraAllow):
+class PluginsStatus(ExtraAllow):
     pass
 
 
@@ -98,15 +98,8 @@ class AckResponse(ExtraAllow):
     outcome: str
 
 
-class IdentityMetadata(ExtraAllow):
-    configured: bool
-    text: str
-    revision: str
-
-
 class ContextMetadata(ExtraAllow):
     version: int
-    identity: IdentityMetadata
     instructions: dict
     session: list
     blocks: dict

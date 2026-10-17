@@ -9,19 +9,19 @@ from contextlib import asynccontextmanager
 from importlib import metadata as _metadata
 from typing import Any
 
-from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Header, HTTPException
 
 from . import schema as _schema
 from .api_openai import PathTokenMiddleware, create_openai_router
 from .api_state import create_state_router
 from .config import AppConfig, load_config
-from .service import CompanionService, FeatureDisabledError
+from .hooks import Registry
+from .service import CompanionService
 
 logger = logging.getLogger("dusha")
 
 
-async def _scheduler(step: Callable[[], Any], interval: int, label: str) -> None:
+async def _scheduler(step: Callable[[], Any], interval: float, label: str) -> None:
     while True:
         try:
             await asyncio.to_thread(step)
@@ -32,39 +32,38 @@ async def _scheduler(step: Callable[[], Any], interval: int, label: str) -> None
         await asyncio.sleep(max(1, interval))
 
 
+async def _jobs(registry: Registry) -> None:
+    tasks: dict[int, asyncio.Task] = {}
+    try:
+        while True:
+            for job in list(registry.jobs):
+                if id(job) not in tasks:
+                    label = f"{job.plugin} interval"
+                    tasks[id(job)] = asyncio.create_task(_scheduler(job.callback, job.seconds, label))
+            await asyncio.sleep(1)
+    finally:
+        for task in tasks.values():
+            task.cancel()
+        for task in tasks.values():
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+
 def create_app(config: AppConfig | None = None) -> FastAPI:
     cfg = config or load_config()
     expected_token = cfg.api_token
     auth_enabled = bool(expected_token)
     service = CompanionService(cfg)
-    proactive = service.proactive
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
-        tasks = []
-        if cfg.features.proactive:
-            interval = max(5, cfg.proactive.poll_interval_seconds)
-            tasks.append(
-                asyncio.create_task(
-                    _scheduler(proactive.evaluate, interval, "proactive evaluation"),
-                    name="proactive-evaluator",
-                )
-            )
-        if service.mods:
-            tasks.append(
-                asyncio.create_task(
-                    _scheduler(service.tick, cfg.mods.tick_interval_seconds, "tick"),
-                    name="tick",
-                )
-            )
+        jobs = asyncio.create_task(_jobs(service.registry), name="plugin-intervals")
         try:
             yield
         finally:
-            for task in tasks:
-                task.cancel()
-            for task in tasks:
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
+            jobs.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await jobs
             service.close()
 
     app = FastAPI(
@@ -83,7 +82,6 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     )
     app.state.config = cfg
     app.state.service = service
-    app.state.proactive = proactive
 
     async def authorized(x_companion_token: str = Header(default="")) -> None:
         if not auth_enabled:
@@ -93,10 +91,6 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         ):
             raise HTTPException(status_code=401, detail="invalid companion token")
 
-    @app.exception_handler(FeatureDisabledError)
-    async def feature_disabled(_: Request, error: FeatureDisabledError) -> JSONResponse:
-        return JSONResponse(status_code=503, content={"detail": str(error)})
-
     @app.get("/health", tags=["health"], response_model=_schema.HealthResponse)
     async def health() -> dict[str, Any]:
         return {
@@ -104,10 +98,12 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             "companion": cfg.home.name if cfg.home else "",
             "database": await asyncio.to_thread(service.database.integrity_check),
             "upstream_configured": bool(cfg.upstream.base_url),
-            "mods": [mod.name for mod in service.mods],
+            "plugins": [
+                runtime.name for runtime in service.registry.runtimes if runtime.state == "active"
+            ],
         }
 
-    app.include_router(create_state_router(service, proactive, authorized))
+    app.include_router(create_state_router(service, authorized))
     if cfg.api_openai.enabled:
         app.include_router(create_openai_router(cfg, service, authorized))
         app.add_middleware(PathTokenMiddleware)

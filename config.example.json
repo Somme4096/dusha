@@ -1,23 +1,12 @@
 {
-  "emotions": {
-    "path": "",
-    "expected_version": ""
-  },
   "data_dir": "data",
   "host": "127.0.0.1",
   "port": 8765,
   "timezone": "Asia/Taipei",
   "api_token": "",
+  "mods_dir": "",
   "api_openai": {
     "enabled": true
-  },
-  "features": {
-    "identity": true,
-    "affect": true,
-    "memory": true,
-    "evergreen": true,
-    "memo": true,
-    "proactive": true
   },
   "prompts": {
     "path": ""
@@ -36,35 +25,39 @@
     "batch_size": 32,
     "failure_cooldown_seconds": 60
   },
-  "memory": {
-    "recent_messages": 8,
-    "search_hits": 4,
-    "context_messages": 1
-  },
-  "evergreen": {
-    "max_items": 32,
-    "max_chars": 4000
-  },
-  "memo": {
-    "max_items": 10,
-    "max_chars": 2000,
-    "text_max_chars": 4000,
-    "reason_max_chars": 1000
-  },
-  "mods": {
-    "dir": "",
-    "tick_interval_seconds": 10,
-    "modules": {}
-  },
-  "proactive": {
-    "poll_interval_seconds": 60,
-    "min_silence_minutes": 180,
-    "cooldown_minutes": 360,
-    "max_per_day": 2,
-    "max_unanswered": 2,
-    "quiet_start_hour": 1,
-    "quiet_end_hour": 8,
-    "lease_seconds": 120,
-    "retry_delay_minutes": 15
+  "plugins": {
+    "identity": {},
+    "memory": {
+      "recent_messages": 8,
+      "search_hits": 4,
+      "context_messages": 1
+    },
+    "evergreen": {
+      "max_items": 32,
+      "max_chars": 4000
+    },
+    "memo": {
+      "max_items": 10,
+      "max_chars": 2000,
+      "text_max_chars": 4000,
+      "reason_max_chars": 1000
+    },
+    "affect": {
+      "emotions": {
+        "path": "",
+        "expected_version": ""
+      }
+    },
+    "proactive": {
+      "poll_interval_seconds": 60,
+      "min_silence_minutes": 180,
+      "cooldown_minutes": 360,
+      "max_per_day": 2,
+      "max_unanswered": 2,
+      "quiet_start_hour": 1,
+      "quiet_end_hour": 8,
+      "lease_seconds": 120,
+      "retry_delay_minutes": 15
+    }
   }
 }

@@ -1,49 +1,56 @@
 from __future__ import annotations
 
-import copy
 import json
 import logging
 import os
 import queue
-import re
 import signal
 import subprocess
 import threading
 import time
-from dataclasses import asdict
+import tomllib
+from dataclasses import asdict, is_dataclass
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from .database import Database
-from .hooks import Block, ContextRequest, Contributor, DecisionRequest, render
-from .memory import MemoryStore
+from .config import PLUGIN_NAME, AppConfig, ModConfig
+from .hooks import Block, ContextRequest, DecisionRequest, render
 from .timeutil import isoformat, utc_now
 
 logger = logging.getLogger("dusha")
 
-MODULE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-REQUIRED_FILES = ("README.md", "main.py", "pyproject.toml", "uv.lock")
+REQUIRED_FILES = ("pyproject.toml", "uv.lock")
 MODS_DIR_ENV = "DUSHA_MODS_DIR"
 TIMEOUT_ENV = "DUSHA_MOD_TIMEOUT_SECONDS"
+EVENTS = ("message", "context", "decide")
 _BASE_ENV = frozenset({"PATH", "HOME", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "LC_CTYPE", "SYSTEMROOT"})
 _SYNC_TIMEOUT = 120.0
 _RESTART_COOLDOWN = 5.0
+_DELIVERY_SECONDS = 10.0
 _DELIVERY_LIMIT = 500
 _CONTEXT_MAX_RECORDS = 50
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS mod_delivery_state (
+    mod TEXT PRIMARY KEY,
+    last_delivered_id INTEGER NOT NULL DEFAULT 0 CHECK(last_delivered_id >= 0),
+    updated_at TEXT NOT NULL
+);
+"""
 
 
 class ModError(RuntimeError):
     pass
 
 
-def resolve_mods_dir(config: Any) -> Path:
+def resolve_mods_dir(config: AppConfig) -> Path:
     env = os.getenv(MODS_DIR_ENV, "")
     if env:
         return Path(env).expanduser()
-    configured = str(getattr(getattr(config, "mods", None), "dir", "") or "")
-    if configured:
-        return Path(configured).expanduser()
-    return (getattr(config, "home", None) or Path.cwd()) / "mods"
+    if config.mods_dir:
+        return Path(config.mods_dir).expanduser()
+    return (config.home or Path.cwd()) / "mods"
 
 
 def environment(passthrough: Any = ()) -> dict[str, str]:
@@ -51,6 +58,20 @@ def environment(passthrough: Any = ()) -> dict[str, str]:
     result = {key: value for key, value in os.environ.items() if key in allowed}
     result["PYTHONNOUSERSITE"] = "1"
     return result
+
+
+def _json_value(value: Any) -> Any:
+    if is_dataclass(value) and not isinstance(value, type):
+        return _json_value(asdict(value))
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(key): _json_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_json_value(item) for item in value]
+    return value
 
 
 def _inside(path: Path, parent: Path) -> bool:
@@ -62,7 +83,7 @@ def _inside(path: Path, parent: Path) -> bool:
 
 
 def _suite(name: str, mods_dir: Path) -> Path:
-    if not MODULE_NAME.fullmatch(name):
+    if not PLUGIN_NAME.fullmatch(name):
         raise ModError(f"mod name must be a plain directory name, got {name!r}")
     root = mods_dir.expanduser().resolve()
     suite = (root / name).resolve()
@@ -73,6 +94,26 @@ def _suite(name: str, mods_dir: Path) -> Path:
         if not path.is_file() or not _inside(path.resolve(), suite):
             raise ModError(f"invalid mod: missing or escaping {item}")
     return suite
+
+
+def _manifest(suite: Path) -> tuple[str, tuple[str, ...]]:
+    try:
+        project = tomllib.loads((suite / "pyproject.toml").read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        raise ModError(f"invalid mod manifest: {error}") from error
+    section = project.get("tool", {}).get("dusha")
+    if not isinstance(section, dict):
+        raise ModError("invalid mod manifest: missing [tool.dusha]")
+    unknown = sorted(set(section) - {"entry", "inject"})
+    if unknown:
+        raise ModError(f"invalid mod manifest: unknown field(s) under [tool.dusha]: {unknown}")
+    entry = section.get("entry")
+    if not isinstance(entry, str) or not all(part.isidentifier() for part in entry.split(".")):
+        raise ModError("invalid mod manifest: tool.dusha.entry must be a module name")
+    inject = section.get("inject", [])
+    if not isinstance(inject, list) or not all(isinstance(item, str) and item for item in inject):
+        raise ModError("invalid mod manifest: tool.dusha.inject must be an array of service names")
+    return entry, tuple(inject)
 
 
 def _python_path(suite: Path) -> Path:
@@ -115,39 +156,52 @@ def _terminate(proc: subprocess.Popen[bytes]) -> None:
     proc.wait()
 
 
-class Mod(Contributor):
-    def __init__(self, name: str, settings: Any, mods_dir: Path, database: Database, prompts: dict[str, Any]):
+class Mod:
+    def __init__(self, name: str, settings: ModConfig, mods_dir: Path):
         self.name = name
         self.settings = settings
-        self.mods_dir = mods_dir
-        self.database = database
-        self.store = MemoryStore(database)
-        self.blocks = prompts["context_blocks"]
         self.timeout = float(settings.timeout_seconds)
         self.passthrough = tuple(settings.env_passthrough)
-        self.options = {**dict(settings.options), "context_max_chars": int(settings.context_max_chars)}
-        self.exports: frozenset[str] = frozenset()
-        self.error = ""
+        self.config = {**dict(settings.options), "context_max_chars": int(settings.context_max_chars)}
         self.suite: Path | None = None
+        self.entry = ""
+        self.inject: tuple[str, ...] = ()
+        self.problem = ""
+        try:
+            self.suite = _suite(name, mods_dir)
+            self.entry, self.inject = _manifest(self.suite)
+        except ModError as error:
+            self.problem = str(error)
+        self.ctx: Any = None
         self.python: Path | None = None
         self.proc: subprocess.Popen[bytes] | None = None
+        self.reader: threading.Thread | None = None
         self.responses: queue.Queue[Any] = queue.Queue()
+        self.exports: frozenset[str] = frozenset()
+        self.intervals: list[float] = []
+        self.registered: set[str] = set()
         self.next_id = 1
         self.last_restart = 0.0
+        self.closing = False
+        self.started = False
         self._lock = threading.Lock()
+        self._write_lock = threading.Lock()
 
-    @property
-    def loaded(self) -> bool:
-        return self.proc is not None and self.proc.poll() is None
-
-    def start(self) -> None:
+    def apply(self, ctx: Any, config: Any) -> None:
+        self.ctx = ctx
+        if self.problem:
+            ctx.error = self.problem
+            logger.error("failed to load mod %r: %s", self.name, self.problem)
+            return
+        ctx.database.migrate(SCHEMA)
+        ctx.interval(_DELIVERY_SECONDS, self.deliver)
+        ctx.on_dispose(self.close)
         try:
-            self.suite = _suite(self.name, self.mods_dir)
             self.python = _sync(self.suite, self.passthrough)
             with self._lock:
                 self._spawn_locked()
         except ModError as error:
-            self.error = str(error)
+            ctx.error = str(error)
             logger.error("failed to load mod %r: %s", self.name, error)
 
     def _spawn_locked(self) -> None:
@@ -156,36 +210,87 @@ class Mod(Contributor):
         env = {**environment(self.passthrough), TIMEOUT_ENV: str(self.timeout)}
         try:
             self.proc = subprocess.Popen(
-                [str(self.python), "-I", str(worker), str(self.suite), str(self.database.path)],
+                [str(self.python), "-I", str(worker), str(self.suite)],
                 cwd=self.suite, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 start_new_session=os.name != "nt", env=env,
             )
         except OSError as exc:
             raise ModError(f"mod could not start: {exc}") from exc
         self.responses = queue.Queue()
-        threading.Thread(target=self._read, args=(self.proc, self.responses), daemon=True).start()
+        self.reader = threading.Thread(target=self._read, args=(self.proc, self.responses), daemon=True)
+        self.reader.start()
         threading.Thread(target=self._drain_stderr, args=(self.proc,), daemon=True).start()
         try:
-            handshake = self._call_locked("start", {"options": copy.deepcopy(self.options)})
-            exports = handshake.get("exports") if isinstance(handshake, dict) else None
-            if not isinstance(exports, list):
+            handshake = self._call_locked(
+                "start",
+                {"entry": self.entry, "config": self.config, "data_dir": str(self.ctx.data_dir)},
+            )
+            events = handshake.get("events") if isinstance(handshake, dict) else None
+            intervals = handshake.get("intervals") if isinstance(handshake, dict) else None
+            if not isinstance(events, list) or not isinstance(intervals, list):
                 raise ModError("mod returned an invalid start response")
         except ModError:
             if self.proc.poll() is None:
                 _terminate(self.proc)
             raise
-        self.exports = frozenset(str(item) for item in exports)
-        self.error = ""
+        self.exports = frozenset(str(item) for item in events if item in EVENTS)
+        self.intervals = [float(item) for item in intervals]
+        self.started = True
+        self.ctx.error = ""
+        self._register()
 
-    @staticmethod
-    def _read(proc: subprocess.Popen[bytes], responses: queue.Queue[Any]) -> None:
+    def _register(self) -> None:
+        listeners = {"message": self.on_message, "context": self.on_context, "decide": self.decide}
+        for event in sorted(self.exports - self.registered):
+            self.ctx.on(event, listeners[event])
+            self.registered.add(event)
+        if "intervals" not in self.registered:
+            for index, seconds in enumerate(self.intervals):
+                self.ctx.interval(seconds, lambda index=index: self.call("interval", {"index": index}))
+            self.registered.add("intervals")
+
+    def _read(self, proc: subprocess.Popen[bytes], responses: queue.Queue[Any]) -> None:
         assert proc.stdout is not None
         for line in proc.stdout:
             try:
-                responses.put(json.loads(line.decode("utf-8")))
+                message = json.loads(line.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError):
                 responses.put(ModError("mod returned invalid output"))
+                continue
+            if isinstance(message, dict) and "call" in message:
+                self._serve(message)
+            else:
+                responses.put(message)
         responses.put(ModError("mod closed its output"))
+        if proc is self.proc and not self.closing:
+            self.ctx.error = "mod closed its output"
+
+    def _serve(self, message: dict[str, Any]) -> None:
+        reply: dict[str, Any] = {"reply": message.get("call")}
+        try:
+            service, method = str(message.get("service")), str(message.get("method"))
+            if service not in self.inject:
+                raise PermissionError(f"{self.name} must inject {service!r} to use it")
+            if method.startswith("_"):
+                raise AttributeError(f"{service}.{method} is not callable")
+            target = getattr(getattr(self.ctx, service), method)
+            if not callable(target):
+                raise AttributeError(f"{service}.{method} is not callable")
+            reply["result"] = _json_value(target(*message.get("args", []), **message.get("kwargs", {})))
+        except Exception as error:
+            reply["error"] = str(error)
+            reply["error_type"] = type(error).__name__
+        try:
+            self._write(reply)
+        except OSError:
+            pass
+
+    def _write(self, payload: dict[str, Any]) -> None:
+        assert self.proc is not None and self.proc.stdin is not None
+        data = (json.dumps(payload, ensure_ascii=False, default=str) + "\n").encode()
+        with self._write_lock:
+            self.proc.stdin.write(data)
+            self.proc.stdin.flush()
 
     def _drain_stderr(self, proc: subprocess.Popen[bytes]) -> None:
         assert proc.stderr is not None
@@ -196,22 +301,24 @@ class Mod(Contributor):
 
     def _restart_locked(self) -> None:
         now = time.monotonic()
-        if self.suite is None or now - self.last_restart < _RESTART_COOLDOWN:
+        if not self.started or now - self.last_restart < _RESTART_COOLDOWN:
             raise ModError("mod is not running")
         self.last_restart = now
         logger.warning("%s is not running, restarting", self.name)
-        self._spawn_locked()
+        try:
+            self._spawn_locked()
+        except ModError as error:
+            self.ctx.error = str(error)
+            raise
 
     def _call_locked(self, method: str, params: dict[str, Any]) -> Any:
-        if self.proc is None or self.proc.poll() is not None:
+        if method != "start" and (self.proc is None or self.proc.poll() is not None):
             self._restart_locked()
-        assert self.proc is not None and self.proc.stdin is not None
+        assert self.proc is not None
         ident = self.next_id
         self.next_id += 1
-        payload = {"id": ident, "method": method, "params": params}
         try:
-            self.proc.stdin.write((json.dumps(payload, ensure_ascii=False, default=str) + "\n").encode())
-            self.proc.stdin.flush()
+            self._write({"id": ident, "method": method, "params": _json_value(params)})
             response = self.responses.get(timeout=self.timeout)
         except queue.Empty as exc:
             _terminate(self.proc)
@@ -228,19 +335,43 @@ class Mod(Contributor):
         return response.get("result")
 
     def call(self, method: str, params: dict[str, Any] | None = None) -> Any:
-        if method not in self.exports:
-            return None
         with self._lock:
             return self._call_locked(method, params or {})
 
+    def _reentrant(self) -> bool:
+        return threading.current_thread() is self.reader
+
+    def _event(self, event: str, *args: Any) -> Any:
+        if event not in self.exports or self._reentrant():
+            return None
+        try:
+            return self.call("event", {"event": event, "args": list(args)})
+        except ModError as error:
+            logger.warning("%s %s failed: %s", self.name, event, error)
+            return None
+
     def on_message(self, message: dict[str, Any]) -> None:
-        if "on_message" in self.exports:
-            with self._lock:
-                self._deliver_locked()
+        if "message" not in self.exports or self._reentrant() or not self._lock.acquire(blocking=False):
+            return None
+        try:
+            self._deliver_locked()
+        finally:
+            self._lock.release()
         return None
 
+    def deliver(self) -> dict[str, Any]:
+        with self._lock:
+            try:
+                if self.proc is None or self.proc.poll() is not None:
+                    self._restart_locked()
+            except ModError as error:
+                return {"error": str(error)}
+            if "message" not in self.exports:
+                return {"skipped": True}
+            return self._deliver_locked()
+
     def _cursor(self) -> int:
-        with self.database.connect() as db:
+        with self.ctx.database.connect() as db:
             row = db.execute(
                 "SELECT last_delivered_id FROM mod_delivery_state WHERE mod=?", (self.name,)
             ).fetchone()
@@ -249,15 +380,15 @@ class Mod(Contributor):
     def _deliver_locked(self) -> dict[str, Any]:
         cursor = self._cursor()
         delivered = 0
-        for message in self.store.after(cursor, _DELIVERY_LIMIT):
+        for message in self.ctx.messages.after(cursor, _DELIVERY_LIMIT):
             try:
-                self._call_locked("on_message", {"message": message})
+                self._call_locked("event", {"event": "message", "args": [message]})
             except ModError as error:
-                logger.warning("%s on_message failed at id %s: %s", self.name, message["id"], error)
+                logger.warning("%s message failed at id %s: %s", self.name, message["id"], error)
                 break
             cursor = int(message["id"])
             delivered += 1
-            with self.database.connect() as db:
+            with self.ctx.database.connect() as db:
                 db.execute(
                     """INSERT INTO mod_delivery_state(mod, last_delivered_id, updated_at)
                        VALUES(?,?,?)
@@ -270,17 +401,13 @@ class Mod(Contributor):
 
     def on_context(self, request: ContextRequest) -> Block | None:
         cap = int(self.settings.context_max_chars)
-        if "on_context" not in self.exports or cap <= 0:
+        if cap <= 0:
             return None
-        try:
-            result = self.call("on_context", {"request": asdict(request)})
-        except ModError as error:
-            logger.warning("%s on_context failed: %s", self.name, error)
-            return None
-        data = self._normalize(result, cap)
+        data = self._normalize(self._event("context", request), cap)
         if data is None:
             return None
-        return render(self.name, self.blocks["mod_open_delimiter"], data, self.blocks["mod_close_delimiter"])
+        blocks = self.ctx.prompts["context_blocks"]
+        return render(self.name, blocks["mod_open_delimiter"], data, blocks["mod_close_delimiter"])
 
     def _normalize(self, result: Any, cap: int) -> dict[str, Any] | None:
         if not isinstance(result, dict):
@@ -308,52 +435,16 @@ class Mod(Contributor):
         return data
 
     def decide(self, request: DecisionRequest) -> dict[str, Any] | None:
-        if "decide" not in self.exports:
-            return None
-        try:
-            result = self.call("decide", {"request": asdict(request)})
-        except ModError as error:
-            logger.warning("%s decide failed: %s", self.name, error)
-            return None
+        result = self._event("decide", request)
         return result if isinstance(result, dict) else None
 
-    def tick(self) -> dict[str, Any]:
-        if not self.exports:
-            return {"skipped": True}
-        report: dict[str, Any] = {}
-        with self._lock:
-            if "on_message" in self.exports:
-                report = self._deliver_locked()
-            if "tick" in self.exports:
-                try:
-                    report["tick"] = self._call_locked("tick", {})
-                except ModError as error:
-                    logger.warning("%s tick failed: %s", self.name, error)
-        return report
-
-    def status(self) -> dict[str, Any]:
-        with self._lock:
-            report: dict[str, Any] = {
-                "loaded": self.loaded,
-                "exports": sorted(self.exports),
-                "error": self.error,
-                "status": None,
-            }
-            if report["loaded"] and "status" in self.exports:
-                try:
-                    report["status"] = self._call_locked("status", {})
-                except ModError as error:
-                    report["error"] = str(error)
-                    report["loaded"] = self.loaded
-        return report
-
     def close(self) -> None:
+        self.closing = True
         with self._lock:
             if self.proc is not None and self.proc.poll() is None:
-                if "close" in self.exports:
-                    try:
-                        self._call_locked("close", {})
-                    except ModError:
-                        pass
+                try:
+                    self._call_locked("dispose", {})
+                except ModError:
+                    pass
                 if self.proc.poll() is None:
                     _terminate(self.proc)

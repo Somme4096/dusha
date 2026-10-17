@@ -390,7 +390,12 @@ def resolve_emotions(
         _SILENCE_RULE_KEYS,
         create=True,
     )
-    thresholds = getattr(proactive_config, "thresholds", None) or {}
+    return with_thresholds(snapshot, getattr(proactive_config, "thresholds", None))
+
+
+def with_thresholds(snapshot: dict[str, Any], thresholds: Any) -> dict[str, Any]:
+    snapshot = copy.deepcopy(snapshot)
+    thresholds = thresholds or {}
     if not isinstance(thresholds, dict):
         raise EmotionsValidationError("thresholds override must be an object")
     for name, value in thresholds.items():
@@ -401,5 +406,4 @@ def resolve_emotions(
             )
         for trigger in matched:
             trigger["threshold"] = _number(value, f"thresholds override {name!r}")
-
     return _validate(snapshot)
