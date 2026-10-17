@@ -110,7 +110,6 @@ _BOUNDS: dict[str, dict[str, tuple[float | None, float | None]]] = {
         "lease_seconds": (1, None),
         "retry_delay_minutes": (0, None),
     },
-    "external_plugin": {"timeout_seconds": (0, None), "context_max_chars": (0, None)},
 }
 _EXCLUSIVE_ZERO = {"timeout_seconds"}
 
@@ -125,11 +124,6 @@ def _check_bounds(section: Any, name: str) -> None:
             edge = "above" if key in _EXCLUSIVE_ZERO else "at least"
             limit = f"{edge} {low}" + (f" and at most {high}" if high is not None else "")
             raise ValueError(f"{name}.{key} must be {limit}")
-
-
-def _check_env_names(value: Any, name: str) -> None:
-    if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
-        raise ValueError(f"{name} must be an array of environment variable names")
 
 
 @dataclass(slots=True)
@@ -215,14 +209,7 @@ class AffectConfig:
 
 @dataclass(slots=True)
 class ExternalPluginConfig:
-    timeout_seconds: float = 15.0
-    context_max_chars: int = 3000
-    env_passthrough: list[str] = field(default_factory=list)
     options: dict[str, Any] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        _check_env_names(self.env_passthrough, "external_plugin.env_passthrough")
-        _check_bounds(self, "external_plugin")
 
 
 @dataclass(slots=True)

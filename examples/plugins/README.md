@@ -1,14 +1,14 @@
 # External plugins
 
-An external plugin lives in a directory under the plugins directory holding
-`pyproject.toml` and `uv.lock`. The gateway creates an isolated `uv`
-environment from the lock file, starts the module named in `[tool.dusha]` in a
-long-lived child process, and calls its `apply(ctx, config)`. The contract is
-in the [project README](https://github.com/Somme4096/dusha#plugin-api).
+An external plugin lives in a directory under the plugins directory with
+`pyproject.toml` and a `[tool.dusha]` table. The gateway imports it into its own
+process, so it gets the same `ctx` as a built-in plugin, including `ctx.api` and
+`ctx.cli`. The contract is in the
+[project README](https://github.com/Somme4096/dusha#plugin-api).
 
-External plugins run with your OS permissions and no sandbox. They see only the environment
-variables listed in `env_passthrough`, so an external plugin must take its credentials from
-`options`.
+External plugins run with the gateway's permissions and environment. Install only
+plugins you wrote or reviewed. They use the gateway's Python environment, so extra
+dependencies must be installed there and a version conflict affects the gateway.
 
 Install an external plugin by copying its directory into the configured plugins directory and
 naming it under `plugins`:

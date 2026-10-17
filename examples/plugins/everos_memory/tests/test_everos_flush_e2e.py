@@ -197,7 +197,6 @@ def _config(data_dir: Path, plugins_dir: Path, sidecar: str, *, enabled: bool) -
             "memory": MemoryConfig(recent_messages=8, search_hits=8, context_messages=1),
             "evergreen": EvergreenConfig(max_items=32, max_chars=4_000),
             "everos_memory": ExternalPluginConfig(
-                timeout_seconds=10,
                 options={"interval_seconds": 1, "everos": {
                     "url": sidecar,
                     "app_id": "dusha-e2e",

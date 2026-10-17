@@ -93,7 +93,7 @@ The response carries `injection`, `records`, `search_hits`, and `context`. Prepe
 2. `<evergreen_facts>`, a JSON list of facts
 3. `<memo_notes>`, a JSON list of active memos
 4. `<affect>`, the emotion values and the Affect line
-5. `<plugin_context>`, one block per external plugin that returns context
+5. The blocks returned by external plugins, each with the delimiters that plugin renders
 6. `<companion_state>`, a JSON object with the instructions and the session records from `memory`
 
 `context.blocks` holds each part as data, keyed by plugin name. `identity` carries `text` and `revision`, and `memory` carries the `search_hits`. A plugin that is off contributes no part and no key, and so does a part with nothing to say.
@@ -197,7 +197,7 @@ An unknown `note_id` returns `404`. A blank `reason`, one longer than `plugins.m
 
 `GET /state/v1/plugins` returns one object per plugin, keyed by name, in `plugins` order:
 
-- `state`: `active`, `disabled`, `inactive` when a service it injects is missing, or `failed` when an external plugin could not load or its process stopped
+- `state`: `active`, `disabled`, `inactive` when a service it injects is missing, or `failed` when a plugin reported a runtime error via `ctx.error`
 - `error`: the reason for `inactive` or `failed`, otherwise empty
 - `inject` and `provides`: the services it uses and offers
 - `events`: the events it listens for
@@ -266,7 +266,7 @@ Restart AstrBot or reload the plugin from its manager. Keep AstrBot's chat provi
 | `platform_id` | `""` | AstrBot platform ID allowed to use the gateway. Empty disables the plugin. Run `/sid` through your Discord bot and copy its `Bot ID`. |
 | `api_token` | `""` | The gateway's API token, when auth is on. |
 | `harness` | `astrbot` | Harness name sent to the gateway. A rename starts each chat with empty recent history. |
-| `request_timeout_seconds` | `60` | Minimum 1. Raise it when you raise an external plugin's `timeout_seconds` on the gateway. |
+| `request_timeout_seconds` | `60` | Minimum 1. Message storage runs plugin hooks in the gateway process. |
 | `poll_interval_seconds` | `30` | Seconds between proactive polls. Minimum 5. |
 | `proactive_enabled` | `true` | |
 | `proactive_tool_keywords` | `["donsetch", "fetch"]` | AstrBot tools whose names contain a keyword join proactive generation. |

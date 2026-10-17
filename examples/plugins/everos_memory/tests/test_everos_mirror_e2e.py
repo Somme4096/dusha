@@ -239,7 +239,6 @@ def _config(
     user_sender_id: str = "user-dusha-e2e",
     assistant_sender_id: str = "assistant-dusha-e2e",
     timeout_seconds: float = 1,
-    gateway_timeout_seconds: float = 5,
 ) -> AppConfig:
     return AppConfig(
         data_dir=data_dir,
@@ -248,7 +247,6 @@ def _config(
             "memory": MemoryConfig(recent_messages=8, search_hits=8, context_messages=1),
             "evergreen": EvergreenConfig(max_items=32, max_chars=4_000),
             "everos_memory": ExternalPluginConfig(
-                timeout_seconds=gateway_timeout_seconds,
                 options={
                     "interval_seconds": 1,
                     "everos": {
@@ -573,13 +571,13 @@ async def test_real_everos_instance_namespaces_and_backfill_without_ingest(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_external_malformed_and_slow_sidecars_keep_worker_alive(tmp_path: Path, external_sidecar):
+async def test_external_malformed_and_slow_sidecars_keep_plugin_alive(tmp_path: Path, external_sidecar):
     sidecar, sidecar_url = external_sidecar
     plugins = _plugins(tmp_path)
     data_dir = tmp_path / "dusha-data"
 
     async with _client(
-        _config(data_dir, plugins, sidecar_url, timeout_seconds=0.2, gateway_timeout_seconds=2)
+        _config(data_dir, plugins, sidecar_url, timeout_seconds=0.2)
     ) as client:
         malformed = await _ingest(client, "malformed", "Malformed sidecar response remains pending.")
         status = await _wait_everos(
@@ -599,7 +597,7 @@ async def test_external_malformed_and_slow_sidecars_keep_worker_alive(tmp_path: 
     recovered = None
     for _ in range(3):
         async with _client(
-            _config(data_dir, plugins, sidecar_url, timeout_seconds=0.2, gateway_timeout_seconds=2)
+            _config(data_dir, plugins, sidecar_url, timeout_seconds=0.2)
         ) as client:
             recovered = await _pending_status(client)
         if recovered["pending"] == 0:

@@ -46,7 +46,7 @@ Rules for the file:
 
 ## Plugins
 
-Every part of the companion is a plugin under `plugins`, keyed by name. The built-in plugins are `identity`, `memory`, `evergreen`, `memo`, `affect`, and `proactive`. Any other name is an [external plugin](#external-plugins), which lives in a directory under `plugins_dir` and runs in its own process. Messages are always stored. Earlier releases called these mods, and the old `mods_dir` key and `DUSHA_MODS_DIR` variable are no longer accepted.
+Every part of the companion is a plugin under `plugins`, keyed by name. The built-in plugins are `identity`, `memory`, `evergreen`, `memo`, `affect`, and `proactive`. Any other name is an [external plugin](#external-plugins), which lives in a directory under `plugins_dir` and is imported into the gateway process. Messages are always stored. Earlier releases called these mods, and the old `mods_dir` key and `DUSHA_MODS_DIR` variable are no longer accepted.
 
 - Plugins run in the order you list them, which is also the order of their blocks in the injection. Built-in plugins you leave out keep their packaged order ahead of the ones you list.
 - `"disabled": true` turns a plugin off and keeps the rest of its settings. A plugin that is off leaves the injection, its routes return `503`, and its commands exit with `1`. Stored rows stay on disk.
@@ -190,7 +190,7 @@ Optional. Set `base_url` and `model` to turn on semantic appraisal. The gateway 
 
 ## External plugins
 
-An external plugin is a plugin that lives in a directory under the plugins directory and runs in its own process. The [README](../README.md#plugin-api) describes the contract, and [examples/plugins](../examples/plugins/README.md) holds two working external plugins. External plugins need `uv` on the gateway's `PATH`.
+An external plugin is a directory under `plugins_dir` with `pyproject.toml` and a `[tool.dusha]` table. The gateway imports it into its own process. The [README](../README.md#plugin-api) describes the contract, and [examples/plugins](../examples/plugins/README.md) holds two working external plugins.
 
 | Key | Default | Notes |
 | --- | --- | --- |
@@ -200,13 +200,10 @@ An external plugin's entry under `plugins` is keyed by its directory name and ta
 
 | Key | Default | Notes |
 | --- | --- | --- |
-| `timeout_seconds` | `15` | Deadline per call into the external plugin. Keep it above any HTTP timeout in `options`. |
-| `context_max_chars` | `3000` | Cap for the plugin's context block, also passed as `config.context_max_chars`. `0` skips its `context` listener. |
-| `env_passthrough` | `[]` | Environment variables the plugin may read, such as a proxy setting. |
 | `options` | `{}` | Passed to the plugin's `apply` as `config`. |
 | `disabled` | `false` | |
 
-External plugins run as child processes with your OS permissions and no sandbox. Install plugins you wrote or reviewed. The gateway logs a failing external plugin, reports it under `GET /state/v1/plugins`, and keeps storing messages without it.
+External plugins run inside the gateway process with its permissions and dependencies. Install only plugins you wrote or reviewed. A plugin dependency conflict affects the whole gateway.
 
 ## Proactive
 

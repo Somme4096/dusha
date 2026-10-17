@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from dusha.hooks import Block, render
+
 from .database import Database
 from .everos import EverOSMirror
 
@@ -9,7 +11,7 @@ from .everos import EverOSMirror
 def apply(ctx: Any, config: dict[str, Any]) -> None:
     mirror = EverOSMirror(Database(ctx.data_dir / "everos.sqlite3"), config.get("everos", {}))
     ctx.on("message", lambda message: _mirror(mirror, message))
-    ctx.on("context", lambda request: _recall(mirror, request, config))
+    ctx.on("context", lambda request: _recall(ctx, mirror, request, config))
     ctx.on("decide", lambda request: _phrase(request, config))
     ctx.interval(float(config.get("interval_seconds", 10)), mirror.backfill_once)
     ctx.on_dispose(mirror.close)
@@ -23,14 +25,21 @@ def _mirror(mirror: EverOSMirror, message: dict[str, Any]) -> None:
         pass
 
 
-def _recall(mirror: EverOSMirror, request: Any, config: dict[str, Any]) -> dict[str, Any]:
-    return mirror.inject_context(
+def _recall(ctx: Any, mirror: EverOSMirror, request: Any, config: dict[str, Any]) -> Block | None:
+    result = mirror.inject_context(
         query=str(request.query),
         scope=str(request.conversation_id or request.harness),
         harness=str(request.harness),
         conversation_id=str(request.conversation_id),
-        max_chars=int(config["context_max_chars"]),
+        max_chars=int(config.get("context_max_chars", 3000)),
     )
+    text = str(result.get("text") or "")
+    records = list(result.get("records") or ())
+    if not text and not records:
+        return None
+    data = {"source": ctx.name, "text": text, "records": records}
+    blocks = ctx.prompts["context_blocks"]
+    return render(ctx.name, blocks["plugin_open_delimiter"], data, blocks["plugin_close_delimiter"])
 
 
 def _phrase(request: Any, config: dict[str, Any]) -> dict[str, Any] | None:

@@ -9,3 +9,4 @@ package = false
 
 [tool.dusha]
 entry = "everos_memory"
+inject = ["prompts"]

@@ -16,7 +16,6 @@ cp -R examples/plugins/system_one ~/.config/dusha/dusha/plugins/system_one
 {
   "plugins": {
     "system_one": {
-      "timeout_seconds": 15,
       "options": {
         "base_url": "http://127.0.0.1:8000",
         "timeout_seconds": 10
@@ -31,7 +30,7 @@ cp -R examples/plugins/system_one ~/.config/dusha/dusha/plugins/system_one
 | Option            | Required | Meaning                                                              |
 | ----------------- | -------- | -------------------------------------------------------------------- |
 | `base_url`        | yes      | SystemOne server root, for example `http://127.0.0.1:8000`.          |
-| `timeout_seconds` | no       | Finite positive HTTP timeout, default `10`. Keep it below the external plugin's `timeout_seconds`. |
+| `timeout_seconds` | no       | Finite positive HTTP request timeout, default `10`.                  |
 | `api_key`         | no       | Bearer token sent with every request.                                |
 | `model`           | no       | Checkpoint name. Omitted, the server picks.                          |
 | `allowed_ips`     | no       | Literal IPv4 or IPv6 addresses every request and redirect must use.  |

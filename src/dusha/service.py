@@ -57,17 +57,7 @@ class CompanionService:
             elif name in BUILTINS:
                 self.registry.plugin(BUILTINS[name], entry.config)
             else:
-                self.registry.plugin(
-                    _external.ExternalPlugin(
-                        name,
-                        entry.config,
-                        plugins_dir,
-                        database=self.database,
-                        messages=self.messages,
-                        prompts=self.prompts,
-                    ),
-                    entry.config,
-                )
+                self.registry.plugin(_external.load(name, plugins_dir), entry.config.options)
         self.registry.start()
         for runtime in self.registry.runtimes:
             if runtime.state in {"disabled", "inactive"}:

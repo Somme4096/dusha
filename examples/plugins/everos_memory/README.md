@@ -15,10 +15,9 @@ cp -R examples/plugins/everos_memory ~/.config/dusha/dusha/plugins/everos_memory
 {
   "plugins": {
     "everos_memory": {
-      "timeout_seconds": 15,
-      "context_max_chars": 3000,
       "options": {
         "interval_seconds": 10,
+        "context_max_chars": 3000,
         "everos": {
           "url": "http://127.0.0.1:8000",
           "app_id": "dusha",
@@ -35,9 +34,8 @@ cp -R examples/plugins/everos_memory ~/.config/dusha/dusha/plugins/everos_memory
 }
 ```
 
-Keep the external plugin's `timeout_seconds` above `options.everos.timeout_seconds` with
-margin for the gateway to handle a timed-out sidecar request. The example uses
-15 seconds for the external plugin and 5 for EverOS.
+`options.everos.timeout_seconds` (default `5`) bounds each request to the EverOS sidecar.
+`options.context_max_chars` (default `3000`) caps the recalled text it returns.
 
 ## What `apply` registers
 
@@ -71,7 +69,7 @@ rejected row never blocks later ones.
 
 The `context` listener searches `POST /api/v2/memory/search` with `method: "keyword"` and
 an exact session filter, or lists recent episodes when the query is empty. It
-returns short source-labeled episodes within `max_chars`. When the mapping,
+returns short source-labeled episodes within `options.context_max_chars`. When the mapping,
 the sidecar, or the results are absent it returns nothing and the gateway keeps
 its own context.
 

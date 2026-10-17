@@ -44,7 +44,7 @@ Integrations (e.g. opencode-dusha) send each message to `dusha` and add its cont
 
 ## Plugin API
 
-Every part of Dusha is a plugin. Identity, memory, evergreen, memo, affect, and proactive are built in, and a plugin you add is an external plugin: a directory under the plugins directory holding `pyproject.toml` and `uv.lock`. The gateway installs it into its own `uv` environment, runs it as a long-lived child process, and imports the module named in `[tool.dusha]`:
+Every part of Dusha is a plugin. Identity, memory, evergreen, memo, affect, and proactive are built in, and a plugin you add is an external plugin: a directory under the plugins directory holding `pyproject.toml` with a `[tool.dusha]` table. The gateway imports the module into its own process, so the plugin gets the same `ctx` as a built-in plugin, including `ctx.api` and `ctx.cli`:
 
 ```toml
 [tool.dusha]
@@ -52,14 +52,14 @@ entry = "my_plugin"
 inject = ["messages"]
 ```
 
-The module defines `apply(ctx, config)`, which runs when the external plugin loads and again after a restart. `config` is the plugin's `options` from `config.json` plus `context_max_chars`. `inject` lists the services the plugin calls, and a plugin whose service is missing stays inactive.
+The module defines `apply(ctx, config)`, which runs at startup. `config` is the plugin's `options` from `config.json`. `inject` lists the services the plugin calls, including `api` and `cli` when it registers routes or commands, and a plugin whose service is missing stays inactive. External plugins use the gateway's Python environment, so extra dependencies must be installed there and a version conflict affects the gateway.
 
 | Call | Effect |
 | --- | --- |
-| `ctx.on("message", fn)` | `fn(message)` runs for every stored message, in id order, with the stored row: `id`, `conversation_id`, `role`, `text`, `content`, `external_id`, `occurred_at`, `ingested_at`, `sha256`, `harness`, `external_conversation_id`, `route`. An exception leaves the message undelivered, and the gateway retries it before any later one. |
-| `ctx.on("context", fn)` | `fn(request)` runs for every context build with `query`, `harness`, `conversation_id`, `exclude_message_ids`, and `include_recent`. Return `{"text": "...", "records": [{"source": "...", "text": "..."}]}` or `None`. |
+| `ctx.on("message", fn)` | `fn(message)` runs for every stored message, in id order, with the stored row: `id`, `conversation_id`, `role`, `text`, `content`, `external_id`, `occurred_at`, `ingested_at`, `sha256`, `harness`, `external_conversation_id`, `route`. An exception is logged and the message is not redelivered. |
+| `ctx.on("context", fn)` | `fn(request)` runs for every context build with `query`, `harness`, `conversation_id`, `exclude_message_ids`, and `include_recent`. Return a `Block` from `dusha.hooks` or `None`. A block carries the prompt text, block data, and session records. |
 | `ctx.on("decide", fn)` | `fn(request)` runs for every new user message while affect is on, with `message`, `emotions` (the resolved dimensions), `state` (the affect snapshot), and `instruction`. Return `{"emotion": "<dimension>"}`, `{"deltas": {"<dimension>": <number>}}`, both, or `None`. |
-| `ctx.on("<event>", fn)` | `fn(*args)` runs when another plugin emits `<event>`. Custom events cross the process boundary in both directions, so `emit` and `collect` reach every active plugin. |
+| `ctx.on("<event>", fn)` | `fn(*args)` runs when another plugin emits `<event>`. Custom events stay in the gateway process, so `emit` and `collect` reach every active plugin. |
 | `ctx.interval(seconds, fn)` | `fn()` runs on that interval while the gateway serves. |
 | `ctx.on_dispose(fn)` | `fn()` runs on shutdown. |
 | `ctx.data_dir` | A private directory, `plugins/<name>` under `data_dir`. |
@@ -68,9 +68,11 @@ The module defines `apply(ctx, config)`, which runs when the external plugin loa
 | `ctx.provide(name, value)` | Publishes a service object under `name`. Another plugin consumes it by listing `name` in `inject` and calling `ctx.<name>.<method>(...)`. |
 | `ctx.emit(event, ...)` | Calls every active plugin listening for `event`, including this plugin's own listeners. |
 | `ctx.collect(event, ...)` | Calls every listener and returns `{"<plugin>": <first non-null result>}` under each plugin's name. |
-| `ctx.<service>.<method>(...)` | Calls a method of an injected service and returns its JSON result: `messages` (`get`, `recent`, `search`, `context`, `after`), `companion` (`ingest_message`, `build_context`, `latest_route`), `affect` (`status`), `evergreen` (`remember`, `revise`, `forget`, `list_current`, `history`), `memo` (`add`, `list`, `done`), `proactive` (`evaluate`, `poll`, `acknowledge`). |
+| `ctx.api` | The gateway's FastAPI router. Mount routes on it exactly as a built-in plugin does. |
+| `ctx.cli` | The gateway's argparse command registry. Register commands on it exactly as a built-in plugin does. |
+| `ctx.<service>.<method>(...)` | Calls a method of an injected service and returns its result: `messages` (`get`, `recent`, `search`, `context`, `after`), `companion` (`ingest_message`, `build_context`, `latest_route`), `affect` (`status`), `evergreen` (`remember`, `revise`, `forget`, `list_current`, `history`), `memo` (`add`, `list`, `done`), `proactive` (`evaluate`, `poll`, `acknowledge`). |
 
-Services provided by an external plugin are consumed by other plugins through `inject`, and method results cross the process boundary as JSON.
+Services provided by an external plugin are consumed by other plugins through `inject`, and they are direct Python objects.
 
 The first `emotion` in `plugins` order wins. `deltas` from every plugin merge and apply after the increment. Dimension names come from your `emotions.json`.
 

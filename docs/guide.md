@@ -127,8 +127,8 @@ dusha memory reindex
 | Proxy routes return `502` | The provider is unreachable or timed out. Read the `detail`, then check `upstream.base_url` or the address after `/v1/to/` in the client's base URL. Plain HTTP providers need the `http/` segment. |
 | Passthrough routes return `422` | The address after `/v1/to/` is not a host and path. Drop the `https://` prefix and any `user@` part. |
 | Memory, fact, memo, affect, or proactive routes return `503` | The `detail` names the plugin. Remove its `"disabled": true`, or turn on the plugin it needs, and restart. Your stored rows are intact. |
-| An external plugin adds no context or no decision | Run `dusha plugins`. Check the log for `failed to load plugin` or `<name> context failed`, then check the plugin's entry under `plugins`, its `[tool.dusha]` table, and the plugins directory. |
-| An external plugin stopped working after an upgrade | External plugins now define `apply(ctx, config)` and name it in `[tool.dusha]`. See the [Plugin API](https://github.com/Somme4096/dusha#plugin-api). |
+| Startup fails on an external plugin import or `apply` error | The traceback names the plugin directory and the failing module. Check that directory, its `[tool.dusha]` table in `pyproject.toml`, and the traceback. |
+| An external plugin stopped working after an upgrade | External plugins define `apply(ctx, config)` and name it in `[tool.dusha]`. See the [Plugin API](https://github.com/Somme4096/dusha#plugin-api). |
 | Duplicate proactive events or write errors | Two processes share one `state.sqlite3`. Stop one. |
 
 ## See also

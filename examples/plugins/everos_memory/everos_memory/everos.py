@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-import os
 import re
 import threading
 from datetime import UTC, datetime, timedelta
@@ -17,8 +16,7 @@ _OPTIONS = {
     "url", "app_id", "project_id", "instance_namespace", "user_sender_id",
     "assistant_sender_id", "timeout_seconds", "flush_timeout_seconds", "flush_after_ingest",
 }
-_TIMEOUT_ENV = "DUSHA_PLUGIN_TIMEOUT_SECONDS"
-_MIN_TIMEOUT = 0.5
+_TIMEOUT_CEILING = 300.0
 _SEARCH_TOP_K = 5
 _EPISODE_SKIP_KEYS = {"session_id", "app_id", "project_id", "user_id"}
 
@@ -41,25 +39,12 @@ class EverOSMirror:
         self.assistant_sender_id = self._id(options["assistant_sender_id"])
         if self.user_sender_id == self.assistant_sender_id:
             raise ValueError("user_sender_id and assistant_sender_id must differ")
-        timeout_text = os.environ.get(_TIMEOUT_ENV)
-        if timeout_text is None:
-            raise ValueError("plugin timeout is unavailable")
-        try:
-            plugin_timeout = float(timeout_text)
-        except (TypeError, ValueError) as error:
-            raise ValueError("plugin timeout must be finite and positive") from error
-        if not math.isfinite(plugin_timeout) or plugin_timeout < _MIN_TIMEOUT:
-            raise ValueError("plugin timeout is too low")
         timeout = options.get("timeout_seconds", 5)
         if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
-            raise ValueError(
-                "timeout_seconds must be finite, positive, and no more than 60 percent of the plugin timeout"
-            )
+            raise ValueError("timeout_seconds must be a finite positive number of seconds")
         self.timeout = float(timeout)
-        if not math.isfinite(self.timeout) or not 0 < self.timeout <= plugin_timeout * 0.6:
-            raise ValueError(
-                "timeout_seconds must be finite, positive, and no more than 60 percent of the plugin timeout"
-            )
+        if not math.isfinite(self.timeout) or not 0 < self.timeout <= _TIMEOUT_CEILING:
+            raise ValueError("timeout_seconds must be a finite positive number of seconds")
         self.client = httpx.Client(
             timeout=httpx.Timeout(self.timeout), follow_redirects=False, trust_env=False,
         )

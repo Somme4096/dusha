@@ -21,7 +21,7 @@
     "default": "astrbot"
   },
   "request_timeout_seconds": {
-    "description": "Seconds to wait for one gateway response. Message storage can run each external plugin's on_message and decide hooks, 15 seconds each by default. Values below 1 clamp to 1.",
+    "description": "Seconds to wait for one gateway response. Message storage runs plugin hooks in the gateway process. Values below 1 clamp to 1.",
     "type": "float",
     "default": 60.0
   },
