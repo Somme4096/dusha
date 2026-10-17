@@ -59,10 +59,18 @@ The module defines `apply(ctx, config)`, which runs when the external plugin loa
 | `ctx.on("message", fn)` | `fn(message)` runs for every stored message, in id order, with the stored row: `id`, `conversation_id`, `role`, `text`, `content`, `external_id`, `occurred_at`, `ingested_at`, `sha256`, `harness`, `external_conversation_id`, `route`. An exception leaves the message undelivered, and the gateway retries it before any later one. |
 | `ctx.on("context", fn)` | `fn(request)` runs for every context build with `query`, `harness`, `conversation_id`, `exclude_message_ids`, and `include_recent`. Return `{"text": "...", "records": [{"source": "...", "text": "..."}]}` or `None`. |
 | `ctx.on("decide", fn)` | `fn(request)` runs for every new user message while affect is on, with `message`, `emotions` (the resolved dimensions), `state` (the affect snapshot), and `instruction`. Return `{"emotion": "<dimension>"}`, `{"deltas": {"<dimension>": <number>}}`, both, or `None`. |
+| `ctx.on("<event>", fn)` | `fn(*args)` runs when another plugin emits `<event>`. Custom events cross the process boundary in both directions, so `emit` and `collect` reach every active plugin. |
 | `ctx.interval(seconds, fn)` | `fn()` runs on that interval while the gateway serves. |
 | `ctx.on_dispose(fn)` | `fn()` runs on shutdown. |
 | `ctx.data_dir` | A private directory, `plugins/<name>` under `data_dir`. |
+| `ctx.name` | The plugin's name. |
+| `ctx.error` | Setting a non-empty string marks the plugin failed and shows the text in `/state/v1/plugins`. |
+| `ctx.provide(name, value)` | Publishes a service object under `name`. Another plugin consumes it by listing `name` in `inject` and calling `ctx.<name>.<method>(...)`. |
+| `ctx.emit(event, ...)` | Calls every active plugin listening for `event`, including this plugin's own listeners. |
+| `ctx.collect(event, ...)` | Calls every listener and returns `{"<plugin>": <first non-null result>}` under each plugin's name. |
 | `ctx.<service>.<method>(...)` | Calls a method of an injected service and returns its JSON result: `messages` (`get`, `recent`, `search`, `context`, `after`), `companion` (`ingest_message`, `build_context`, `latest_route`), `affect` (`status`), `evergreen` (`remember`, `revise`, `forget`, `list_current`, `history`), `memo` (`add`, `list`, `done`), `proactive` (`evaluate`, `poll`, `acknowledge`). |
+
+Services provided by an external plugin are consumed by other plugins through `inject`, and method results cross the process boundary as JSON.
 
 The first `emotion` in `plugins` order wins. `deltas` from every plugin merge and apply after the increment. Dimension names come from your `emotions.json`.
 

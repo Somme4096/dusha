@@ -23,7 +23,6 @@ logger = logging.getLogger("dusha")
 REQUIRED_FILES = ("pyproject.toml", "uv.lock")
 PLUGINS_DIR_ENV = "DUSHA_PLUGINS_DIR"
 TIMEOUT_ENV = "DUSHA_PLUGIN_TIMEOUT_SECONDS"
-EVENTS = ("message", "context", "decide")
 _BASE_ENV = frozenset({"PATH", "HOME", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "LC_CTYPE", "SYSTEMROOT"})
 _SYNC_TIMEOUT = 120.0
 _RESTART_COOLDOWN = 5.0
@@ -158,6 +157,24 @@ def _terminate(proc: subprocess.Popen[bytes]) -> None:
     proc.wait()
 
 
+class RemoteService:
+    def __init__(self, plugin: ExternalPlugin, name: str):
+        self._plugin = plugin
+        self._name = name
+
+    def __getattr__(self, method: str) -> Any:
+        if method.startswith("_"):
+            raise AttributeError(method)
+
+        def invoke(*args: Any, **kwargs: Any) -> Any:
+            return self._plugin.call(
+                "provide_call",
+                {"service": self._name, "method": method, "args": list(args), "kwargs": kwargs},
+            )
+
+        return invoke
+
+
 class ExternalPlugin:
     def __init__(
         self,
@@ -233,29 +250,49 @@ class ExternalPlugin:
         self.reader = threading.Thread(target=self._read, args=(self.proc, self.responses), daemon=True)
         self.reader.start()
         threading.Thread(target=self._drain_stderr, args=(self.proc,), daemon=True).start()
+        self.ctx.error = ""
         try:
             handshake = self._call_locked(
                 "start",
-                {"entry": self.entry, "config": self.config, "data_dir": str(self.ctx.data_dir)},
+                {
+                    "entry": self.entry,
+                    "name": self.name,
+                    "config": self.config,
+                    "data_dir": str(self.ctx.data_dir),
+                },
             )
             events = handshake.get("events") if isinstance(handshake, dict) else None
             intervals = handshake.get("intervals") if isinstance(handshake, dict) else None
+            provides = handshake.get("provides") if isinstance(handshake, dict) else None
             if not isinstance(events, list) or not isinstance(intervals, list):
                 raise ExternalPluginError("plugin returned an invalid start response")
+            if not all(isinstance(item, str) and item for item in events):
+                raise ExternalPluginError("plugin returned an invalid start response")
+            if not isinstance(provides, list) or not all(
+                isinstance(item, str) and PLUGIN_NAME.fullmatch(item) for item in provides
+            ):
+                raise ExternalPluginError("plugin returned an invalid start response")
+            for name in provides:
+                if name in self.ctx.provided:
+                    continue
+                try:
+                    self.ctx.provide(name, RemoteService(self, name))
+                except ValueError as error:
+                    raise ExternalPluginError(str(error)) from error
         except ExternalPluginError:
             if self.proc.poll() is None:
                 _terminate(self.proc)
             raise
-        self.exports = frozenset(str(item) for item in events if item in EVENTS)
+        self.exports = frozenset(events)
         self.intervals = [float(item) for item in intervals]
         self.started = True
-        self.ctx.error = ""
         self._register()
 
     def _register(self) -> None:
-        listeners = {"message": self.on_message, "context": self.on_context, "decide": self.decide}
+        handlers = {"message": self.on_message, "context": self.on_context, "decide": self.decide}
         for event in sorted(self.exports - self.registered):
-            self.ctx.on(event, listeners[event])
+            handler = handlers.get(event) or (lambda *args, event=event: self._event(event, *args))
+            self.ctx.on(event, handler)
             self.registered.add(event)
         if "intervals" not in self.registered:
             for index, seconds in enumerate(self.intervals):
@@ -270,13 +307,41 @@ class ExternalPlugin:
             except (UnicodeDecodeError, json.JSONDecodeError):
                 responses.put(ExternalPluginError("plugin returned invalid output"))
                 continue
-            if isinstance(message, dict) and "call" in message:
+            if isinstance(message, dict) and "host" in message:
+                self._host(message)
+            elif isinstance(message, dict) and "call" in message:
                 self._serve(message)
             else:
                 responses.put(message)
         responses.put(ExternalPluginError("plugin closed its output"))
         if proc is self.proc and not self.closing:
             self.ctx.error = "plugin closed its output"
+
+    def _host(self, message: dict[str, Any]) -> None:
+        method = str(message.get("method"))
+        ident = message.get("host")
+        params = message.get("params") or {}
+        if method == "error":
+            self.ctx.error = str(params.get("text", ""))
+            return
+        reply: dict[str, Any] = {"reply": ident}
+        try:
+            event = str(params.get("event"))
+            args = list(params.get("args") or [])
+            if method == "emit":
+                self.ctx.emit(event, *args)
+                reply["result"] = None
+            elif method == "collect":
+                reply["result"] = _json_value(self.ctx.collect(event, *args))
+            else:
+                raise ValueError(f"unknown method {method!r}")
+        except Exception as error:
+            reply["error"] = str(error)
+            reply["error_type"] = type(error).__name__
+        try:
+            self._write(reply)
+        except OSError:
+            pass
 
     def _serve(self, message: dict[str, Any]) -> None:
         reply: dict[str, Any] = {"reply": message.get("call")}

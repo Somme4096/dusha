@@ -93,6 +93,10 @@ class Context:
     def error(self, value: str) -> None:
         self._runtime.error = str(value or "")
 
+    @property
+    def provided(self) -> tuple[str, ...]:
+        return tuple(self._runtime.provides)
+
     def on(self, event: str, listener: Callable[..., Any]) -> None:
         self._runtime.listeners.setdefault(event, []).append(listener)
 

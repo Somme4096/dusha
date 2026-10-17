@@ -47,10 +47,16 @@ def _note(config, key, value):
     pathlib.Path(config["marker"]).write_text(json.dumps(seen))
 
 
+class Vault:
+    def remember(self, text):
+        return {"saved": text}
+
+
 def apply(ctx, config):
     if config.get("start_fail"):
         raise ValueError("configured start failure")
     _note(config, "start", {
+        "name": ctx.name,
         "data_dir": str(ctx.data_dir),
         "cwd": os.getcwd(),
         "python": sys.executable,
@@ -59,16 +65,29 @@ def apply(ctx, config):
             for name in ("PYTHONPATH", "VIRTUAL_ENV", "GATEWAY_SECRET", "SHARED_VALUE")
         },
     })
-    ctx.on("message", lambda message: on_message(message, config))
+    if config.get("provide"):
+        ctx.provide("vault", Vault())
+    ctx.on("message", lambda message: on_message(ctx, message, config))
     ctx.on("context", lambda request: on_context(ctx, request, config))
     ctx.on("decide", lambda request: decide(request, config))
+    if config.get("listen"):
+        ctx.on("probe_event", lambda payload: on_probe_event(payload, config))
     ctx.interval(1, lambda: _note(config, "tick", time.time()))
     ctx.on_dispose(lambda: _note(config, "close", True))
 
 
-def on_message(message, config):
+def on_probe_event(payload, config):
+    _note(config, "events", payload)
+    return {"seen": payload["text"]}
+
+
+def on_message(ctx, message, config):
     if message["text"] == config.get("fail_on"):
         raise RuntimeError("configured delivery failure")
+    if config.get("error_on_message"):
+        ctx.error = config["error_on_message"]
+    if config.get("emit"):
+        ctx.emit("probe_event", {"text": message["text"]})
     _note(config, "messages", {
         "id": message["id"], "role": message["role"], "text": message["text"],
         "harness": message["harness"], "conversation": message["external_conversation_id"],
@@ -90,6 +109,12 @@ def on_context(ctx, request, config):
             ctx.memo.list()
         except PermissionError as error:
             records.append({"source": "denied", "text": str(error)})
+    if config.get("consume_vault"):
+        saved = ctx.vault.remember(request.query)
+        records.append({"source": "vault", "text": json.dumps(saved)})
+    if config.get("collect"):
+        results = ctx.collect("probe_event", {"text": request.query})
+        records.append({"source": "collect", "text": json.dumps(results)})
     return {"text": config.get("context_text", "PROBE_CONTEXT"), "records": records}
 
 
@@ -144,6 +169,14 @@ def plugins_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     shutil.copytree(suite, root / "plugins" / "needs_affect")
     (root / "plugins" / "needs_affect" / "pyproject.toml").write_text(
         MANIFEST.format(inject='["affect"]'), encoding="utf-8"
+    )
+    shutil.copytree(suite, root / "plugins" / "vault_provider")
+    (root / "plugins" / "vault_provider" / "pyproject.toml").write_text(
+        MANIFEST.format(inject="[]"), encoding="utf-8"
+    )
+    shutil.copytree(suite, root / "plugins" / "vault_consumer")
+    (root / "plugins" / "vault_consumer" / "pyproject.toml").write_text(
+        MANIFEST.format(inject='["vault"]'), encoding="utf-8"
     )
     return root / "plugins"
 
@@ -294,6 +327,60 @@ async def test_http_external_plugin_with_a_missing_dependency_stays_inactive(tmp
     assert closed.status_code == 503
     assert closed.json()["detail"] == "the needs_affect plugin is inactive, missing service(s): affect"
     assert not marker.exists()
+
+
+async def test_http_external_plugin_reports_its_name_and_error(tmp_path, plugins_dir):
+    marker = tmp_path / "seen.json"
+    config = _config(tmp_path, plugins_dir, marker=str(marker), error_on_message="configured failure")
+    async with _client(config) as client:
+        await _post(client, "hello")
+        status = await client.get("/state/v1/plugins")
+    [start] = _marker(marker)["start"]
+    assert start["name"] == "probe"
+    report = status.json()["probe"]
+    assert report["state"] == "failed" and report["error"] == "configured failure"
+
+
+async def test_http_external_plugin_provides_a_service(tmp_path, plugins_dir):
+    provider_marker = tmp_path / "provider.json"
+    consumer_marker = tmp_path / "consumer.json"
+    modules = {
+        "vault_provider": ExternalPluginConfig(
+            options={"provide": True, "marker": str(provider_marker)}
+        ),
+        "vault_consumer": ExternalPluginConfig(
+            options={"consume_vault": True, "marker": str(consumer_marker)}
+        ),
+    }
+    async with _client(_config(tmp_path, plugins_dir, modules)) as client:
+        await _post(client, "hello")
+        context = await _context(client, "lantern")
+        status = await client.get("/state/v1/plugins")
+    records = context["context"]["blocks"]["vault_consumer"]["records"]
+    assert {"source": "vault", "text": json.dumps({"saved": "lantern"})} in records
+    assert status.json()["vault_provider"]["provides"] == ["vault"]
+    consumer = status.json()["vault_consumer"]
+    assert consumer["inject"] == ["vault"] and consumer["state"] == "active"
+
+
+async def test_http_external_plugin_custom_events_cross_the_boundary(tmp_path, plugins_dir):
+    emitter_marker = tmp_path / "emitter.json"
+    listener_marker = tmp_path / "listener.json"
+    modules = {
+        "probe": ExternalPluginConfig(
+            options={"marker": str(emitter_marker), "emit": True, "collect": True, "listen": True}
+        ),
+        "probe_two": ExternalPluginConfig(options={"marker": str(listener_marker), "listen": True}),
+    }
+    async with _client(_config(tmp_path, plugins_dir, modules)) as client:
+        await _post(client, "hello")
+        context = await _context(client, "lantern")
+    assert {"text": "hello"} in _marker(listener_marker)["events"]
+    records = context["context"]["blocks"]["probe"]["records"]
+    [collected] = [item for item in records if item["source"] == "collect"]
+    results = json.loads(collected["text"])
+    assert results["probe"] == {"seen": "lantern"}
+    assert results["probe_two"] == {"seen": "lantern"}
 
 
 async def test_http_delivery_cursor_replays_a_failed_message_in_order(tmp_path, plugins_dir):

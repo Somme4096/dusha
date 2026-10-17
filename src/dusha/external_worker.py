@@ -69,6 +69,15 @@ class Channel:
         ident = self.next_call
         self.next_call += 1
         self.send({"call": ident, "service": service, "method": method, "args": args, "kwargs": kwargs})
+        return self._wait(ident)
+
+    def request(self, method: str, params: dict[str, Any]) -> Any:
+        ident = self.next_call
+        self.next_call += 1
+        self.send({"host": ident, "method": method, "params": params})
+        return self._wait(ident)
+
+    def _wait(self, ident: int) -> Any:
         while True:
             message = self.receive()
             if message is None:
@@ -96,16 +105,56 @@ class Service:
 
 
 class Context:
-    def __init__(self, channel: Channel, data_dir: str):
+    def __init__(self, channel: Channel, data_dir: str, name: str):
         self._channel = channel
+        self.name = name
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.listeners: dict[str, list[Callable[..., Any]]] = {}
         self.intervals: list[tuple[float, Callable[[], Any]]] = []
         self.disposables: list[Callable[[], Any]] = []
+        self.provides: dict[str, Any] = {}
+        self._error = ""
+
+    @property
+    def error(self) -> str:
+        return self._error
+
+    @error.setter
+    def error(self, value: str) -> None:
+        self._error = str(value or "")
+        try:
+            self._channel.send({"host": None, "method": "error", "params": {"text": self._error}})
+        except OSError:
+            pass
 
     def on(self, event: str, listener: Callable[..., Any]) -> None:
         self.listeners.setdefault(event, []).append(listener)
+
+    def provide(self, name: str, value: Any) -> None:
+        self.provides[name] = value
+
+    def _listen(self, event: str, args: tuple[Any, ...]) -> list[Any]:
+        results: list[Any] = []
+        for listener in list(self.listeners.get(event, ())):
+            try:
+                results.append(listener(*args))
+            except Exception:
+                traceback.print_exc()
+        return results
+
+    def emit(self, event: str, *args: Any) -> None:
+        self._listen(event, args)
+        self._channel.request("emit", {"event": event, "args": list(args)})
+
+    def collect(self, event: str, *args: Any) -> dict[str, Any]:
+        local: dict[str, Any] = {}
+        for value in self._listen(event, args):
+            if value is not None:
+                local[self.name] = value
+                break
+        remote = self._channel.request("collect", {"event": event, "args": list(args)})
+        return {**remote, **local} if isinstance(remote, dict) else local
 
     def interval(self, seconds: float, callback: Callable[[], Any]) -> None:
         self.intervals.append((float(seconds), callback))
@@ -113,9 +162,12 @@ class Context:
     def on_dispose(self, callback: Callable[[], Any]) -> None:
         self.disposables.append(callback)
 
-    def __getattr__(self, name: str) -> Service:
+    def __getattr__(self, name: str) -> Any:
         if name.startswith("_"):
             raise AttributeError(name)
+        provides = self.__dict__.get("provides") or {}
+        if name in provides:
+            return provides[name]
         return Service(self._channel, name)
 
 
@@ -125,7 +177,7 @@ class Worker:
         self.channel = channel
         self.ctx: Context | None = None
 
-    def start(self, entry: str, config: dict[str, Any], data_dir: str) -> dict[str, Any]:
+    def start(self, entry: str, config: dict[str, Any], data_dir: str, name: str) -> dict[str, Any]:
         for path in (self.suite / "src", self.suite):
             if path.is_dir():
                 sys.path.insert(0, str(path))
@@ -133,14 +185,23 @@ class Worker:
         apply = getattr(module, "apply", None)
         if not callable(apply):
             raise RuntimeError(f"plugin entry {entry!r} does not define apply(ctx, config)")
-        self.ctx = Context(self.channel, data_dir)
+        self.ctx = Context(self.channel, data_dir, name)
         apply(self.ctx, config)
         intervals = [seconds for seconds, _ in self.ctx.intervals]
-        return {"events": sorted(self.ctx.listeners), "intervals": intervals}
+        return {
+            "events": sorted(self.ctx.listeners),
+            "intervals": intervals,
+            "provides": sorted(self.ctx.provides),
+        }
 
     def handle(self, method: str, params: dict[str, Any]) -> Any:
         if method == "start":
-            return self.start(str(params["entry"]), dict(params.get("config") or {}), str(params["data_dir"]))
+            return self.start(
+                str(params["entry"]),
+                dict(params.get("config") or {}),
+                str(params["data_dir"]),
+                str(params["name"]),
+            )
         if self.ctx is None:
             raise RuntimeError("plugin is not started")
         if method == "event":
@@ -150,6 +211,15 @@ class Worker:
                 if result is not None:
                     return result
             return None
+        if method == "provide_call":
+            service = str(params["service"])
+            member = str(params["method"])
+            if member.startswith("_") or service not in self.ctx.provides:
+                raise AttributeError(f"{service}.{member} is not callable")
+            target = getattr(self.ctx.provides[service], member)
+            if not callable(target):
+                raise AttributeError(f"{service}.{member} is not callable")
+            return target(*params.get("args", []), **params.get("kwargs", {}))
         if method == "interval":
             return self.ctx.intervals[int(params["index"])][1]()
         if method == "dispose":
