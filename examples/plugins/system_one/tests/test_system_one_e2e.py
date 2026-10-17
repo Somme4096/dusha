@@ -12,16 +12,18 @@ import httpx
 import pytest
 
 from dusha import api
-from dusha.config import AffectConfig, AppConfig, ModConfig
+from dusha.config import AffectConfig, AppConfig, ExternalPluginConfig
 
-MOD_DIR = Path(__file__).resolve().parents[1]
+PLUGIN_DIR = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture(scope="module")
-def mods(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    root = tmp_path_factory.mktemp("system-one-mods")
+def plugins_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    root = tmp_path_factory.mktemp("system-one-plugins")
     shutil.copytree(
-        MOD_DIR, root / "system_one", ignore=shutil.ignore_patterns(".venv", "__pycache__", "*.pyc", "tests")
+        PLUGIN_DIR,
+        root / "system_one",
+        ignore=shutil.ignore_patterns(".venv", "__pycache__", "*.pyc", "tests"),
     )
     return root
 
@@ -91,11 +93,11 @@ async def _client(config: AppConfig):
             yield client
 
 
-def _config(tmp_path: Path, mods: Path, **options) -> AppConfig:
+def _config(tmp_path: Path, plugins_dir: Path, **options) -> AppConfig:
     return AppConfig(
         data_dir=tmp_path / "data",
-        mods_dir=str(mods),
-        plugins={"affect": AffectConfig(increment=0.25), "system_one": ModConfig(options=options)},
+        plugins_dir=str(plugins_dir),
+        plugins={"affect": AffectConfig(increment=0.25), "system_one": ExternalPluginConfig(options=options)},
     )
 
 
@@ -123,10 +125,12 @@ async def _post_expecting_no_decision(config: AppConfig) -> None:
 
 
 @pytest.mark.parametrize("allowlist", [{"allowed_ips": ["127.0.0.1"]}, {}])
-async def test_system_one_asks_the_classifier_and_applies_its_choice(tmp_path, mods, classifier, allowlist):
+async def test_system_one_asks_the_classifier_and_applies_its_choice(
+    tmp_path, plugins_dir, classifier, allowlist
+):
     server = classifier()
     options = {"base_url": server.url, "api_key": "secret", "model": "tiny", **allowlist}
-    async with _client(_config(tmp_path, mods, **options)) as client:
+    async with _client(_config(tmp_path, plugins_dir, **options)) as client:
         before = await _base(client)
         stored = await _post(client)
         status = await client.get("/state/v1/plugins")
@@ -157,27 +161,31 @@ async def test_system_one_asks_the_classifier_and_applies_its_choice(tmp_path, m
     ],
 )
 async def test_system_one_rejects_denied_or_invalid_allowed_ips_before_any_request(
-    tmp_path, mods, classifier, caplog, allowed_ips, logged
+    tmp_path, plugins_dir, classifier, caplog, allowed_ips, logged
 ):
     caplog.set_level(logging.WARNING, logger="dusha")
     server = classifier()
-    await _post_expecting_no_decision(_config(tmp_path, mods, base_url=server.url, allowed_ips=allowed_ips))
+    await _post_expecting_no_decision(
+        _config(tmp_path, plugins_dir, base_url=server.url, allowed_ips=allowed_ips)
+    )
     assert server.requests == []
     assert logged in caplog.text
 
 
-async def test_system_one_redirect_cannot_leave_the_allowlist(tmp_path, mods, classifier, caplog):
+async def test_system_one_redirect_cannot_leave_the_allowlist(tmp_path, plugins_dir, classifier, caplog):
     caplog.set_level(logging.WARNING, logger="dusha")
     server = classifier(redirect_to="http://127.0.0.2:1/v1/systemone")
-    await _post_expecting_no_decision(_config(tmp_path, mods, base_url=server.url, allowed_ips=["127.0.0.1"]))
+    await _post_expecting_no_decision(
+        _config(tmp_path, plugins_dir, base_url=server.url, allowed_ips=["127.0.0.1"])
+    )
     assert len(server.requests) == 1
     assert "redirect address 127.0.0.2 is not in 'allowed_ips'" in caplog.text
 
 
-async def test_system_one_cross_origin_redirect_drops_credentials(tmp_path, mods, classifier):
+async def test_system_one_cross_origin_redirect_drops_credentials(tmp_path, plugins_dir, classifier):
     target = classifier()
     origin = classifier(redirect_to=f"{target.url}/v1/systemone")
-    async with _client(_config(tmp_path, mods, base_url=origin.url, api_key="secret")) as client:
+    async with _client(_config(tmp_path, plugins_dir, base_url=origin.url, api_key="secret")) as client:
         stored = await _post(client)
     assert stored.status_code == 200, stored.text
     assert stored.json()["affect"]["emotion"] == "fear"
@@ -186,9 +194,9 @@ async def test_system_one_cross_origin_redirect_drops_credentials(tmp_path, mods
     assert target.requests[0]["body"] == origin.requests[0]["body"]
 
 
-async def test_system_one_provider_failure_leaves_affect_unchanged(tmp_path, mods, classifier, caplog):
+async def test_system_one_provider_failure_leaves_affect_unchanged(tmp_path, plugins_dir, classifier, caplog):
     caplog.set_level(logging.WARNING, logger="dusha")
     server = classifier(status=503)
-    await _post_expecting_no_decision(_config(tmp_path, mods, base_url=server.url))
+    await _post_expecting_no_decision(_config(tmp_path, plugins_dir, base_url=server.url))
     assert len(server.requests) == 1
     assert f"system_one provider returned HTTP 503 for {server.url}/v1/systemone" in caplog.text

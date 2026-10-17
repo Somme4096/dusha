@@ -16,7 +16,7 @@ import httpx
 import pytest
 
 from dusha import api
-from dusha.config import AffectConfig, AppConfig, ModConfig, load_config
+from dusha.config import AffectConfig, AppConfig, ExternalPluginConfig, load_config
 
 HELPER_SOURCE = '''\
 def choose(emotions):
@@ -130,22 +130,22 @@ MANIFEST = (
 
 
 @pytest.fixture(scope="module")
-def mods(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    root = tmp_path_factory.mktemp("mods-workspace")
+def plugins_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    root = tmp_path_factory.mktemp("plugins-workspace")
     (root / "other").mkdir()
     (root / "pyproject.toml").write_text('[tool.uv.workspace]\nmembers = ["other"]\n', encoding="utf-8")
-    suite = root / "mods" / "probe"
+    suite = root / "plugins" / "probe"
     suite.mkdir(parents=True)
     (suite / "probe.py").write_text(PROBE_SOURCE, encoding="utf-8")
     (suite / "helper.py").write_text(HELPER_SOURCE, encoding="utf-8")
     (suite / "pyproject.toml").write_text(MANIFEST.format(inject='["messages"]'), encoding="utf-8")
     subprocess.run(["uv", "--no-config", "lock", "--directory", str(suite)], check=True)
-    shutil.copytree(suite, root / "mods" / "probe_two")
-    shutil.copytree(suite, root / "mods" / "needs_affect")
-    (root / "mods" / "needs_affect" / "pyproject.toml").write_text(
+    shutil.copytree(suite, root / "plugins" / "probe_two")
+    shutil.copytree(suite, root / "plugins" / "needs_affect")
+    (root / "plugins" / "needs_affect" / "pyproject.toml").write_text(
         MANIFEST.format(inject='["affect"]'), encoding="utf-8"
     )
-    return root / "mods"
+    return root / "plugins"
 
 
 @asynccontextmanager
@@ -157,13 +157,13 @@ async def _client(config: AppConfig):
             yield client
 
 
-def _config(tmp_path: Path, mods: Path, modules: dict[str, Any] | None = None, **options) -> AppConfig:
+def _config(tmp_path: Path, plugins_dir: Path, modules: dict[str, Any] | None = None, **options) -> AppConfig:
     return AppConfig(
         data_dir=tmp_path / "data",
-        mods_dir=str(mods),
+        plugins_dir=str(plugins_dir),
         plugins={
             "affect": AffectConfig(increment=0.25),
-            **(modules if modules is not None else {"probe": ModConfig(options=options)}),
+            **(modules if modules is not None else {"probe": ExternalPluginConfig(options=options)}),
         },
     )
 
@@ -217,11 +217,13 @@ def _cli(config: Path, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-async def test_http_mod_sees_every_event_with_the_documented_arguments(tmp_path, mods, monkeypatch):
+async def test_http_external_plugin_sees_every_event_with_the_documented_arguments(
+    tmp_path, plugins_dir, monkeypatch
+):
     monkeypatch.setenv("PYTHONPATH", "gateway-path")
     monkeypatch.setenv("VIRTUAL_ENV", "gateway-venv")
     marker = tmp_path / "seen.json"
-    async with _client(_config(tmp_path, mods, marker=str(marker))) as client:
+    async with _client(_config(tmp_path, plugins_dir, marker=str(marker))) as client:
         before = await _base(client)
         stored = await _post(client, "hello")
         await _post(client, "sure thing", role="assistant")
@@ -236,8 +238,8 @@ async def test_http_mod_sees_every_event_with_the_documented_arguments(tmp_path,
     block = context["context"]["blocks"]["probe"]
     assert block["source"] == "probe" and block["text"] == "PROBE_CONTEXT"
     assert block["records"] == [{"source": "probe", "text": "PROBE_RECORD lantern"}]
-    assert "<mod_context>" in context["injection"] and "PROBE_RECORD lantern" in context["injection"]
-    assert context["injection"].index("<affect>") < context["injection"].index("<mod_context>")
+    assert "<plugin_context>" in context["injection"] and "PROBE_RECORD lantern" in context["injection"]
+    assert context["injection"].index("<affect>") < context["injection"].index("<plugin_context>")
     assert "memory_id" not in json.dumps(block)
 
     assert "probe" in health.json()["plugins"]
@@ -252,8 +254,8 @@ async def test_http_mod_sees_every_event_with_the_documented_arguments(tmp_path,
     seen = _marker(marker)
     [start] = seen["start"]
     assert start["data_dir"] == str(tmp_path / "data" / "plugins" / "probe")
-    assert start["cwd"] == str(mods / "probe")
-    assert start["python"].startswith(str(mods / "probe" / ".venv"))
+    assert start["cwd"] == str(plugins_dir / "probe")
+    assert start["python"].startswith(str(plugins_dir / "probe" / ".venv"))
     assert start["env"]["PYTHONPATH"] is None and start["env"]["VIRTUAL_ENV"] is None
     assert [(item["role"], item["text"], item["conversation"]) for item in seen["messages"]] == [
         ("user", "hello", "one"), ("assistant", "sure thing", "one"), ("tool", "tool output", "two"),
@@ -268,8 +270,8 @@ async def test_http_mod_sees_every_event_with_the_documented_arguments(tmp_path,
     assert seen["close"] == [True]
 
 
-async def test_http_mod_calls_back_into_injected_services_only(tmp_path, mods):
-    async with _client(_config(tmp_path, mods, recall=True)) as client:
+async def test_http_external_plugin_calls_back_into_injected_services_only(tmp_path, plugins_dir):
+    async with _client(_config(tmp_path, plugins_dir, recall=True)) as client:
         await _post(client, "the orchid is in the cabinet")
         context = await _context(client, "orchid")
     records = context["context"]["blocks"]["probe"]["records"]
@@ -278,11 +280,11 @@ async def test_http_mod_calls_back_into_injected_services_only(tmp_path, mods):
     assert denied["text"] == "probe must inject 'memo' to use it"
 
 
-async def test_http_mod_with_a_missing_dependency_stays_inactive(tmp_path, mods):
+async def test_http_external_plugin_with_a_missing_dependency_stays_inactive(tmp_path, plugins_dir):
     marker = tmp_path / "seen.json"
-    needs_affect = ModConfig(options={"marker": str(marker)})
+    needs_affect = ExternalPluginConfig(options={"marker": str(marker)})
     modules = {"affect": False, "proactive": False, "needs_affect": needs_affect}
-    async with _client(_config(tmp_path, mods, modules)) as client:
+    async with _client(_config(tmp_path, plugins_dir, modules)) as client:
         await _post(client)
         status = await client.get("/state/v1/plugins")
         closed = await client.get("/state/v1/needs_affect/anything")
@@ -294,16 +296,16 @@ async def test_http_mod_with_a_missing_dependency_stays_inactive(tmp_path, mods)
     assert not marker.exists()
 
 
-async def test_http_delivery_cursor_replays_a_failed_message_in_order(tmp_path, mods):
+async def test_http_delivery_cursor_replays_a_failed_message_in_order(tmp_path, plugins_dir):
     marker = tmp_path / "seen.json"
-    config = _config(tmp_path, mods, marker=str(marker), fail_on="second")
+    config = _config(tmp_path, plugins_dir, marker=str(marker), fail_on="second")
     async with _client(config) as client:
         await _post(client, "first")
         await _post(client, "second")
         await _post(client, "third")
     assert [item["text"] for item in _marker(marker)["messages"]] == ["first"]
 
-    async with _client(_config(tmp_path, mods, marker=str(marker))) as client:
+    async with _client(_config(tmp_path, plugins_dir, marker=str(marker))) as client:
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline and len(_marker(marker).get("messages", [])) < 3:
             await asyncio.sleep(0.1)
@@ -313,10 +315,10 @@ async def test_http_delivery_cursor_replays_a_failed_message_in_order(tmp_path, 
     assert seen["tick"]
 
 
-async def test_http_context_block_respects_its_cap_and_falls_back_on_failure(tmp_path, mods):
+async def test_http_context_block_respects_its_cap_and_falls_back_on_failure(tmp_path, plugins_dir):
     marker = tmp_path / "seen.json"
-    capped = {"probe": ModConfig(context_max_chars=500, options={"context_text": "x" * 4000})}
-    async with _client(_config(tmp_path, mods, capped)) as client:
+    capped = {"probe": ExternalPluginConfig(context_max_chars=500, options={"context_text": "x" * 4000})}
+    async with _client(_config(tmp_path, plugins_dir, capped)) as client:
         await _post(client, "VAULT_RECENT_MARKER")
         fact = await client.post("/state/v1/evergreen/facts", json={"key": "vault.key", "text": "VAULT_FACT"})
         assert fact.status_code == 200
@@ -325,14 +327,14 @@ async def test_http_context_block_respects_its_cap_and_falls_back_on_failure(tmp
     assert len(block["text"]) == 500 and "records" not in block
     assert "VAULT_FACT" in context["injection"] and "VAULT_RECENT_MARKER" in context["injection"]
 
-    failing = {"probe": ModConfig(options={"context_fail": True})}
-    async with _client(_config(tmp_path, mods, failing)) as client:
+    failing = {"probe": ExternalPluginConfig(options={"context_fail": True})}
+    async with _client(_config(tmp_path, plugins_dir, failing)) as client:
         context = await _context(client)
     assert "probe" not in context["context"]["blocks"]
     assert "VAULT_RECENT_MARKER" in context["injection"]
 
-    silent = {"probe": ModConfig(context_max_chars=0, options={"marker": str(marker)})}
-    async with _client(_config(tmp_path, mods, silent)) as client:
+    silent = {"probe": ExternalPluginConfig(context_max_chars=0, options={"marker": str(marker)})}
+    async with _client(_config(tmp_path, plugins_dir, silent)) as client:
         context = await _context(client)
     assert "probe" not in context["context"]["blocks"]
     assert "context" not in _marker(marker)
@@ -344,12 +346,12 @@ async def test_http_context_block_respects_its_cap_and_falls_back_on_failure(tmp
         ("abstain", None),
         ("unknown", "decision returned invalid emotion: 'missing'"),
         ("crash", "probe decide failed: RuntimeError: boom"),
-        ("stdout_flood", "probe decide failed: RuntimeError: mod output limit exceeded"),
+        ("stdout_flood", "probe decide failed: RuntimeError: plugin output limit exceeded"),
     ],
 )
-async def test_http_decision_failures_leave_affect_unchanged(tmp_path, mods, caplog, mode, logged):
+async def test_http_decision_failures_leave_affect_unchanged(tmp_path, plugins_dir, caplog, mode, logged):
     caplog.set_level(logging.WARNING, logger="dusha")
-    await _post_expecting_no_decision(_config(tmp_path, mods, mode=mode))
+    await _post_expecting_no_decision(_config(tmp_path, plugins_dir, mode=mode))
     if logged is None:
         assert "probe" not in caplog.text
     else:
@@ -358,11 +360,13 @@ async def test_http_decision_failures_leave_affect_unchanged(tmp_path, mods, cap
         assert "probe stderr: RuntimeError: boom" in caplog.text
 
 
-async def test_http_deltas_apply_after_the_decision_sees_the_earlier_state(tmp_path, mods, caplog):
+async def test_http_deltas_apply_after_the_decision_sees_the_earlier_state(tmp_path, plugins_dir, caplog):
     caplog.set_level(logging.WARNING, logger="dusha")
     marker = tmp_path / "seen.json"
     deltas = {"elation": 0.3, "bogus": 0.1}
-    async with _client(_config(tmp_path, mods, marker=str(marker), mode="deltas", deltas=deltas)) as client:
+    async with _client(
+        _config(tmp_path, plugins_dir, marker=str(marker), mode="deltas", deltas=deltas)
+    ) as client:
         before = await _base(client)
         stored = await _post(client, "I love lanterns")
         after = await _base(client)
@@ -370,7 +374,9 @@ async def test_http_deltas_apply_after_the_decision_sees_the_earlier_state(tmp_p
     assert after["elation"] > before["elation"]
     assert "decision deltas name unknown emotion dimension(s): ['bogus']" in caplog.text
 
-    async with _client(_config(tmp_path, mods, marker=str(marker), mode="both", deltas=deltas)) as client:
+    async with _client(
+        _config(tmp_path, plugins_dir, marker=str(marker), mode="both", deltas=deltas)
+    ) as client:
         before = await _base(client)
         stored = await _post(client, "I love lanterns again")
     assert stored["affect"]["emotion"] == "fear"
@@ -378,12 +384,14 @@ async def test_http_deltas_apply_after_the_decision_sees_the_earlier_state(tmp_p
     assert _marker(marker)["decide"][-1]["state"]["elation"] == pytest.approx(before["elation"], abs=1e-3)
 
 
-async def test_http_two_mods_run_in_order_first_emotion_wins_and_deltas_merge(tmp_path, mods):
+async def test_http_two_external_plugins_run_in_order_first_emotion_wins_and_deltas_merge(
+    tmp_path, plugins_dir
+):
     modules = {
-        "probe_two": ModConfig(options={"mode": "deltas", "deltas": {"elation": 0.3}}),
-        "probe": ModConfig(options={"mode": "choose"}),
+        "probe_two": ExternalPluginConfig(options={"mode": "deltas", "deltas": {"elation": 0.3}}),
+        "probe": ExternalPluginConfig(options={"mode": "choose"}),
     }
-    async with _client(_config(tmp_path, mods, modules)) as client:
+    async with _client(_config(tmp_path, plugins_dir, modules)) as client:
         before = await _base(client)
         stored = await _post(client)
         context = await _context(client)
@@ -394,28 +402,30 @@ async def test_http_two_mods_run_in_order_first_emotion_wins_and_deltas_merge(tm
     assert health.json()["plugins"][-2:] == ["probe_two", "probe"]
 
 
-async def test_http_timeout_stops_the_mod_and_the_next_call_restarts_it(tmp_path, mods, caplog):
+async def test_http_timeout_stops_the_external_plugin_and_the_next_call_restarts_it(
+    tmp_path, plugins_dir, caplog
+):
     caplog.set_level(logging.WARNING, logger="dusha")
     marker = tmp_path / "seen.json"
     options = {"marker": str(marker), "mode": "sleep_once", "seconds": 30}
-    modules = {"probe": ModConfig(timeout_seconds=1.0, options=options)}
-    async with _client(_config(tmp_path, mods, modules)) as client:
+    modules = {"probe": ExternalPluginConfig(timeout_seconds=1.0, options=options)}
+    async with _client(_config(tmp_path, plugins_dir, modules)) as client:
         started = time.monotonic()
         first = await _post(client, "slow")
         elapsed = time.monotonic() - started
         second = await _post(client, "quick")
         running = await client.get("/state/v1/plugins")
     assert first.get("affect") is None and elapsed < 10
-    assert "probe decide failed: mod timed out" in caplog.text
+    assert "probe decide failed: plugin timed out" in caplog.text
     assert "probe is not running, restarting" in caplog.text
     assert second["affect"]["emotion"] == "fear"
     assert running.json()["probe"]["state"] == "active"
     assert len(_marker(marker)["start"]) == 2
 
 
-async def test_http_descendant_process_is_stopped_after_close(tmp_path, mods):
+async def test_http_descendant_process_is_stopped_after_close(tmp_path, plugins_dir):
     started, alive = tmp_path / "started", tmp_path / "alive"
-    config = _config(tmp_path, mods, mode="descendant", started=str(started), alive=str(alive))
+    config = _config(tmp_path, plugins_dir, mode="descendant", started=str(started), alive=str(alive))
     await _post_expecting_no_decision(config)
     assert started.exists()
     await asyncio.sleep(2.0)
@@ -429,14 +439,14 @@ async def test_http_descendant_process_is_stopped_after_close(tmp_path, mods):
         (["SHARED_VALUE"], {"GATEWAY_SECRET": None, "SHARED_VALUE": "shared"}),
     ],
 )
-async def test_http_mod_sees_only_the_passthrough_environment(
-    tmp_path, mods, monkeypatch, passthrough, expected
+async def test_http_external_plugin_sees_only_the_passthrough_environment(
+    tmp_path, plugins_dir, monkeypatch, passthrough, expected
 ):
     monkeypatch.setenv("GATEWAY_SECRET", "secret")
     monkeypatch.setenv("SHARED_VALUE", "shared")
     marker = tmp_path / "seen.json"
-    modules = {"probe": ModConfig(env_passthrough=passthrough, options={"marker": str(marker)})}
-    async with _client(_config(tmp_path, mods, modules)) as client:
+    modules = {"probe": ExternalPluginConfig(env_passthrough=passthrough, options={"marker": str(marker)})}
+    async with _client(_config(tmp_path, plugins_dir, modules)) as client:
         stored = await _post(client)
     assert stored["affect"]["emotion"] == "fear"
     env = _marker(marker)["start"][0]["env"]
@@ -446,17 +456,17 @@ async def test_http_mod_sees_only_the_passthrough_environment(
 @pytest.mark.parametrize(
     ("name", "logged"),
     [
-        ("missing", "invalid mod: missing or escaping pyproject.toml"),
-        ("escaping", "invalid mod: missing or escaping uv.lock"),
-        ("unmarked", "invalid mod manifest: missing [tool.dusha]"),
-        ("absent", "mod not found"),
+        ("missing", "invalid plugin: missing or escaping pyproject.toml"),
+        ("escaping", "invalid plugin: missing or escaping uv.lock"),
+        ("unmarked", "invalid plugin manifest: missing [tool.dusha]"),
+        ("absent", "plugin not found"),
     ],
 )
-async def test_http_invalid_mod_directory_is_reported_and_the_gateway_keeps_running(
+async def test_http_invalid_external_plugin_directory_is_reported_and_the_gateway_keeps_running(
     tmp_path, caplog, name, logged
 ):
     caplog.set_level(logging.WARNING, logger="dusha")
-    broken = tmp_path / "mods"
+    broken = tmp_path / "plugins"
     (broken / "missing").mkdir(parents=True)
     outside = tmp_path / "outside"
     outside.mkdir()
@@ -472,21 +482,21 @@ async def test_http_invalid_mod_directory_is_reported_and_the_gateway_keeps_runn
     unmarked.mkdir()
     (unmarked / "pyproject.toml").write_text("[project]\nname='x'\nversion='0.1.0'\n", encoding="utf-8")
     (unmarked / "uv.lock").write_text("version = 1\n", encoding="utf-8")
-    config = _config(tmp_path, broken, {name: ModConfig()})
+    config = _config(tmp_path, broken, {name: ExternalPluginConfig()})
     async with _client(config) as client:
         stored = await _post(client)
         status = await client.get("/state/v1/plugins")
     assert stored.get("affect") is None
-    assert f"failed to load mod {name!r}" in caplog.text and logged in caplog.text
+    assert f"failed to load plugin {name!r}" in caplog.text and logged in caplog.text
     report = status.json()[name]
     assert report["state"] == "failed" and report["events"] == [] and logged in report["error"]
 
 
-async def test_http_decide_mod_is_idle_when_affect_is_off(tmp_path, mods, caplog):
+async def test_http_decide_external_plugin_is_idle_when_affect_is_off(tmp_path, plugins_dir, caplog):
     caplog.set_level(logging.WARNING, logger="dusha")
     marker = tmp_path / "seen.json"
-    modules = {"affect": False, "probe": ModConfig(options={"marker": str(marker)})}
-    async with _client(_config(tmp_path, mods, modules)) as client:
+    modules = {"affect": False, "probe": ExternalPluginConfig(options={"marker": str(marker)})}
+    async with _client(_config(tmp_path, plugins_dir, modules)) as client:
         stored = await _post(client)
         affect = await client.get("/state/v1/affect")
         status = await client.get("/state/v1/plugins")
@@ -497,12 +507,12 @@ async def test_http_decide_mod_is_idle_when_affect_is_off(tmp_path, mods, caplog
     assert "probe" not in caplog.text
 
 
-def test_cli_plugins_reads_the_relative_mods_dir(tmp_path, mods):
+def test_cli_plugins_reads_the_relative_plugins_dir(tmp_path, plugins_dir):
     config_path = tmp_path / "config.json"
     config_path.write_text(
         json.dumps({
             "data_dir": str(tmp_path / "data"),
-            "mods_dir": os.path.relpath(mods, tmp_path),
+            "plugins_dir": os.path.relpath(plugins_dir, tmp_path),
             "plugins": {"probe": {"options": {}}},
         }),
         encoding="utf-8",
@@ -516,13 +526,13 @@ def test_cli_plugins_reads_the_relative_mods_dir(tmp_path, mods):
     assert json.loads(reindex.stdout) == {"status": "rebuilt"}
 
 
-def test_config_rejects_bad_mod_names_fields_and_env_passthrough(tmp_path):
+def test_config_rejects_bad_external_plugin_names_fields_and_env_passthrough(tmp_path):
     with pytest.raises(ValueError, match="plain directory name"):
-        AppConfig(plugins={"../outside": ModConfig()})
-    with pytest.raises(ValueError, match="mod.env_passthrough"):
-        ModConfig(env_passthrough=["OK", ""])
-    with pytest.raises(ValueError, match="mod.timeout_seconds must be above 0"):
-        ModConfig(timeout_seconds=0)
+        AppConfig(plugins={"../outside": ExternalPluginConfig()})
+    with pytest.raises(ValueError, match="external_plugin.env_passthrough"):
+        ExternalPluginConfig(env_passthrough=["OK", ""])
+    with pytest.raises(ValueError, match="external_plugin.timeout_seconds must be above 0"):
+        ExternalPluginConfig(timeout_seconds=0)
     for raw, message in [
         ({"plugins": {"probe": {"bogus": 1}}}, r"unknown field\(s\) under plugins.probe"),
         ({"plugins": {"probe": 1}}, "plugins.probe must be an object"),
@@ -537,31 +547,31 @@ def test_config_rejects_bad_mod_names_fields_and_env_passthrough(tmp_path):
             load_config(path)
 
 
-async def test_http_failed_start_terminates_the_worker_and_reports_it(tmp_path, mods, caplog):
+async def test_http_failed_start_terminates_the_worker_and_reports_it(tmp_path, plugins_dir, caplog):
     caplog.set_level(logging.WARNING, logger="dusha")
-    app = api.create_app(_config(tmp_path, mods, start_fail=True))
+    app = api.create_app(_config(tmp_path, plugins_dir, start_fail=True))
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             status = await client.get("/state/v1/plugins")
             stored = await _post(client)
-        mod = app.state.service.registry.runtimes[-1].plugin
-        assert mod.proc is not None and mod.proc.poll() is not None
+        plugin = app.state.service.registry.runtimes[-1].plugin
+        assert plugin.proc is not None and plugin.proc.poll() is not None
     report = status.json()["probe"]
     assert report["state"] == "failed" and report["events"] == []
     assert report["error"] == "configured start failure"
     assert stored.get("affect") is None
-    assert "failed to load mod 'probe': configured start failure" in caplog.text
+    assert "failed to load plugin 'probe': configured start failure" in caplog.text
 
 
-async def test_http_status_reports_a_dead_worker_without_restarting_it(tmp_path, mods, caplog):
+async def test_http_status_reports_a_dead_worker_without_restarting_it(tmp_path, plugins_dir, caplog):
     caplog.set_level(logging.WARNING, logger="dusha")
     marker = tmp_path / "seen.json"
     config = AppConfig(
         data_dir=tmp_path / "data",
-        mods_dir=str(mods),
+        plugins_dir=str(plugins_dir),
         plugins={
-            "probe": ModConfig(options={"marker": str(marker), "mode": "die"}),
+            "probe": ExternalPluginConfig(options={"marker": str(marker), "mode": "die"}),
             "affect": AffectConfig(),
         },
     )
@@ -574,7 +584,7 @@ async def test_http_status_reports_a_dead_worker_without_restarting_it(tmp_path,
         assert len(_marker(marker)["start"]) == 2
     assert first.get("affect") is None and second.get("affect") is None
     assert dead.json()["probe"]["state"] == "failed"
-    assert dead.json()["probe"]["error"] == "mod closed its output"
+    assert dead.json()["probe"]["error"] == "plugin closed its output"
     assert dead_again.json() == dead.json()
-    assert "probe decide failed: mod closed its output" in caplog.text
+    assert "probe decide failed: plugin closed its output" in caplog.text
     assert "probe is not running, restarting" in caplog.text

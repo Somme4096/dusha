@@ -4,7 +4,7 @@
   "port": 8765,
   "timezone": "Asia/Taipei",
   "api_token": "",
-  "mods_dir": "",
+  "plugins_dir": "",
   "api_openai": {
     "enabled": true
   },

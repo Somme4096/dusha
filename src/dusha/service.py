@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 
 from . import affect, evergreen, identity, memo, memory, proactive
-from . import mods as _mods
+from . import external as _external
 from . import prompts as _prompts
 from .config import AppConfig
 from .context import ContextComposer
@@ -50,7 +50,7 @@ class CompanionService:
             },
             config.data_dir / "plugins",
         )
-        mods_dir = _mods.resolve_mods_dir(config)
+        plugins_dir = _external.resolve_plugins_dir(config)
         for name, entry in config.plugins.items():
             if entry.disabled:
                 self.registry.plugin(Disabled(name), entry.config).state = "disabled"
@@ -58,10 +58,10 @@ class CompanionService:
                 self.registry.plugin(BUILTINS[name], entry.config)
             else:
                 self.registry.plugin(
-                    _mods.Mod(
+                    _external.ExternalPlugin(
                         name,
                         entry.config,
-                        mods_dir,
+                        plugins_dir,
                         database=self.database,
                         messages=self.messages,
                         prompts=self.prompts,

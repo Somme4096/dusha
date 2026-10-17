@@ -17,7 +17,7 @@ _OPTIONS = {
     "url", "app_id", "project_id", "instance_namespace", "user_sender_id",
     "assistant_sender_id", "timeout_seconds", "flush_timeout_seconds", "flush_after_ingest",
 }
-_TIMEOUT_ENV = "DUSHA_MOD_TIMEOUT_SECONDS"
+_TIMEOUT_ENV = "DUSHA_PLUGIN_TIMEOUT_SECONDS"
 _MIN_TIMEOUT = 0.5
 _SEARCH_TOP_K = 5
 _EPISODE_SKIP_KEYS = {"session_id", "app_id", "project_id", "user_id"}
@@ -43,22 +43,22 @@ class EverOSMirror:
             raise ValueError("user_sender_id and assistant_sender_id must differ")
         timeout_text = os.environ.get(_TIMEOUT_ENV)
         if timeout_text is None:
-            raise ValueError("mod timeout is unavailable")
+            raise ValueError("plugin timeout is unavailable")
         try:
-            mod_timeout = float(timeout_text)
+            plugin_timeout = float(timeout_text)
         except (TypeError, ValueError) as error:
-            raise ValueError("mod timeout must be finite and positive") from error
-        if not math.isfinite(mod_timeout) or mod_timeout < _MIN_TIMEOUT:
-            raise ValueError("mod timeout is too low")
+            raise ValueError("plugin timeout must be finite and positive") from error
+        if not math.isfinite(plugin_timeout) or plugin_timeout < _MIN_TIMEOUT:
+            raise ValueError("plugin timeout is too low")
         timeout = options.get("timeout_seconds", 5)
         if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
             raise ValueError(
-                "timeout_seconds must be finite, positive, and no more than 60 percent of the mod timeout"
+                "timeout_seconds must be finite, positive, and no more than 60 percent of the plugin timeout"
             )
         self.timeout = float(timeout)
-        if not math.isfinite(self.timeout) or not 0 < self.timeout <= mod_timeout * 0.6:
+        if not math.isfinite(self.timeout) or not 0 < self.timeout <= plugin_timeout * 0.6:
             raise ValueError(
-                "timeout_seconds must be finite, positive, and no more than 60 percent of the mod timeout"
+                "timeout_seconds must be finite, positive, and no more than 60 percent of the plugin timeout"
             )
         self.client = httpx.Client(
             timeout=httpx.Timeout(self.timeout), follow_redirects=False, trust_env=False,

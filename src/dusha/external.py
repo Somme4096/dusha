@@ -14,15 +14,15 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from .config import PLUGIN_NAME, AppConfig, ModConfig
+from .config import PLUGIN_NAME, AppConfig, ExternalPluginConfig
 from .hooks import Block, ContextRequest, DecisionRequest, render
 from .timeutil import isoformat, utc_now
 
 logger = logging.getLogger("dusha")
 
 REQUIRED_FILES = ("pyproject.toml", "uv.lock")
-MODS_DIR_ENV = "DUSHA_MODS_DIR"
-TIMEOUT_ENV = "DUSHA_MOD_TIMEOUT_SECONDS"
+PLUGINS_DIR_ENV = "DUSHA_PLUGINS_DIR"
+TIMEOUT_ENV = "DUSHA_PLUGIN_TIMEOUT_SECONDS"
 EVENTS = ("message", "context", "decide")
 _BASE_ENV = frozenset({"PATH", "HOME", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "LC_CTYPE", "SYSTEMROOT"})
 _SYNC_TIMEOUT = 120.0
@@ -32,25 +32,25 @@ _DELIVERY_LIMIT = 500
 _CONTEXT_MAX_RECORDS = 50
 
 SCHEMA = """
-CREATE TABLE IF NOT EXISTS mod_delivery_state (
-    mod TEXT PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS plugin_delivery_state (
+    plugin TEXT PRIMARY KEY,
     last_delivered_id INTEGER NOT NULL DEFAULT 0 CHECK(last_delivered_id >= 0),
     updated_at TEXT NOT NULL
 );
 """
 
 
-class ModError(RuntimeError):
+class ExternalPluginError(RuntimeError):
     pass
 
 
-def resolve_mods_dir(config: AppConfig) -> Path:
-    env = os.getenv(MODS_DIR_ENV, "")
+def resolve_plugins_dir(config: AppConfig) -> Path:
+    env = os.getenv(PLUGINS_DIR_ENV, "")
     if env:
         return Path(env).expanduser()
-    if config.mods_dir:
-        return Path(config.mods_dir).expanduser()
-    return (config.home or Path.cwd()) / "mods"
+    if config.plugins_dir:
+        return Path(config.plugins_dir).expanduser()
+    return (config.home or Path.cwd()) / "plugins"
 
 
 def environment(passthrough: Any = ()) -> dict[str, str]:
@@ -82,17 +82,17 @@ def _inside(path: Path, parent: Path) -> bool:
     return True
 
 
-def _suite(name: str, mods_dir: Path) -> Path:
+def _suite(name: str, plugins_dir: Path) -> Path:
     if not PLUGIN_NAME.fullmatch(name):
-        raise ModError(f"mod name must be a plain directory name, got {name!r}")
-    root = mods_dir.expanduser().resolve()
+        raise ExternalPluginError(f"plugin name must be a plain directory name, got {name!r}")
+    root = plugins_dir.expanduser().resolve()
     suite = (root / name).resolve()
     if not _inside(suite, root) or not suite.is_dir():
-        raise ModError(f"mod not found: {root / name}")
+        raise ExternalPluginError(f"plugin not found: {root / name}")
     for item in REQUIRED_FILES:
         path = suite / item
         if not path.is_file() or not _inside(path.resolve(), suite):
-            raise ModError(f"invalid mod: missing or escaping {item}")
+            raise ExternalPluginError(f"invalid plugin: missing or escaping {item}")
     return suite
 
 
@@ -100,36 +100,38 @@ def _manifest(suite: Path) -> tuple[str, tuple[str, ...]]:
     try:
         project = tomllib.loads((suite / "pyproject.toml").read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
-        raise ModError(f"invalid mod manifest: {error}") from error
+        raise ExternalPluginError(f"invalid plugin manifest: {error}") from error
     section = project.get("tool", {}).get("dusha")
     if not isinstance(section, dict):
-        raise ModError("invalid mod manifest: missing [tool.dusha]")
+        raise ExternalPluginError("invalid plugin manifest: missing [tool.dusha]")
     unknown = sorted(set(section) - {"entry", "inject"})
     if unknown:
-        raise ModError(f"invalid mod manifest: unknown field(s) under [tool.dusha]: {unknown}")
+        raise ExternalPluginError(f"invalid plugin manifest: unknown field(s) under [tool.dusha]: {unknown}")
     entry = section.get("entry")
     if not isinstance(entry, str) or not all(part.isidentifier() for part in entry.split(".")):
-        raise ModError("invalid mod manifest: tool.dusha.entry must be a module name")
+        raise ExternalPluginError("invalid plugin manifest: tool.dusha.entry must be a module name")
     inject = section.get("inject", [])
     if not isinstance(inject, list) or not all(isinstance(item, str) and item for item in inject):
-        raise ModError("invalid mod manifest: tool.dusha.inject must be an array of service names")
+        raise ExternalPluginError(
+            "invalid plugin manifest: tool.dusha.inject must be an array of service names"
+        )
     return entry, tuple(inject)
 
 
 def _python_path(suite: Path) -> Path:
     venv = suite / ".venv"
     if venv.is_symlink() or (venv.exists() and not _inside(venv.resolve(), suite)):
-        raise ModError("mod has an escaping .venv")
+        raise ExternalPluginError("plugin has an escaping .venv")
     path = suite / (".venv/Scripts/python.exe" if os.name == "nt" else ".venv/bin/python")
     if not path.is_file():
-        raise ModError("mod has an invalid virtual environment")
+        raise ExternalPluginError("plugin has an invalid virtual environment")
     return path
 
 
 def _sync(suite: Path, passthrough: Any) -> Path:
     venv = suite / ".venv"
     if venv.is_symlink() or (venv.exists() and not _inside(venv.resolve(), suite)):
-        raise ModError("mod has an escaping .venv")
+        raise ExternalPluginError("plugin has an escaping .venv")
     env = environment(passthrough)
     env["UV_PROJECT_ENVIRONMENT"] = str(venv)
     try:
@@ -139,9 +141,9 @@ def _sync(suite: Path, passthrough: Any) -> Path:
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=_SYNC_TIMEOUT, check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise ModError(f"mod environment sync failed: {exc}") from exc
+        raise ExternalPluginError(f"plugin environment sync failed: {exc}") from exc
     if result.returncode:
-        raise ModError("mod environment sync failed")
+        raise ExternalPluginError("plugin environment sync failed")
     return _python_path(suite)
 
 
@@ -156,12 +158,12 @@ def _terminate(proc: subprocess.Popen[bytes]) -> None:
     proc.wait()
 
 
-class Mod:
+class ExternalPlugin:
     def __init__(
         self,
         name: str,
-        settings: ModConfig,
-        mods_dir: Path,
+        settings: ExternalPluginConfig,
+        plugins_dir: Path,
         database: Any,
         messages: Any,
         prompts: dict[str, Any],
@@ -179,9 +181,9 @@ class Mod:
         self.inject: tuple[str, ...] = ()
         self.problem = ""
         try:
-            self.suite = _suite(name, mods_dir)
+            self.suite = _suite(name, plugins_dir)
             self.entry, self.inject = _manifest(self.suite)
-        except ModError as error:
+        except ExternalPluginError as error:
             self.problem = str(error)
         self.ctx: Any = None
         self.python: Path | None = None
@@ -202,7 +204,7 @@ class Mod:
         self.ctx = ctx
         if self.problem:
             ctx.error = self.problem
-            logger.error("failed to load mod %r: %s", self.name, self.problem)
+            logger.error("failed to load plugin %r: %s", self.name, self.problem)
             return
         self.database.migrate(SCHEMA)
         ctx.interval(_DELIVERY_SECONDS, self.deliver)
@@ -211,13 +213,13 @@ class Mod:
             self.python = _sync(self.suite, self.passthrough)
             with self._lock:
                 self._spawn_locked()
-        except ModError as error:
+        except ExternalPluginError as error:
             ctx.error = str(error)
-            logger.error("failed to load mod %r: %s", self.name, error)
+            logger.error("failed to load plugin %r: %s", self.name, error)
 
     def _spawn_locked(self) -> None:
         assert self.suite is not None and self.python is not None
-        worker = Path(__file__).with_name("mod_worker.py")
+        worker = Path(__file__).with_name("external_worker.py")
         env = {**environment(self.passthrough), TIMEOUT_ENV: str(self.timeout)}
         try:
             self.proc = subprocess.Popen(
@@ -226,7 +228,7 @@ class Mod:
                 start_new_session=os.name != "nt", env=env,
             )
         except OSError as exc:
-            raise ModError(f"mod could not start: {exc}") from exc
+            raise ExternalPluginError(f"plugin could not start: {exc}") from exc
         self.responses = queue.Queue()
         self.reader = threading.Thread(target=self._read, args=(self.proc, self.responses), daemon=True)
         self.reader.start()
@@ -239,8 +241,8 @@ class Mod:
             events = handshake.get("events") if isinstance(handshake, dict) else None
             intervals = handshake.get("intervals") if isinstance(handshake, dict) else None
             if not isinstance(events, list) or not isinstance(intervals, list):
-                raise ModError("mod returned an invalid start response")
-        except ModError:
+                raise ExternalPluginError("plugin returned an invalid start response")
+        except ExternalPluginError:
             if self.proc.poll() is None:
                 _terminate(self.proc)
             raise
@@ -266,15 +268,15 @@ class Mod:
             try:
                 message = json.loads(line.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError):
-                responses.put(ModError("mod returned invalid output"))
+                responses.put(ExternalPluginError("plugin returned invalid output"))
                 continue
             if isinstance(message, dict) and "call" in message:
                 self._serve(message)
             else:
                 responses.put(message)
-        responses.put(ModError("mod closed its output"))
+        responses.put(ExternalPluginError("plugin closed its output"))
         if proc is self.proc and not self.closing:
-            self.ctx.error = "mod closed its output"
+            self.ctx.error = "plugin closed its output"
 
     def _serve(self, message: dict[str, Any]) -> None:
         reply: dict[str, Any] = {"reply": message.get("call")}
@@ -313,12 +315,12 @@ class Mod:
     def _restart_locked(self) -> None:
         now = time.monotonic()
         if not self.started or now - self.last_restart < _RESTART_COOLDOWN:
-            raise ModError("mod is not running")
+            raise ExternalPluginError("plugin is not running")
         self.last_restart = now
         logger.warning("%s is not running, restarting", self.name)
         try:
             self._spawn_locked()
-        except ModError as error:
+        except ExternalPluginError as error:
             self.ctx.error = str(error)
             raise
 
@@ -333,16 +335,16 @@ class Mod:
             response = self.responses.get(timeout=self.timeout)
         except queue.Empty as exc:
             _terminate(self.proc)
-            raise ModError("mod timed out") from exc
+            raise ExternalPluginError("plugin timed out") from exc
         except OSError as exc:
             _terminate(self.proc)
-            raise ModError(f"mod communication failed: {exc}") from exc
+            raise ExternalPluginError(f"plugin communication failed: {exc}") from exc
         if isinstance(response, Exception):
             raise response
         if not isinstance(response, dict) or response.get("id") != ident:
-            raise ModError("mod returned an invalid response")
+            raise ExternalPluginError("plugin returned an invalid response")
         if "error" in response:
-            raise ModError(str(response["error"]))
+            raise ExternalPluginError(str(response["error"]))
         return response.get("result")
 
     def call(self, method: str, params: dict[str, Any] | None = None) -> Any:
@@ -357,7 +359,7 @@ class Mod:
             return None
         try:
             return self.call("event", {"event": event, "args": list(args)})
-        except ModError as error:
+        except ExternalPluginError as error:
             logger.warning("%s %s failed: %s", self.name, event, error)
             return None
 
@@ -375,7 +377,7 @@ class Mod:
             try:
                 if self.proc is None or self.proc.poll() is not None:
                     self._restart_locked()
-            except ModError as error:
+            except ExternalPluginError as error:
                 return {"error": str(error)}
             if "message" not in self.exports:
                 return {"skipped": True}
@@ -384,7 +386,7 @@ class Mod:
     def _cursor(self) -> int:
         with self.database.connect() as db:
             row = db.execute(
-                "SELECT last_delivered_id FROM mod_delivery_state WHERE mod=?", (self.name,)
+                "SELECT last_delivered_id FROM plugin_delivery_state WHERE plugin=?", (self.name,)
             ).fetchone()
         return int(row["last_delivered_id"]) if row else 0
 
@@ -394,16 +396,16 @@ class Mod:
         for message in self.messages.after(cursor, _DELIVERY_LIMIT):
             try:
                 self._call_locked("event", {"event": "message", "args": [message]})
-            except ModError as error:
+            except ExternalPluginError as error:
                 logger.warning("%s message failed at id %s: %s", self.name, message["id"], error)
                 break
             cursor = int(message["id"])
             delivered += 1
             with self.database.connect() as db:
                 db.execute(
-                    """INSERT INTO mod_delivery_state(mod, last_delivered_id, updated_at)
+                    """INSERT INTO plugin_delivery_state(plugin, last_delivered_id, updated_at)
                        VALUES(?,?,?)
-                       ON CONFLICT(mod) DO UPDATE SET
+                       ON CONFLICT(plugin) DO UPDATE SET
                          last_delivered_id=excluded.last_delivered_id,
                          updated_at=excluded.updated_at""",
                     (self.name, cursor, isoformat(utc_now())),
@@ -418,7 +420,7 @@ class Mod:
         if data is None:
             return None
         blocks = self.prompts["context_blocks"]
-        return render(self.name, blocks["mod_open_delimiter"], data, blocks["mod_close_delimiter"])
+        return render(self.name, blocks["plugin_open_delimiter"], data, blocks["plugin_close_delimiter"])
 
     def _normalize(self, result: Any, cap: int) -> dict[str, Any] | None:
         if not isinstance(result, dict):
@@ -455,7 +457,7 @@ class Mod:
             if self.proc is not None and self.proc.poll() is None:
                 try:
                     self._call_locked("dispose", {})
-                except ModError:
+                except ExternalPluginError:
                     pass
                 if self.proc.poll() is None:
                     _terminate(self.proc)

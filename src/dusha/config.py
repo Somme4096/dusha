@@ -110,7 +110,7 @@ _BOUNDS: dict[str, dict[str, tuple[float | None, float | None]]] = {
         "lease_seconds": (1, None),
         "retry_delay_minutes": (0, None),
     },
-    "mod": {"timeout_seconds": (0, None), "context_max_chars": (0, None)},
+    "external_plugin": {"timeout_seconds": (0, None), "context_max_chars": (0, None)},
 }
 _EXCLUSIVE_ZERO = {"timeout_seconds"}
 
@@ -214,15 +214,15 @@ class AffectConfig:
 
 
 @dataclass(slots=True)
-class ModConfig:
+class ExternalPluginConfig:
     timeout_seconds: float = 15.0
     context_max_chars: int = 3000
     env_passthrough: list[str] = field(default_factory=list)
     options: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        _check_env_names(self.env_passthrough, "mod.env_passthrough")
-        _check_bounds(self, "mod")
+        _check_env_names(self.env_passthrough, "external_plugin.env_passthrough")
+        _check_bounds(self, "external_plugin")
 
 
 @dataclass(slots=True)
@@ -269,11 +269,11 @@ def _plugin_entries(plugins: dict[str, Any]) -> dict[str, PluginEntry]:
         if not PLUGIN_NAME.fullmatch(str(name)):
             raise ValueError(f"plugin name must be a plain directory name, got {name!r}")
         if value is False:
-            default = BUILTIN_CONFIGS.get(name, ModConfig)
+            default = BUILTIN_CONFIGS.get(name, ExternalPluginConfig)
             value = PluginEntry(default(), disabled=True)
         elif not isinstance(value, PluginEntry):
             value = PluginEntry(value)
-        expected = BUILTIN_CONFIGS.get(name, ModConfig)
+        expected = BUILTIN_CONFIGS.get(name, ExternalPluginConfig)
         if not isinstance(value.config, expected):
             raise ValueError(f"plugins.{name} must be a {expected.__name__}")
         entries[name] = value
@@ -294,7 +294,7 @@ class AppConfig:
     port: int = _DEFAULTS["port"]
     timezone: str = _DEFAULTS["timezone"]
     api_token: str = _DEFAULTS["api_token"]
-    mods_dir: str = _DEFAULTS["mods_dir"]
+    plugins_dir: str = _DEFAULTS["plugins_dir"]
     api_openai: ApiOpenAIConfig = field(default_factory=ApiOpenAIConfig)
     prompts: PromptsConfig = field(default_factory=lambda: PromptsConfig())
     upstream: UpstreamConfig = field(default_factory=UpstreamConfig)
@@ -446,7 +446,7 @@ def _plugin_section(name: str, raw: Any, source_dir: Path) -> PluginEntry:
     elif name == "affect":
         config = _affect_section(fields, label, source_dir)
     else:
-        config = _strict_section(BUILTIN_CONFIGS.get(name, ModConfig), fields, label)
+        config = _strict_section(BUILTIN_CONFIGS.get(name, ExternalPluginConfig), fields, label)
     return PluginEntry(config, disabled)
 
 
@@ -467,12 +467,12 @@ def _app_config_from_raw(raw: dict[str, Any], source_dir: Path) -> AppConfig:
 
     hints = typing.get_type_hints(AppConfig)
     kwargs: dict[str, Any] = {}
-    for key in ("host", "port", "timezone", "api_token", "mods_dir"):
+    for key in ("host", "port", "timezone", "api_token", "plugins_dir"):
         if key in raw:
             _validate_value(key, raw[key], hints[key])
             kwargs[key] = raw[key]
-    if kwargs.get("mods_dir"):
-        kwargs["mods_dir"] = _resolve_path(kwargs["mods_dir"], source_dir)
+    if kwargs.get("plugins_dir"):
+        kwargs["plugins_dir"] = _resolve_path(kwargs["plugins_dir"], source_dir)
     if "data_dir" in raw:
         _validate_value("data_dir", raw["data_dir"], Path)
         data_dir = Path(raw["data_dir"]).expanduser()
@@ -537,7 +537,7 @@ def load_config(
 
 def _validate_packaged_defaults() -> None:
     hints = typing.get_type_hints(AppConfig)
-    for key in ("data_dir", "host", "port", "timezone", "api_token", "mods_dir"):
+    for key in ("data_dir", "host", "port", "timezone", "api_token", "plugins_dir"):
         _validate_value(f"packaged defaults {key}", _DEFAULTS[key], hints[key])
     _strict_section(UpstreamConfig, _DEFAULTS["upstream"], "packaged defaults upstream")
     _strict_section(EmbeddingConfig, _DEFAULTS["embedding"], "packaged defaults embedding")

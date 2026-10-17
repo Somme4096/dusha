@@ -27,7 +27,7 @@ class RemoteError(RuntimeError):
 class _BoundedOutput(io.StringIO):
     def write(self, value: str) -> int:
         if self.tell() + len(value) > _OUTPUT_LIMIT:
-            raise RuntimeError("mod output limit exceeded")
+            raise RuntimeError("plugin output limit exceeded")
         return super().write(value)
 
 
@@ -132,7 +132,7 @@ class Worker:
         module = importlib.import_module(entry)
         apply = getattr(module, "apply", None)
         if not callable(apply):
-            raise RuntimeError(f"mod entry {entry!r} does not define apply(ctx, config)")
+            raise RuntimeError(f"plugin entry {entry!r} does not define apply(ctx, config)")
         self.ctx = Context(self.channel, data_dir)
         apply(self.ctx, config)
         intervals = [seconds for seconds, _ in self.ctx.intervals]
@@ -142,7 +142,7 @@ class Worker:
         if method == "start":
             return self.start(str(params["entry"]), dict(params.get("config") or {}), str(params["data_dir"]))
         if self.ctx is None:
-            raise RuntimeError("mod is not started")
+            raise RuntimeError("plugin is not started")
         if method == "event":
             args = [Record(item) if isinstance(item, dict) else item for item in params.get("args", [])]
             for listener in self.ctx.listeners.get(str(params["event"]), []):
@@ -161,7 +161,7 @@ class Worker:
 
 def main() -> int:
     if len(sys.argv) != 2:
-        raise RuntimeError("usage: mod_worker.py SUITE")
+        raise RuntimeError("usage: external_worker.py SUITE")
     channel = Channel(sys.stdin, sys.stdout)
     worker = Worker(Path(sys.argv[1]), channel)
     while True:

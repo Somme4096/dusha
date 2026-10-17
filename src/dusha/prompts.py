@@ -8,7 +8,7 @@ from .resources import loads_strict, read_packaged
 from .serialization import canonical as _serialization_canonical
 from .serialization import fingerprint as _serialization_fingerprint
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _TEXT_SLOTS = {
     "affect_presentation",
@@ -42,8 +42,8 @@ _SLOT_KEYS: dict[str, set[str]] = {
     "context_blocks": {
         "memo_open_delimiter",
         "memo_close_delimiter",
-        "mod_open_delimiter",
-        "mod_close_delimiter",
+        "plugin_open_delimiter",
+        "plugin_close_delimiter",
     },
     "proactive_framing": {"ruling", "ladder", "approach", "context_query"},
 }

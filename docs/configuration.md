@@ -46,7 +46,7 @@ Rules for the file:
 
 ## Plugins
 
-Every part of the companion is a plugin under `plugins`, keyed by name. The built-in plugins are `identity`, `memory`, `evergreen`, `memo`, `affect`, and `proactive`. Any other name is a [mod](#mods). Messages are always stored.
+Every part of the companion is a plugin under `plugins`, keyed by name. The built-in plugins are `identity`, `memory`, `evergreen`, `memo`, `affect`, and `proactive`. Any other name is an [external plugin](#external-plugins), which lives in a directory under `plugins_dir` and runs in its own process. Messages are always stored. Earlier releases called these mods, and the old `mods_dir` key and `DUSHA_MODS_DIR` variable are no longer accepted.
 
 - Plugins run in the order you list them, which is also the order of their blocks in the injection. Built-in plugins you leave out keep their packaged order ahead of the ones you list.
 - `"disabled": true` turns a plugin off and keeps the rest of its settings. A plugin that is off leaves the injection, its routes return `503`, and its commands exit with `1`. Stored rows stay on disk.
@@ -146,7 +146,7 @@ The overlay replaces whole slots. A slot you include must carry every key of tha
 | `companion_state` | Delimiters and the memory instruction for the state block. |
 | `affect` | Delimiters and the instruction for the affect block. |
 | `evergreen` | Delimiters for the fact block. |
-| `context_blocks` | Delimiters for the memo and mod blocks. |
+| `context_blocks` | Delimiters for the memo and plugin blocks. |
 | `proactive_framing` | `ruling`, `ladder`, `approach`, and `context_query` for proactive messages. |
 | `proactive_generation_instruction` | `base` plus `variants`. The gateway rotates one variant per send. |
 | `decision_instruction` | Selection criteria sent with every `decide` event. |
@@ -188,25 +188,25 @@ Optional. Set `base_url` and `model` to turn on semantic appraisal. The gateway 
 | `embedding.batch_size` | `32` | |
 | `embedding.failure_cooldown_seconds` | `60` | Pause after a failed request. |
 
-## Mods
+## External plugins
 
-A mod is a plugin that lives in a directory under the mods directory and runs in its own process. The [README](../README.md#mod-api) describes the contract, and [examples/mods](../examples/mods/README.md) holds two working mods. Mods need `uv` on the gateway's `PATH`.
-
-| Key | Default | Notes |
-| --- | --- | --- |
-| `mods_dir` | `""` | Empty uses `mods` in the companion home. `DUSHA_MODS_DIR` overrides it. |
-
-A mod's entry under `plugins` is keyed by its directory name and takes these keys:
+An external plugin is a plugin that lives in a directory under the plugins directory and runs in its own process. The [README](../README.md#plugin-api) describes the contract, and [examples/plugins](../examples/plugins/README.md) holds two working external plugins. External plugins need `uv` on the gateway's `PATH`.
 
 | Key | Default | Notes |
 | --- | --- | --- |
-| `timeout_seconds` | `15` | Deadline per call into the mod. Keep it above any HTTP timeout in `options`. |
-| `context_max_chars` | `3000` | Cap for the mod's context block, also passed as `config.context_max_chars`. `0` skips its `context` listener. |
-| `env_passthrough` | `[]` | Environment variables the mod may read, such as a proxy setting. |
-| `options` | `{}` | Passed to the mod's `apply` as `config`. |
+| `plugins_dir` | `""` | Empty uses `plugins` in the companion home. `DUSHA_PLUGINS_DIR` overrides it. |
+
+An external plugin's entry under `plugins` is keyed by its directory name and takes these keys:
+
+| Key | Default | Notes |
+| --- | --- | --- |
+| `timeout_seconds` | `15` | Deadline per call into the external plugin. Keep it above any HTTP timeout in `options`. |
+| `context_max_chars` | `3000` | Cap for the plugin's context block, also passed as `config.context_max_chars`. `0` skips its `context` listener. |
+| `env_passthrough` | `[]` | Environment variables the plugin may read, such as a proxy setting. |
+| `options` | `{}` | Passed to the plugin's `apply` as `config`. |
 | `disabled` | `false` | |
 
-Mods run as child processes with your OS permissions and no sandbox. Install mods you wrote or reviewed. The gateway logs a failing mod, reports it under `GET /state/v1/plugins`, and keeps storing messages without it.
+External plugins run as child processes with your OS permissions and no sandbox. Install plugins you wrote or reviewed. The gateway logs a failing external plugin, reports it under `GET /state/v1/plugins`, and keeps storing messages without it.
 
 ## Proactive
 

@@ -96,7 +96,7 @@ dusha backup /path/to/backups/state-$(date +%F).sqlite3
 
 The command is safe while the service runs. Do not copy `state.sqlite3` by hand during writes.
 
-Back up your own files too: `config.json`, the identity, emotions, and prompts files, and the mods directory.
+Back up your own files too: `config.json`, the identity, emotions, and prompts files, and the plugins directory.
 
 To restore:
 
@@ -120,15 +120,15 @@ dusha memory reindex
 | Startup fails on a missing config file | The selected home needs a `config.json`. Run `dusha list` to see your companions. |
 | Startup fails on a missing identity file | Fix `plugins.identity.path` or remove the key. The file must be UTF-8. |
 | Startup fails on an empty `plugins.identity.path` | Remove the key to use `identity.md`, or set `plugins.identity.disabled` to `true`. |
-| Startup fails on an unknown `features`, `mods`, `memory`, `evergreen`, `memo`, `affect`, `proactive`, `emotions`, or `identity_prompt` field | Move the section under [`plugins`](configuration.md#plugins). A `features` entry set to `false` becomes `"disabled": true`, `mods.modules` entries become plugins, `mods.dir` becomes `mods_dir`, `emotions` moves to `plugins.affect.emotions`, and `identity_prompt` becomes `plugins.identity`. |
+| Startup fails on an unknown `features`, `memory`, `evergreen`, `memo`, `affect`, `proactive`, `emotions`, or `identity_prompt` field, or on a section from an earlier release | Move the section under [`plugins`](configuration.md#plugins). A `features` entry set to `false` becomes `"disabled": true`, entries of the earlier section become external plugins, its directory key becomes `plugins_dir`, `emotions` moves to `plugins.affect.emotions`, and `identity_prompt` becomes `plugins.identity`. |
 | Startup fails on an unknown `api_token_env` field | Rename it to `api_token` and put the token value there. |
-| Startup fails on an unknown `memory_plugin` or `decision` field | Move the mod under [`plugins`](configuration.md#mods) and `decision.increment` to `plugins.affect.increment`. |
+| Startup fails on an unknown `memory_plugin` or `decision` field | Move the external plugin under [`plugins`](configuration.md#external-plugins) and `decision.increment` to `plugins.affect.increment`. |
 | Requests return `401` | Send `X-Companion-Token` with the token value. |
 | Proxy routes return `502` | The provider is unreachable or timed out. Read the `detail`, then check `upstream.base_url` or the address after `/v1/to/` in the client's base URL. Plain HTTP providers need the `http/` segment. |
 | Passthrough routes return `422` | The address after `/v1/to/` is not a host and path. Drop the `https://` prefix and any `user@` part. |
 | Memory, fact, memo, affect, or proactive routes return `503` | The `detail` names the plugin. Remove its `"disabled": true`, or turn on the plugin it needs, and restart. Your stored rows are intact. |
-| A mod adds no context or no decision | Run `dusha plugins`. Check the log for `failed to load mod` or `<name> context failed`, then check the mod's entry under `plugins`, its `[tool.dusha]` table, and the mods directory. |
-| A mod stopped working after an upgrade | Mods now define `apply(ctx, config)` and name it in `[tool.dusha]`. See the [Mod API](https://github.com/Somme4096/dusha#mod-api). |
+| An external plugin adds no context or no decision | Run `dusha plugins`. Check the log for `failed to load plugin` or `<name> context failed`, then check the plugin's entry under `plugins`, its `[tool.dusha]` table, and the plugins directory. |
+| An external plugin stopped working after an upgrade | External plugins now define `apply(ctx, config)` and name it in `[tool.dusha]`. See the [Plugin API](https://github.com/Somme4096/dusha#plugin-api). |
 | Duplicate proactive events or write errors | Two processes share one `state.sqlite3`. Stop one. |
 
 ## See also

@@ -1,14 +1,14 @@
-# EverOS memory mod
+# EverOS memory external plugin
 
-This mod mirrors conversations into an [EverOS](https://github.com/EverMind-AI/EverOS)
+This external plugin mirrors conversations into an [EverOS](https://github.com/EverMind-AI/EverOS)
 sidecar and injects the episodes it recalls. Install it as `everos_memory`.
-The mod contract is in the project [README](https://github.com/Somme4096/dusha#mod-api).
+The external plugin contract is in the project [README](https://github.com/Somme4096/dusha#plugin-api).
 
 ## Install
 
 ```sh
-mkdir -p ~/.config/dusha/dusha/mods
-cp -R examples/mods/everos_memory ~/.config/dusha/dusha/mods/everos_memory
+mkdir -p ~/.config/dusha/dusha/plugins
+cp -R examples/plugins/everos_memory ~/.config/dusha/dusha/plugins/everos_memory
 ```
 
 ```json
@@ -35,29 +35,29 @@ cp -R examples/mods/everos_memory ~/.config/dusha/dusha/mods/everos_memory
 }
 ```
 
-Keep the mod's `timeout_seconds` above `options.everos.timeout_seconds` with
+Keep the external plugin's `timeout_seconds` above `options.everos.timeout_seconds` with
 margin for the gateway to handle a timed-out sidecar request. The example uses
-15 seconds for the mod and 5 for EverOS.
+15 seconds for the external plugin and 5 for EverOS.
 
 ## What `apply` registers
 
 | Registration | What it does |
 | --- | --- |
-| `apply` | Opens the mod's database and validates the `everos` options. |
+| `apply` | Opens the external plugin's database and validates the `everos` options. |
 | `message` | Queues a `user` or `assistant` message in the outbox and tries one delivery. |
 | `context` | Resolves the conversation to an EverOS session and returns recalled episodes. |
 | `decide` | Returns `deltas` from the first matching `phrase_patterns` entry. |
 | interval | Every `interval_seconds` (default `10`), delivers one pending outbox row or runs one due flush. |
 | dispose | Closes the HTTP client. |
 
-## What the mod owns
+## What the external plugin owns
 
-The gateway owns message and evergreen storage. The mod owns the EverOS
+The gateway owns message and evergreen storage. The external plugin owns the EverOS
 delivery path and four tables in its own database,
 `plugins/everos_memory/everos.sqlite3` under the gateway's `data_dir`:
 `everos_sessions`, `everos_session_map`, `everos_outbox`, and
 `everos_flush_state`. It never touches the gateway's database. EverOS keeps
-its own registry, so a fresh mod database needs no migration.
+its own registry, so a fresh external plugin database needs no migration.
 
 Each `(harness, external conversation id)` pair maps to one EverOS session.
 Only `user` and `assistant` messages with positive millisecond timestamps are

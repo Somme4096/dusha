@@ -87,13 +87,13 @@ that returned a result for the message. The affect plugin returns `affect`.
 
 The response carries `injection`, `records`, `search_hits`, and `context`. Prepend `injection` to your system prompt, or read `context` for the same data as fields: `version`, `instructions`, `session`, and `blocks`.
 
-`injection` holds one part per [plugin](configuration.md#plugins) in `plugins` order, then the state block. With the packaged order and mods listed after the built-in plugins:
+`injection` holds one part per [plugin](configuration.md#plugins) in `plugins` order, then the state block. With the packaged order and external plugins listed after the built-in plugins:
 
 1. The identity text
 2. `<evergreen_facts>`, a JSON list of facts
 3. `<memo_notes>`, a JSON list of active memos
 4. `<affect>`, the emotion values and the Affect line
-5. `<mod_context>`, one block per mod that returns context
+5. `<plugin_context>`, one block per external plugin that returns context
 6. `<companion_state>`, a JSON object with the instructions and the session records from `memory`
 
 `context.blocks` holds each part as data, keyed by plugin name. `identity` carries `text` and `revision`, and `memory` carries the `search_hits`. A plugin that is off contributes no part and no key, and so does a part with nothing to say.
@@ -124,7 +124,7 @@ Call `POST /state/v1/messages` with `role: "assistant"`. Assistant and tool mess
 
 A new user message moves affect in up to two steps:
 
-1. Each [plugin](configuration.md#plugins) that listens for `decide` proposes an emotion, deltas, or nothing. The first emotion wins. With [embedding](configuration.md#embedding) configured, semantic appraisal picks when no mod proposes one. The engine raises the picked dimension by its increment and reports it in the ingest `affect` field.
+1. Each [plugin](configuration.md#plugins) that listens for `decide` proposes an emotion, deltas, or nothing. The first emotion wins. With [embedding](configuration.md#embedding) configured, semantic appraisal picks when no external plugin proposes one. The engine raises the picked dimension by its increment and reports it in the ingest `affect` field.
 2. The merged `deltas` apply next. A delta can be negative, and one message can move several dimensions. The ingest `affect` field does not report these.
 
 ## Evergreen facts
@@ -197,7 +197,7 @@ An unknown `note_id` returns `404`. A blank `reason`, one longer than `plugins.m
 
 `GET /state/v1/plugins` returns one object per plugin, keyed by name, in `plugins` order:
 
-- `state`: `active`, `disabled`, `inactive` when a service it injects is missing, or `failed` when a mod could not load or its process stopped
+- `state`: `active`, `disabled`, `inactive` when a service it injects is missing, or `failed` when an external plugin could not load or its process stopped
 - `error`: the reason for `inactive` or `failed`, otherwise empty
 - `inject` and `provides`: the services it uses and offers
 - `events`: the events it listens for
@@ -266,7 +266,7 @@ Restart AstrBot or reload the plugin from its manager. Keep AstrBot's chat provi
 | `platform_id` | `""` | AstrBot platform ID allowed to use the gateway. Empty disables the plugin. Run `/sid` through your Discord bot and copy its `Bot ID`. |
 | `api_token` | `""` | The gateway's API token, when auth is on. |
 | `harness` | `astrbot` | Harness name sent to the gateway. A rename starts each chat with empty recent history. |
-| `request_timeout_seconds` | `60` | Minimum 1. Raise it when you raise a mod's `timeout_seconds` on the gateway. |
+| `request_timeout_seconds` | `60` | Minimum 1. Raise it when you raise an external plugin's `timeout_seconds` on the gateway. |
 | `poll_interval_seconds` | `30` | Seconds between proactive polls. Minimum 5. |
 | `proactive_enabled` | `true` | |
 | `proactive_tool_keywords` | `["donsetch", "fetch"]` | AstrBot tools whose names contain a keyword join proactive generation. |

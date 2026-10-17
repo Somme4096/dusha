@@ -4,7 +4,7 @@
 
 *Dusha* (Russian: душа, [dʊˈʂa], "soul") is a small HTTP API that stores messages, identity, facts, and affect state outside your harness. Any client that can POST a message and read back an injection string can use it, so you can hop between harnesses (or even use multiple at once!) and still get the same soul on the other side.
 
-Every prompt, emotional vector, and threshold is configurable through JSON. Dusha also has an *extensible mod system* that lets you wire any external memory provider or classifier easily!
+Every prompt, emotional vector, and threshold is configurable through JSON. Dusha also has an *extensible plugin system* that lets you wire any external memory provider or classifier easily!
 
 ## Quickstart
 
@@ -33,26 +33,26 @@ Integrations (e.g. opencode-dusha) send each message to `dusha` and add its cont
 <summary>How does memory/affect/identity work in Dusha?</summary>
 
 
-- Messages: Basic SQLite FTS5 + optional embedding search. A mod in `~/.config/dusha/<name>/mods/` can add its own block, such as an external memory provider.
+- Messages: Basic SQLite FTS5 + optional embedding search. An external plugin in `~/.config/dusha/<name>/plugins/` can add its own block, such as an external memory provider.
 - Evergreen: Long-term facts that you edit from the CLI and your companion edits through integration tools. No automatic extraction 
 	* think of it as a USER.md that actually has good lifecycle management and duplication prevention
 - Affect: A deterministic emotion engine with decay and silence drift. Proactive messages fire on thresholds. 
-	* And yeah, message intent analysis can be a mod too: drop Jev or any other classifier into the mods directory and its `decide` listener picks which emotion each user message moves.
+	* And yeah, message intent analysis can be an external plugin too: drop Jev or any other classifier into the plugins directory and its `decide` listener picks which emotion each user message moves.
 - Identity: `identity.md`, or name one your own.
 
 </details>
 
-## Mod API
+## Plugin API
 
-Every part of Dusha is a plugin: identity, memory, evergreen, memo, affect, and proactive are built in, and a mod is a plugin you add. A mod is a directory under the mods directory holding `pyproject.toml` and `uv.lock`. The gateway installs it into its own `uv` environment, runs it as a long-lived child process, and imports the module named in `[tool.dusha]`:
+Every part of Dusha is a plugin. Identity, memory, evergreen, memo, affect, and proactive are built in, and a plugin you add is an external plugin: a directory under the plugins directory holding `pyproject.toml` and `uv.lock`. The gateway installs it into its own `uv` environment, runs it as a long-lived child process, and imports the module named in `[tool.dusha]`:
 
 ```toml
 [tool.dusha]
-entry = "my_mod"
+entry = "my_plugin"
 inject = ["messages"]
 ```
 
-The module defines `apply(ctx, config)`, which runs when the mod loads and again after a restart. `config` is the mod's `options` from `config.json` plus `context_max_chars`. `inject` lists the services the mod calls, and a mod whose service is missing stays inactive.
+The module defines `apply(ctx, config)`, which runs when the external plugin loads and again after a restart. `config` is the plugin's `options` from `config.json` plus `context_max_chars`. `inject` lists the services the plugin calls, and a plugin whose service is missing stays inactive.
 
 | Call | Effect |
 | --- | --- |

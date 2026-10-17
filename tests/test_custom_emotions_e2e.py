@@ -165,7 +165,10 @@ async def test_http_value_range_scales_the_whole_engine(tmp_path, config, write_
                 json={"consumer": "e2e", "outcome": "sent"},
             )
             after = (await client.get("/state/v1/affect")).json()
-        return decision["increment"], affect, context["context"]["blocks"]["affect"]["description"], event, after
+        return (
+            decision["increment"], affect, context["context"]["blocks"]["affect"]["description"],
+            event, after,
+        )
 
     unit_step, unit, unit_text, unit_event, unit_after = await run(CUSTOM, "unit")
     wide_step, scaled, wide_text, wide_event, wide_after = await run(wide, "wide")
@@ -253,8 +256,8 @@ async def test_http_custom_framing_and_block_delimiters_render(tmp_path, config,
         "context_blocks": {
             "memo_open_delimiter": "[memo]",
             "memo_close_delimiter": "[/memo]",
-            "mod_open_delimiter": "[mod]",
-            "mod_close_delimiter": "[/mod]",
+            "plugin_open_delimiter": "[plugin]",
+            "plugin_close_delimiter": "[/plugin]",
         },
     }
     config.prompts = PromptsConfig(path=str(write_json(tmp_path / "prompts.json", overlay)))

@@ -17,9 +17,9 @@ import httpx
 import pytest
 
 from dusha import api
-from dusha.config import AppConfig, EvergreenConfig, MemoryConfig, ModConfig
+from dusha.config import AppConfig, EvergreenConfig, ExternalPluginConfig, MemoryConfig
 
-MOD_DIR = Path(__file__).resolve().parents[1]
+PLUGIN_DIR = Path(__file__).resolve().parents[1]
 
 
 def _unused_port() -> int:
@@ -28,9 +28,9 @@ def _unused_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def _plugin_mods(root: Path) -> Path:
-    target = root / "mods"
-    shutil.copytree(MOD_DIR, target / "everos_memory", ignore=shutil.ignore_patterns(".venv", "tests"))
+def _plugins(root: Path) -> Path:
+    target = root / "plugins"
+    shutil.copytree(PLUGIN_DIR, target / "everos_memory", ignore=shutil.ignore_patterns(".venv", "tests"))
     return target
 
 
@@ -42,7 +42,9 @@ class _DummyLLMHandler(BaseHTTPRequestHandler):
         payload = {
             "id": "dummy-completion",
             "object": "chat.completion",
-            "choices": [{"index": 0, "message": {"role": "assistant", "content": "{}"}, "finish_reason": "stop"}],
+            "choices": [
+                {"index": 0, "message": {"role": "assistant", "content": "{}"}, "finish_reason": "stop"}
+            ],
             "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
         }
         encoded = json.dumps(payload).encode()
@@ -98,7 +100,10 @@ class _SelectiveSidecarHandler(BaseHTTPRequestHandler):
             payload = {"error": "permanent rejection"}
         else:
             with httpx.Client(timeout=10, trust_env=False) as client:
-                upstream = client.post(self.server.upstream + self.path, content=body, headers={"Content-Type": "application/json"})
+                upstream = client.post(
+                    self.server.upstream + self.path, content=body,
+                    headers={"Content-Type": "application/json"},
+                )
             status = upstream.status_code
             payload = upstream.json()
         encoded = json.dumps(payload).encode()
@@ -172,7 +177,9 @@ def everos_server(tmp_path: Path, dummy_llm_server: str):
     )
     port = _unused_port()
     env = {**os.environ, "HOME": str(tmp_path / "home"), "XDG_CONFIG_HOME": str(tmp_path / "config")}
-    command = [str(binary), "server", "start", "--host", "127.0.0.1", "--port", str(port), "--root", str(root)]
+    command = [
+        str(binary), "server", "start", "--host", "127.0.0.1", "--port", str(port), "--root", str(root)
+    ]
 
     def launch() -> subprocess.Popen:
         return subprocess.Popen(
@@ -225,7 +232,7 @@ def everos_server(tmp_path: Path, dummy_llm_server: str):
 
 def _config(
     data_dir: Path,
-    mods_dir: Path,
+    plugins_dir: Path,
     sidecar_url: str,
     *,
     instance_namespace: str = "dusha-e2e",
@@ -236,11 +243,11 @@ def _config(
 ) -> AppConfig:
     return AppConfig(
         data_dir=data_dir,
-        mods_dir=str(mods_dir),
+        plugins_dir=str(plugins_dir),
         plugins={
             "memory": MemoryConfig(recent_messages=8, search_hits=8, context_messages=1),
             "evergreen": EvergreenConfig(max_items=32, max_chars=4_000),
-            "everos_memory": ModConfig(
+            "everos_memory": ExternalPluginConfig(
                 timeout_seconds=gateway_timeout_seconds,
                 options={
                     "interval_seconds": 1,
@@ -371,10 +378,10 @@ async def _pending_status(client: httpx.AsyncClient, expected: int = 0) -> dict:
 @pytest.mark.asyncio
 async def test_real_everos_projection_failure_retry_isolation_and_restart(tmp_path: Path, everos_server):
     sidecar_url, _, stop_everos, restart_everos = everos_server
-    plugin_mods = _plugin_mods(tmp_path)
+    plugins = _plugins(tmp_path)
     data_dir = tmp_path / "dusha-data"
 
-    async with _client(_config(data_dir, plugin_mods, sidecar_url)) as client:
+    async with _client(_config(data_dir, plugins, sidecar_url)) as client:
         first = await _ingest(client, "one", "Conversation one keeps the amber lantern.")
         second = await _ingest(client, "two", "Conversation two keeps the violet telescope.")
         await _ingest(client, "one", "Assistant records the copper answer.", role="assistant")
@@ -386,16 +393,20 @@ async def test_real_everos_projection_failure_retry_isolation_and_restart(tmp_pa
             client, "one", "Duplicate source must not be mirrored twice.", external_id="duplicate-source"
         )
         newer = await _ingest_with(
-            client, "history", "Historical newer event.", external_id="history-new", occurred_at="2024-01-01T00:00:00Z"
+            client, "history", "Historical newer event.",
+            external_id="history-new", occurred_at="2024-01-01T00:00:00Z",
         )
         older = await _ingest_with(
-            client, "history", "Historical older event.", external_id="history-old", occurred_at="2020-01-01T00:00:00Z"
+            client, "history", "Historical older event.",
+            external_id="history-old", occurred_at="2020-01-01T00:00:00Z",
         )
         collision_a = await _ingest_with(
-            client, "collision", "First same-event record.", external_id="collision-a", occurred_at="2022-02-02T02:02:02Z"
+            client, "collision", "First same-event record.",
+            external_id="collision-a", occurred_at="2022-02-02T02:02:02Z",
         )
         collision_b = await _ingest_with(
-            client, "collision", "Second same-event record.", external_id="collision-b", occurred_at="2022-02-02T02:02:02Z"
+            client, "collision", "Second same-event record.",
+            external_id="collision-b", occurred_at="2022-02-02T02:02:02Z",
         )
         assert first["id"] != second["id"]
         assert duplicate_second["duplicate"] is True
@@ -436,7 +447,7 @@ async def test_real_everos_projection_failure_retry_isolation_and_restart(tmp_pa
     assert "Tool output must stay local." not in repr(tool_search)
 
     stop_everos()
-    async with _client(_config(data_dir, plugin_mods, sidecar_url)) as client:
+    async with _client(_config(data_dir, plugins, sidecar_url)) as client:
         outage = await _ingest(client, "three", "Conversation three keeps the silver key.")
         assert outage["id"] > second["id"]
         failed_status = await _wait_everos(
@@ -449,7 +460,7 @@ async def test_real_everos_projection_failure_retry_isolation_and_restart(tmp_pa
         assert local.json()["results"]
 
     restart_everos()
-    async with _client(_config(data_dir, plugin_mods, sidecar_url)) as client:
+    async with _client(_config(data_dir, plugins, sidecar_url)) as client:
         retry = await _ingest(client, "one", "Conversation one adds a brass compass.")
         assert retry["id"] > outage["id"]
         recovered = await _pending_status(client, expected=0)
@@ -487,7 +498,7 @@ async def test_real_everos_projection_failure_retry_isolation_and_restart(tmp_pa
         )
         assert forgotten.status_code == 200
 
-    async with _client(_config(data_dir, plugin_mods, sidecar_url)) as client:
+    async with _client(_config(data_dir, plugins, sidecar_url)) as client:
         after_restart = await client.get(f"/state/v1/messages/{retry['id']}")
         assert after_restart.status_code == 200
         assert after_restart.json()["text"] == "Conversation one adds a brass compass."
@@ -508,17 +519,23 @@ async def test_real_everos_projection_failure_retry_isolation_and_restart(tmp_pa
 @pytest.mark.asyncio
 async def test_real_everos_instance_namespaces_and_backfill_without_ingest(tmp_path: Path, everos_server):
     sidecar_url, _, stop_everos, restart_everos = everos_server
-    plugin_mods = _plugin_mods(tmp_path)
+    plugins = _plugins(tmp_path)
     first_data = tmp_path / "instance-a"
     second_data = tmp_path / "instance-b"
 
     async with _client(
-        _config(first_data, plugin_mods, sidecar_url, instance_namespace="instance-a", user_sender_id="user-a", assistant_sender_id="assistant-a")
+        _config(
+            first_data, plugins, sidecar_url, instance_namespace="instance-a",
+            user_sender_id="user-a", assistant_sender_id="assistant-a",
+        )
     ) as client:
         alpha_message = await _ingest(client, "shared", "Only instance alpha owns this record.")
         await _pending_status(client, expected=0)
     async with _client(
-        _config(second_data, plugin_mods, sidecar_url, instance_namespace="instance-b", user_sender_id="user-b", assistant_sender_id="assistant-b")
+        _config(
+            second_data, plugins, sidecar_url, instance_namespace="instance-b",
+            user_sender_id="user-b", assistant_sender_id="assistant-b",
+        )
     ) as client:
         beta_message = await _ingest(client, "shared", "Only instance beta owns this record.")
         await _pending_status(client, expected=0)
@@ -532,12 +549,22 @@ async def test_real_everos_instance_namespaces_and_backfill_without_ingest(tmp_p
     assert "Only instance alpha owns this record." not in repr(beta)
 
     stop_everos()
-    async with _client(_config(first_data, plugin_mods, sidecar_url, instance_namespace="instance-a", user_sender_id="user-a", assistant_sender_id="assistant-a")) as client:
+    async with _client(
+        _config(
+            first_data, plugins, sidecar_url, instance_namespace="instance-a",
+            user_sender_id="user-a", assistant_sender_id="assistant-a",
+        )
+    ) as client:
         buffered_message = await _ingest(client, "shared", "Buffered alpha survives sidecar outage.")
         pending = await _wait_everos(client, lambda value: value.get("pending") == 1)
         assert pending["pending"] == 1
     restart_everos()
-    async with _client(_config(first_data, plugin_mods, sidecar_url, instance_namespace="instance-a", user_sender_id="user-a", assistant_sender_id="assistant-a")) as client:
+    async with _client(
+        _config(
+            first_data, plugins, sidecar_url, instance_namespace="instance-a",
+            user_sender_id="user-a", assistant_sender_id="assistant-a",
+        )
+    ) as client:
         recovered = await _pending_status(client)
         assert recovered["pending"] == 0
     buffered_session = f"instance-a-dusha-{buffered_message['conversation_id']}"
@@ -548,10 +575,12 @@ async def test_real_everos_instance_namespaces_and_backfill_without_ingest(tmp_p
 @pytest.mark.asyncio
 async def test_external_malformed_and_slow_sidecars_keep_worker_alive(tmp_path: Path, external_sidecar):
     sidecar, sidecar_url = external_sidecar
-    plugin_mods = _plugin_mods(tmp_path)
+    plugins = _plugins(tmp_path)
     data_dir = tmp_path / "dusha-data"
 
-    async with _client(_config(data_dir, plugin_mods, sidecar_url, timeout_seconds=0.2, gateway_timeout_seconds=2)) as client:
+    async with _client(
+        _config(data_dir, plugins, sidecar_url, timeout_seconds=0.2, gateway_timeout_seconds=2)
+    ) as client:
         malformed = await _ingest(client, "malformed", "Malformed sidecar response remains pending.")
         status = await _wait_everos(
             client, lambda value: value.get("pending") == 1 and value.get("last_error")
@@ -569,7 +598,9 @@ async def test_external_malformed_and_slow_sidecars_keep_worker_alive(tmp_path: 
     sidecar.mode = "valid"
     recovered = None
     for _ in range(3):
-        async with _client(_config(data_dir, plugin_mods, sidecar_url, timeout_seconds=0.2, gateway_timeout_seconds=2)) as client:
+        async with _client(
+            _config(data_dir, plugins, sidecar_url, timeout_seconds=0.2, gateway_timeout_seconds=2)
+        ) as client:
             recovered = await _pending_status(client)
         if recovered["pending"] == 0:
             break
@@ -581,9 +612,9 @@ async def test_external_malformed_and_slow_sidecars_keep_worker_alive(tmp_path: 
 async def test_real_everos_rejection_does_not_block_later_delivery(tmp_path: Path, selective_sidecar):
     sidecar, sidecar_url = selective_sidecar
     real_url = sidecar.upstream
-    plugin_mods = _plugin_mods(tmp_path)
+    plugins = _plugins(tmp_path)
     data_dir = tmp_path / "dusha-data"
-    config = _config(data_dir, plugin_mods, sidecar_url, instance_namespace="rejection-e2e")
+    config = _config(data_dir, plugins, sidecar_url, instance_namespace="rejection-e2e")
 
     async with _client(config) as client:
         rejected = await _ingest(client, "rejected", "This message is permanently rejected.")
@@ -598,7 +629,9 @@ async def test_real_everos_rejection_does_not_block_later_delivery(tmp_path: Pat
 
     later_session = f"rejection-e2e-dusha-{later['conversation_id']}"
     delivered = await _everos_search(real_url, later_session, "later message")
-    rejected_search = await _everos_search(real_url, f"rejection-e2e-dusha-{rejected['conversation_id']}", "permanently rejected")
+    rejected_search = await _everos_search(
+        real_url, f"rejection-e2e-dusha-{rejected['conversation_id']}", "permanently rejected"
+    )
     assert "This later message is delivered." in repr(delivered)
     assert "This message is permanently rejected." not in repr(rejected_search)
 
@@ -606,9 +639,9 @@ async def test_real_everos_rejection_does_not_block_later_delivery(tmp_path: Pat
 @pytest.mark.asyncio
 async def test_pre_epoch_message_is_local_but_not_projected(tmp_path: Path, everos_server):
     sidecar_url, _, _, _ = everos_server
-    plugin_mods = _plugin_mods(tmp_path)
+    plugins = _plugins(tmp_path)
     data_dir = tmp_path / "dusha-data"
-    async with _client(_config(data_dir, plugin_mods, sidecar_url)) as client:
+    async with _client(_config(data_dir, plugins, sidecar_url)) as client:
         message = await _ingest_with(
             client,
             "pre-epoch",

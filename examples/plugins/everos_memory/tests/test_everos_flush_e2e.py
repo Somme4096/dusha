@@ -16,9 +16,9 @@ import httpx
 import pytest
 
 from dusha import api
-from dusha.config import AppConfig, EvergreenConfig, MemoryConfig, ModConfig
+from dusha.config import AppConfig, EvergreenConfig, ExternalPluginConfig, MemoryConfig
 
-MOD_DIR = Path(__file__).resolve().parents[1]
+PLUGIN_DIR = Path(__file__).resolve().parents[1]
 
 
 def _port() -> int:
@@ -46,7 +46,9 @@ class _OpenAIStub(BaseHTTPRequestHandler):
             "object": "chat.completion",
             "created": int(time.time()),
             "model": body.get("model", "flush-e2e"),
-            "choices": [{"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": "stop"}],
+            "choices": [
+                {"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": "stop"}
+            ],
             "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
         }
         encoded = json.dumps(payload).encode()
@@ -122,8 +124,13 @@ def everos_server(tmp_path: Path, llm_stub):
     )
     port = _port()
     env = {**os.environ, "HOME": str(tmp_path / "home"), "XDG_CONFIG_HOME": str(tmp_path / "config")}
-    command = [str(binary), "server", "start", "--host", "127.0.0.1", "--port", str(port), "--root", str(root)]
-    process = subprocess.Popen(command, cwd=binary.parents[2], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    command = [
+        str(binary), "server", "start", "--host", "127.0.0.1", "--port", str(port), "--root", str(root)
+    ]
+    process = subprocess.Popen(
+        command, cwd=binary.parents[2], env=env,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
     url = f"http://127.0.0.1:{port}"
 
     def wait_ready() -> None:
@@ -151,7 +158,10 @@ def everos_server(tmp_path: Path, llm_stub):
     def restart() -> None:
         nonlocal process
         stop()
-        process = subprocess.Popen(command, cwd=binary.parents[2], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        process = subprocess.Popen(
+            command, cwd=binary.parents[2], env=env,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
         wait_ready()
 
     wait_ready()
@@ -179,14 +189,14 @@ def flush_proxy(everos_server):
         thread.join(timeout=5)
 
 
-def _config(data_dir: Path, mods_dir: Path, sidecar: str, *, enabled: bool) -> AppConfig:
+def _config(data_dir: Path, plugins_dir: Path, sidecar: str, *, enabled: bool) -> AppConfig:
     return AppConfig(
         data_dir=data_dir,
-        mods_dir=str(mods_dir),
+        plugins_dir=str(plugins_dir),
         plugins={
             "memory": MemoryConfig(recent_messages=8, search_hits=8, context_messages=1),
             "evergreen": EvergreenConfig(max_items=32, max_chars=4_000),
-            "everos_memory": ModConfig(
+            "everos_memory": ExternalPluginConfig(
                 timeout_seconds=10,
                 options={"interval_seconds": 1, "everos": {
                     "url": sidecar,
@@ -292,10 +302,10 @@ async def _wait_search(url: str, session_id: str) -> dict:
     return result
 
 
-def _mods(tmp_path: Path) -> Path:
+def _plugins(tmp_path: Path) -> Path:
     import shutil
-    target = tmp_path / "mods"
-    shutil.copytree(MOD_DIR, target / "everos_memory", ignore=shutil.ignore_patterns(".venv", "tests"))
+    target = tmp_path / "plugins"
+    shutil.copytree(PLUGIN_DIR, target / "everos_memory", ignore=shutil.ignore_patterns(".venv", "tests"))
     return target
 
 
@@ -303,7 +313,7 @@ def _mods(tmp_path: Path) -> Path:
 async def test_flush_extracts_two_messages_and_preserves_session(tmp_path: Path, everos_server, llm_stub):
     sidecar, _, _, restart = everos_server
     data_dir = tmp_path / "dusha-data"
-    async with _client(_config(data_dir, _mods(tmp_path), sidecar, enabled=True)) as client:
+    async with _client(_config(data_dir, _plugins(tmp_path), sidecar, enabled=True)) as client:
         first = await _add(client, "conversation", "Remember cobalt-orchid from the first message.")
         await _add(client, "conversation", "The second message confirms cobalt-orchid.", role="assistant")
         status = await _wait_status(client, lambda value: value.get("processed", 0) >= 2)
@@ -313,13 +323,16 @@ async def test_flush_extracts_two_messages_and_preserves_session(tmp_path: Path,
     episodes = result.get("data", {}).get("episodes", [])
     assert episodes
     assert any("cobalt-orchid" in repr(episode) for episode in episodes)
-    assert all(episode.get("session_id") == "flush-e2e-dusha-" + str(first["conversation_id"]) for episode in episodes)
+    assert all(
+        episode.get("session_id") == "flush-e2e-dusha-" + str(first["conversation_id"])
+        for episode in episodes
+    )
 
 
 @pytest.mark.asyncio
 async def test_flush_default_disabled_makes_no_llm_call(tmp_path: Path, everos_server, llm_stub):
     sidecar, _, _, _ = everos_server
-    async with _client(_config(tmp_path / "data", _mods(tmp_path), sidecar, enabled=False)) as client:
+    async with _client(_config(tmp_path / "data", _plugins(tmp_path), sidecar, enabled=False)) as client:
         await _add(client, "disabled", "Buffered cobalt-orchid must not invoke extraction.")
         buffered = await _wait_status(client, lambda value: value.get("buffered", 0) >= 1)
         assert buffered.get("processed", 0) == 0
@@ -329,17 +342,17 @@ async def test_flush_default_disabled_makes_no_llm_call(tmp_path: Path, everos_s
 @pytest.mark.asyncio
 async def test_flush_failure_restarts_without_readding_messages(tmp_path: Path, everos_server, llm_stub):
     sidecar, _, stop, restart = everos_server
-    mods = _mods(tmp_path)
+    plugins = _plugins(tmp_path)
     data_dir = tmp_path / "data"
     stop()
-    async with _client(_config(data_dir, mods, sidecar, enabled=True)) as client:
+    async with _client(_config(data_dir, plugins, sidecar, enabled=True)) as client:
         await _add(client, "recovery", "Recovery stores cobalt-orchid across an EverOS outage.")
         failed = await _wait_status(client, lambda value: value.get("last_error"))
         assert failed.get("last_error")
         assert failed.get("processed", 0) == 0
     calls_before = len(llm_stub[1].calls)
     restart()
-    async with _client(_config(data_dir, mods, sidecar, enabled=True)) as client:
+    async with _client(_config(data_dir, plugins, sidecar, enabled=True)) as client:
         recovered = await _wait_status(client, lambda value: value.get("processed", 0) >= 1)
         assert recovered.get("processed", 0) >= 1
     assert len(llm_stub[1].calls) > calls_before
@@ -348,15 +361,15 @@ async def test_flush_failure_restarts_without_readding_messages(tmp_path: Path, 
 @pytest.mark.asyncio
 async def test_dropped_flush_response_retries_without_readding_messages(tmp_path: Path, flush_proxy):
     proxy, proxy_url, real_url = flush_proxy
-    mods = _mods(tmp_path)
+    plugins = _plugins(tmp_path)
     data_dir = tmp_path / "data"
-    async with _client(_config(data_dir, mods, proxy_url, enabled=True)) as client:
+    async with _client(_config(data_dir, plugins, proxy_url, enabled=True)) as client:
         message = await _add(client, "dropped-response", "A dropped response still stores cobalt-orchid.")
         failed = await _wait_status(client, lambda value: proxy.flush_calls >= 1 and value.get("last_error"))
         assert proxy.flush_calls == 1
         assert failed.get("processed", 0) == 0
         assert proxy.add_calls == 1
-    async with _client(_config(data_dir, mods, proxy_url, enabled=True)) as client:
+    async with _client(_config(data_dir, plugins, proxy_url, enabled=True)) as client:
         recovered = await _wait_status(client, lambda value: value.get("processed", 0) >= 1)
         assert recovered.get("processed", 0) >= 1
     assert proxy.add_calls == 1
@@ -366,48 +379,66 @@ async def test_dropped_flush_response_retries_without_readding_messages(tmp_path
         (200, "no_extraction"),
     ]
     result = await _wait_search(real_url, "flush-e2e-dusha-" + str(message["conversation_id"]))
-    assert any("cobalt-orchid" in repr(episode) for episode in result.get("data", {}).get("episodes", [])), result
+    assert any(
+        "cobalt-orchid" in repr(episode) for episode in result.get("data", {}).get("episodes", [])
+    ), result
 
 
 @pytest.mark.asyncio
 async def test_enabling_flush_processes_existing_buffer(tmp_path: Path, everos_server):
     sidecar, _, _, _ = everos_server
-    mods = _mods(tmp_path)
+    plugins = _plugins(tmp_path)
     data_dir = tmp_path / "data"
-    async with _client(_config(data_dir, mods, sidecar, enabled=False)) as client:
-        message = await _add(client, "transition", "A buffered cobalt-orchid enters extraction after enabling flush.")
+    async with _client(_config(data_dir, plugins, sidecar, enabled=False)) as client:
+        message = await _add(
+            client, "transition", "A buffered cobalt-orchid enters extraction after enabling flush."
+        )
         buffered = await _wait_status(client, lambda value: value.get("buffered", 0) == 1)
         assert buffered.get("processed", 0) == 0
         assert buffered.get("buffered", 0) == 1
-    async with _client(_config(data_dir, mods, sidecar, enabled=True)) as client:
+    async with _client(_config(data_dir, plugins, sidecar, enabled=True)) as client:
         processed = await _wait_status(client, lambda value: value.get("processed", 0) >= 1)
         assert processed.get("processed", 0) >= 1
     result = await _wait_search(sidecar, "flush-e2e-dusha-" + str(message["conversation_id"]))
-    assert any("cobalt-orchid" in repr(episode) for episode in result.get("data", {}).get("episodes", [])), result
+    assert any(
+        "cobalt-orchid" in repr(episode) for episode in result.get("data", {}).get("episodes", [])
+    ), result
 
 
 @pytest.mark.asyncio
 async def test_due_flush_and_pending_add_progress_together(tmp_path: Path, everos_server):
     sidecar, _, stop, restart = everos_server
-    mods = _mods(tmp_path)
+    plugins = _plugins(tmp_path)
     data_dir = tmp_path / "data"
-    async with _client(_config(data_dir, mods, sidecar, enabled=False)) as client:
+    async with _client(_config(data_dir, plugins, sidecar, enabled=False)) as client:
         first = await _add(client, "mixed", "The first cobalt-orchid record waits for flush.")
     stop()
-    async with _client(_config(data_dir, mods, sidecar, enabled=True)) as client:
-        second = await _add(client, "mixed", "The second cobalt-orchid record waits for add delivery.", role="assistant")
-        blocked = await _wait_status(client, lambda value: value.get("pending", 0) >= 1 and value.get("flush_pending", 0) >= 1)
+    async with _client(_config(data_dir, plugins, sidecar, enabled=True)) as client:
+        second = await _add(
+            client, "mixed", "The second cobalt-orchid record waits for add delivery.", role="assistant"
+        )
+        blocked = await _wait_status(
+            client, lambda value: value.get("pending", 0) >= 1 and value.get("flush_pending", 0) >= 1
+        )
         assert blocked.get("pending", 0) >= 1
         assert blocked.get("flush_pending", 0) >= 1
     restart()
-    async with _client(_config(data_dir, mods, sidecar, enabled=True)) as client:
-        progressed = await _wait_status(client, lambda value: value.get("pending", 0) == 0 and value.get("processed", 0) >= 2)
+    async with _client(_config(data_dir, plugins, sidecar, enabled=True)) as client:
+        progressed = await _wait_status(
+            client, lambda value: value.get("pending", 0) == 0 and value.get("processed", 0) >= 2
+        )
         assert progressed.get("pending", 0) == 0
         assert progressed.get("processed", 0) >= 2
     first_result = await _wait_search(sidecar, "flush-e2e-dusha-" + str(first["conversation_id"]))
     second_result = await _wait_search(sidecar, "flush-e2e-dusha-" + str(second["conversation_id"]))
-    assert any("cobalt-orchid" in repr(episode) for episode in first_result.get("data", {}).get("episodes", []))
-    assert any("cobalt-orchid" in repr(episode) for episode in second_result.get("data", {}).get("episodes", []))
+    assert any(
+        "cobalt-orchid" in repr(episode)
+        for episode in first_result.get("data", {}).get("episodes", [])
+    )
+    assert any(
+        "cobalt-orchid" in repr(episode)
+        for episode in second_result.get("data", {}).get("episodes", [])
+    )
 
 
 @pytest.mark.asyncio
@@ -416,7 +447,7 @@ async def test_flush_context_projects_source_labeled_episode_and_falls_back(
 ):
     sidecar, _, stop, _ = everos_server
     data_dir = tmp_path / "dusha-data"
-    async with _client(_config(data_dir, _mods(tmp_path), sidecar, enabled=True)) as client:
+    async with _client(_config(data_dir, _plugins(tmp_path), sidecar, enabled=True)) as client:
         first = await _add(client, "context", "Remember cobalt-orchid from the context message.")
         await _add(client, "context", "The assistant confirms the cobalt-orchid context.", role="assistant")
         processed = await _wait_status(client, lambda value: value.get("processed", 0) >= 2)
