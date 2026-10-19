@@ -15,6 +15,7 @@ from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 from astrbot.api.provider import LLMResponse, ProviderRequest
 from astrbot.core.config.astrbot_config import AstrBotConfig
 
+from .rendering import MARKERS, render_bridge, render_turn
 from .routing import accepts_platform, platform_id_from_umo
 
 GATEWAY_TOOL_NAMES = (
@@ -60,6 +61,7 @@ class DushaPlugin(star.Star):
         self.client = httpx.AsyncClient(timeout=self.request_timeout_seconds)
         self.poll_task: asyncio.Task[None] | None = None
         self.latest_source_message_ids: dict[str, int] = {}
+        self.companion_name = ""
 
     def _setting(self, name: str) -> Any:
         return self.config.get(name, SETTING_DEFAULTS[name])
@@ -116,21 +118,49 @@ class DushaPlugin(star.Star):
         return self._json({"ok": False, "error": "gateway access is disabled for this platform"})
 
     @staticmethod
-    def _inject_context(req: ProviderRequest, text: str) -> None:
+    def _inject(req: ProviderRequest, text: str, keep: bool) -> None:
         parts = getattr(req, "extra_user_content_parts", None)
         if parts is not None and hasattr(parts, "append"):
             from astrbot.core.agent.message import TextPart
 
-            parts.append(TextPart(text=text))
+            part = TextPart(text=text)
+            if not keep and hasattr(part, "mark_as_temp"):
+                part.mark_as_temp()
+            parts.append(part)
             return
         req.system_prompt = (req.system_prompt or "") + "\n" + text
 
     @staticmethod
     def _has_context(req: ProviderRequest) -> bool:
-        if "<companion_state>" in (req.system_prompt or ""):
-            return True
+        texts = [req.system_prompt or ""]
         parts = getattr(req, "extra_user_content_parts", None) or []
-        return any("<companion_state>" in str(getattr(part, "text", "")) for part in parts)
+        texts.extend(str(getattr(part, "text", "")) for part in parts)
+        return any(marker in text for text in texts for marker in MARKERS)
+
+    @staticmethod
+    def _first_turn(req: ProviderRequest) -> bool:
+        conversation = getattr(req, "conversation", None)
+        history = getattr(conversation, "history", None) if conversation is not None else None
+        if history is None:
+            history = getattr(req, "contexts", None)
+        if isinstance(history, str):
+            try:
+                history = json.loads(history or "[]")
+            except ValueError:
+                return False
+        return not any(
+            isinstance(item, dict) and item.get("role") in {"user", "assistant"} for item in history or []
+        )
+
+    async def _companion_name(self) -> str:
+        if not self.companion_name:
+            try:
+                health = await self._get("/health", {})
+            except Exception as error:
+                logger.warning(f"[dusha] Companion name unavailable: {error}")
+                return "assistant"
+            self.companion_name = str(health.get("companion") or "") or "assistant"
+        return self.companion_name
 
     @staticmethod
     def _tool_error(error: Exception, fallback: str) -> str:
@@ -218,6 +248,7 @@ class DushaPlugin(star.Star):
             # The previous turn's id would credit tool writes to the wrong message.
             self.latest_source_message_ids.pop(event.unified_msg_origin, None)
             logger.warning(f"[dusha] Message archive failed: {error}")
+        first_turn = self._first_turn(req)
         try:
             context = await self._post(
                 "/state/v1/context",
@@ -226,12 +257,20 @@ class DushaPlugin(star.Star):
                     "conversation_id": event.unified_msg_origin,
                     "query": prompt,
                     "exclude_message_ids": exclude,
-                    "include_recent": True,
+                    "include_recent": first_turn,
                 },
             )
-            self._inject_context(req, context["injection"])
         except Exception as error:
             logger.warning(f"[dusha] Context unavailable: {error}")
+            return
+        companion = await self._companion_name()
+        records = list(context.get("records", []))
+        recent = [record for record in records if record.get("source") == "recent"]
+        recalled = [record for record in records if record.get("source") != "recent"]
+        if recent:
+            instruction = str(context["context"].get("instructions", {}).get("memory", ""))
+            self._inject(req, render_bridge(recent, instruction, companion), keep=True)
+        self._inject(req, render_turn(context["context"], recalled, companion), keep=False)
 
     @filter.llm_tool(name="remember_evergreen_fact")
     async def remember_evergreen_fact(
@@ -789,9 +828,13 @@ class DushaPlugin(star.Star):
             if not persona:
                 raise RuntimeError("no AstrBot persona is configured for this session")
             provider_id = await self.context.get_current_chat_provider_id(route)
+            context = event["context"]
+            injection = render_turn(
+                context["context"], list(context.get("records", [])), await self._companion_name()
+            )
             response = await self._generate_with_fallback(
                 str(event["generation_instruction"]) + "\n" + PROACTIVE_YUMECHO_NOTE,
-                persona + "\n" + str(event["context"]["injection"]),
+                persona + "\n" + injection,
                 provider_id,
                 tools=self._gateway_tool_set(),
                 event=self._proactive_event(route),

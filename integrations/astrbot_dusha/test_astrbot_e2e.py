@@ -88,6 +88,11 @@ class CronMessageEvent(AstrMessageEvent):
 class TextPart:
     def __init__(self, text):
         self.text = text
+        self._no_save = False
+
+    def mark_as_temp(self):
+        self._no_save = True
+        return self
 
 
 class _Segment:
@@ -676,10 +681,11 @@ async def test_chat_turn_stores_message_injects_context_and_archives_reply(confi
         await _tool(plugin, "remember_evergreen_fact", key="user.city", text="Ada lives in Turin")
         request = ProviderRequest("the amber window is open")
         await _chat(plugin, "the amber window is open", "m-1", request=request)
-        assert request.system_prompt.startswith("persona\n")
-        assert request.system_prompt.endswith("</companion_state>")
-        assert "Ada lives in Turin" in request.system_prompt
+        assert request.system_prompt.startswith("persona\n<evergreen_facts>\n- user.city [")
+        assert "]: Ada lives in Turin\n</evergreen_facts>\n<affect>\n" in request.system_prompt
+        assert request.system_prompt.endswith("</affect>")
         assert "the amber window is open" not in request.system_prompt
+        assert "sha256" not in request.system_prompt
 
         user_id = plugin.latest_source_message_ids[ROUTE]
         stored = await rig.json("GET", f"/state/v1/messages/{user_id}")
@@ -693,7 +699,11 @@ async def test_chat_turn_stores_message_injects_context_and_archives_reply(confi
         assert (await rig.json("GET", "/state/v1/affect"))["last_user_message_at"] is not None
 
         calls = list(plugin.gateway.calls)
-        assert calls[-2:] == [("POST", "/state/v1/messages", 200), ("POST", "/state/v1/context", 200)]
+        assert calls[-3:] == [
+            ("POST", "/state/v1/messages", 200),
+            ("POST", "/state/v1/context", 200),
+            ("GET", "/health", 200),
+        ]
         await plugin.add_state_context(AstrMessageEvent(message_id="m-1"), request)
         assert plugin.gateway.calls == calls
 
@@ -711,10 +721,24 @@ async def test_chat_turn_stores_message_injects_context_and_archives_reply(confi
         parts_request.extra_user_content_parts = []
         await _chat(plugin, "and tomorrow", "m-2", request=parts_request)
         assert parts_request.system_prompt == "persona"
-        (part,) = parts_request.extra_user_content_parts
-        assert "<companion_state>" in part.text
-        assert "I will close it at dusk" in part.text
+        bridge, fresh = parts_request.extra_user_content_parts
+        assert (bridge._no_save, fresh._no_save) == (False, True)
+        assert bridge.text.startswith("<previous_session>\n")
+        assert "Records from before this conversation." in bridge.text
+        assert f"#{user_id} [" in bridge.text and " user] the amber window is open" in bridge.text
+        assert " assistant] I will close it at dusk" in bridge.text
+        assert fresh.text.startswith("<evergreen_facts>\n")
+        assert "<previous_session>" not in fresh.text and "I will close it at dusk" not in fresh.text
         assert plugin.latest_source_message_ids[ROUTE] == user_id + 2
+        assert ("GET", "/health", 200) not in plugin.gateway.calls[len(calls) :]
+
+        later = ProviderRequest("and after that")
+        later.extra_user_content_parts = []
+        later.conversation = types.SimpleNamespace(history=json.dumps([{"role": "user", "content": "x"}]))
+        await _chat(plugin, "and after that", "m-3", request=later)
+        (only,) = later.extra_user_content_parts
+        assert only._no_save is True
+        assert "<previous_session>" not in only.text and " assistant] " not in only.text
 
 
 async def test_chat_turn_keeps_context_when_message_storage_fails(config):
@@ -729,7 +753,7 @@ async def test_chat_turn_keeps_context_when_message_storage_fails(config):
             plugin.gateway.failures = {"/state/v1/messages": failure}
             logger.messages.clear()
             request = await _chat(plugin, f"unstored nightjar {index}", f"m-lost-{index}")
-            assert "<companion_state>" in request.system_prompt
+            assert "<previous_session>" in request.system_prompt
             assert "first stored turn" in request.system_prompt
             assert plugin.latest_source_message_ids == {}
             assert len(logger.messages) == 1
@@ -827,7 +851,10 @@ async def test_proactive_event_is_delivered_acknowledged_sent_and_stored(config)
         assert generation["chat_provider_id"] == "prov"
         instruction = event["generation_instruction"]
         assert generation["prompt"] == instruction + "\n" + plugin_main.PROACTIVE_YUMECHO_NOTE
-        assert generation["system_prompt"] == "persona\n" + event["context"]["injection"]
+        system_prompt = generation["system_prompt"]
+        assert system_prompt.startswith("persona\n<affect>\n")
+        assert "<companion_state>\n" in system_prompt and " user] hello from turn m-1" in system_prompt
+        assert "sha256" not in system_prompt
         marker = f"[proactive {event['reason']}] after {event['silence_text']} of silence"
         assert context.conversation_manager.pairs == [("cid-1", marker, NUDGE)]
         assert first.gateway.calls[-1] == ("POST", f"/state/v1/proactive/events/{event['id']}/ack", 200)

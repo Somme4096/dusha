@@ -294,15 +294,17 @@ The OpenCode plugin in `integrations/opencode_dusha` adds an affect status tool 
 On each turn the plugin:
 
 1. Stores the user message.
-2. Requests context and adds the injection to AstrBot's request. The active persona stays as AstrBot built it.
+2. Requests context and renders it as plain text from `context` and `records`, one line per fact, memo, or record. The active persona stays as AstrBot built it.
 3. Archives the assistant reply.
+
+The rendered text lands in two parts of the user message. Facts, memos, the affect block, external plugin blocks, and the recalled records go into a part marked provider-only, so AstrBot sends it with the request and leaves it out of the saved history. On the first turn of an AstrBot conversation the plugin also asks for recent records and saves them once as a `<previous_session>` part, the bridge from the previous session. Later turns skip recent records because AstrBot's own history holds them. AstrBot releases without provider-only parts receive the text in the system prompt instead.
 
 If the store call fails, the plugin logs `Message archive failed` and still requests context. If the context call fails, it logs `Context unavailable` and AstrBot sends the request without an injection.
 
 With `proactive_enabled` on, the plugin:
 
 1. Polls one event at a time.
-2. Generates a message with the route's persona, the event's injection, and the tools above.
+2. Generates a message with the route's persona, the event's context rendered the same way, and the tools above.
 3. Tries each configured provider until one answers.
 4. Sends the text, writes it into AstrBot's history after a `[proactive <reason>]` marker, and acknowledges `sent`.
 
