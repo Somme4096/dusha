@@ -92,7 +92,7 @@ The response carries `injection`, `records`, `search_hits`, and `context`. Prepe
 1. The identity text
 2. `<evergreen_facts>`, a JSON list of facts
 3. `<memo_notes>`, a JSON list of active memos
-4. `<affect>`, the emotion values and the Affect line
+4. `<affect>`, the affect instruction and the Affect line as plain text
 5. The blocks returned by external plugins, each with the delimiters that plugin renders
 6. `<companion_state>`, a JSON object with the instructions and the session records from `memory`
 

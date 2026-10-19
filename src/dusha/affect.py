@@ -18,7 +18,7 @@ from .affect_semantic import SemanticAppraisal
 from .config import AffectConfig, EmbeddingConfig
 from .database import Database
 from .embedding import OpenAIEmbeddingClient
-from .hooks import Block, ContextRequest, DecisionRequest, render
+from .hooks import Block, ContextRequest, DecisionRequest
 from .interfaces import call, errors
 from .serialization import compact_json
 from .timeutil import isoformat, parse_time, utc_now
@@ -316,13 +316,15 @@ class AffectEngine:
     def on_context(self, request: ContextRequest) -> Block:
         snapshot = self.status()
         slot = self.prompts["affect"]
+        description = self.describe(snapshot)
         data = {
             "values": {"base": snapshot["base"], "mood": snapshot["mood"]},
-            "description": self.describe(snapshot),
+            "description": description,
             "preface": slot["instruction"],
             "fingerprints": {"emotions": self.emotions_fingerprint, "prompts": self.prompts_fingerprint},
         }
-        return render(self.name, slot["open_delimiter"], data, slot["close_delimiter"])
+        text = slot["open_delimiter"] + slot["instruction"] + "\n" + description + slot["close_delimiter"]
+        return Block(self.name, text, data)
 
     def close(self) -> None:
         if self.appraisal is not None:
