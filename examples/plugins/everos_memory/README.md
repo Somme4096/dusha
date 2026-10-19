@@ -68,10 +68,11 @@ rejected row never blocks later ones.
 ## Context
 
 The `context` listener searches `POST /api/v2/memory/search` with `method: "keyword"` and
-an exact session filter, or lists recent episodes when the query is empty. It
-returns short source-labeled episodes within `options.context_max_chars`. When the mapping,
-the sidecar, or the results are absent it returns nothing and the gateway keeps
-its own context.
+an exact session filter, or lists recent episodes when the query is empty. Each
+episode becomes one line, `[local time] subject: episode text`, under a short note, within
+`options.context_max_chars`. The block carries that `text` and the source-labeled
+`records`. When the mapping, the sidecar, or the results are absent it returns nothing
+and the gateway keeps its own context.
 
 ## Flush
 

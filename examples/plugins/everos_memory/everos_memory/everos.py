@@ -18,7 +18,10 @@ _OPTIONS = {
 }
 _TIMEOUT_CEILING = 300.0
 _SEARCH_TOP_K = 5
-_EPISODE_SKIP_KEYS = {"session_id", "app_id", "project_id", "user_id"}
+_EPISODE_SKIP_KEYS = {
+    "session_id", "app_id", "project_id", "user_id", "id", "episode_id", "timestamp", "created_at",
+    "occurred_at", "type", "score", "sender_ids", "subject",
+}
 
 
 class EverOSMirror:
@@ -257,27 +260,32 @@ class EverOSMirror:
 
     @classmethod
     def _episode_text(cls, episode: dict[str, Any]) -> str:
-        parts: list[str] = []
-        for key, value in episode.items():
-            if key in _EPISODE_SKIP_KEYS or "message" in str(key).casefold():
-                continue
-            cls._collect_strings(value, parts)
-        content = " ".join(dict.fromkeys(part.strip() for part in parts if part.strip()))
-        if not content:
+        subject = str(episode.get("subject") or "").strip()
+        body = str(episode.get("episode") or episode.get("summary") or "").strip()
+        if not body:
+            parts: list[str] = []
+            for key, value in episode.items():
+                if key in _EPISODE_SKIP_KEYS or "message" in str(key).casefold():
+                    continue
+                cls._collect_strings(value, parts)
+            body = " ".join(dict.fromkeys(part.strip() for part in parts if part.strip()))
+        if subject and subject != body:
+            body = f"{subject}: {body}" if body else subject
+        if not body:
             return ""
-        label: list[str] = []
-        identifier = episode.get("id") or episode.get("episode_id")
-        if identifier not in (None, ""):
-            label.append(f"episode {identifier}")
-        timestamp = (
-            episode.get("timestamp")
-            or episode.get("created_at")
-            or episode.get("occurred_at")
+        stamp = cls._local_time(
+            episode.get("timestamp") or episode.get("created_at") or episode.get("occurred_at")
         )
-        if timestamp not in (None, ""):
-            label.append(str(timestamp))
-        prefix = f"[{' '.join(label)}] " if label else ""
-        return prefix + content
+        return f"[{stamp}] {body}" if stamp else body
+
+    @staticmethod
+    def _local_time(value: Any) -> str:
+        if value in (None, ""):
+            return ""
+        try:
+            return datetime.fromisoformat(str(value)).astimezone().strftime("%Y-%m-%d %H:%M")
+        except ValueError:
+            return str(value)
 
     @classmethod
     def _collect_strings(cls, value: Any, parts: list[str]) -> None:
