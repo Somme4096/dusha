@@ -1,7 +1,9 @@
 # Dusha
 
-> ![WARNING] THIS SOFTWARE IS UNDER RAPID DEVELOPMENT. BREAK CHANGES WILL BE HAPPENING.
+> [!WARNING]
+> THIS SOFTWARE IS UNDER RAPID DEVELOPMENT. BREAKING CHANGES ARE HAPPENING BEFORE NOVEMBER.
 
+> [!NOTE]
 > *This README.md is proudly written by a human (and a little bit by Claude (˶>⩊<˶)❤️)*
 
 *Dusha* (Russian: душа, [dʊˈʂa], "soul") is a small HTTP API that stores messages, identity, facts, and affect state outside your harness. Any client that can POST a message and read back an injection string can use it, so you can hop between harnesses (or even use multiple at once!) and still get the same soul on the other side.
