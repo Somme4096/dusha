@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dusha"
-version = "0.0.21"
+version = "0.1.21"
 description = "Harness-neutral OpenAI gateway with durable memory and affect state"
 readme = "README.md"
 requires-python = ">=3.11"

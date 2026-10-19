@@ -62,7 +62,7 @@ wheels = [
 
 [[package]]
 name = "dusha"
-version = "0.0.21"
+version = "0.1.21"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
