@@ -71,6 +71,8 @@ def render_turn(context: dict[str, Any], records: list[dict[str, Any]], companio
             parts.append(render_memos(data))
         elif name == "affect":
             parts.append(render_affect(data))
+        elif isinstance(data, dict) and data.get("text"):
+            parts.append(_wrap(_PLUGIN, str(data["text"])))
         else:
             parts.append(_wrap(_PLUGIN, json.dumps(data, ensure_ascii=False, separators=(",", ":"))))
     if records:

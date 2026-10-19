@@ -13,6 +13,7 @@ import httpx
 import pytest
 
 from dusha import api
+from dusha.config import ExternalPluginConfig, PluginEntry
 from dusha.timeutil import isoformat, utc_now
 
 _INTEGRATION_DIR = Path(__file__).resolve().parent
@@ -1046,3 +1047,37 @@ async def test_plugin_state_survives_gateway_restart(config):
         )
         assert revised["fact"]["revision"] == fact["revision"] + 1
         assert [item["text"] for item in await rig.facts()] == ["Ada loves the old lighthouse"]
+
+
+PROBE_SOURCE = """\
+from dusha.hooks import Block
+
+
+def apply(ctx, config):
+    ctx.on("context", lambda request: on_context(ctx, request))
+
+
+def on_context(ctx, request):
+    text = "Recalled lines\\n- PROBE_LINE " + request.query
+    data = {"source": ctx.name, "text": text, "records": []}
+    return Block(ctx.name, "<plugin_context>\\n" + text + "\\n</plugin_context>", data)
+"""
+PROBE_MANIFEST = (
+    '[project]\nname = "probe"\nversion = "0.1.0"\nrequires-python = ">=3.11"\n\n'
+    '[tool.dusha]\nentry = "probe"\ninject = []\n'
+)
+
+
+async def test_external_plugin_block_text_is_injected_as_given(tmp_path, config):
+    suite = tmp_path / "plugins" / "probe"
+    suite.mkdir(parents=True)
+    (suite / "probe.py").write_text(PROBE_SOURCE, encoding="utf-8")
+    (suite / "pyproject.toml").write_text(PROBE_MANIFEST, encoding="utf-8")
+    config.plugins_dir = str(tmp_path / "plugins")
+    config.plugins["probe"] = PluginEntry(ExternalPluginConfig(options={}))
+    async with _running(config) as rig:
+        plugin = await rig.plugin()
+        request = await _chat(plugin, "the ivory gate", "m-1")
+        block = "<plugin_context>\nRecalled lines\n- PROBE_LINE the ivory gate\n</plugin_context>"
+        assert block in request.system_prompt
+        assert "records" not in request.system_prompt
