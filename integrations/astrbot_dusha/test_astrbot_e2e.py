@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import importlib.util
 import json
 import sys
@@ -156,10 +157,28 @@ class _ProviderManager:
         return list(self.providers)
 
 
+class _ConfigManager:
+    def __init__(self, profiles):
+        self.profiles = profiles
+
+    def get_conf_info(self, umo):
+        conf_id, name = self.profiles.get(umo, ("default", "default"))
+        return {"id": conf_id, "name": name, "path": f"{conf_id}.json"}
+
+
 class Context:
     def __init__(
-        self, *, cid="cid-1", persona="persona", send_result=True, replies=None, provider_ids=(), pinned=""
+        self,
+        *,
+        cid="cid-1",
+        persona="persona",
+        send_result=True,
+        replies=None,
+        provider_ids=(),
+        pinned="",
+        profiles=None,
     ):
+        self.astrbot_config_mgr = _ConfigManager(profiles or {})
         self.conversation_manager = _ConversationManager(cid)
         self.persona_manager = _PersonaManager(persona)
         self.provider_manager = _ProviderManager(provider_ids)
@@ -297,14 +316,18 @@ class _Rig:
         self.http = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
         self.plugins = []
 
-    async def plugin(self, *, context=None, platform_id=PLATFORM, **settings):
+    async def plugin(self, *, context=None, platform_id=PLATFORM, apps=None, **settings):
         plugin = plugin_main.DushaPlugin(
             context=context or Context(), config=AstrBotConfig(platform_id=platform_id, **settings)
         )
-        timeout = plugin.client.timeout
-        await plugin.client.aclose()
-        plugin.gateway = _Gateway(self.app)
-        plugin.client = httpx.AsyncClient(transport=plugin.gateway, timeout=timeout)
+        plugin.gateways = {}
+        for binding in plugin.bindings:
+            app = (apps or {}).get(binding.base_url, self.app)
+            gateway = plugin.gateways.setdefault(binding.base_url, _Gateway(app))
+            timeout = binding.client.timeout
+            await binding.client.aclose()
+            binding.client = httpx.AsyncClient(transport=gateway, timeout=timeout)
+        plugin.gateway = next(iter(plugin.gateways.values()), None) or _Gateway(self.app)
         self.plugins.append(plugin)
         return plugin
 
@@ -348,9 +371,13 @@ async def _tool(plugin, name, event=None, **arguments):
     return json.loads(await filter_registry.tools[name](plugin, event or AstrMessageEvent(), **arguments))
 
 
-async def _chat(plugin, prompt, message_id, reply="", request=None):
+def _sources(plugin):
+    return plugin.bindings[0].latest_source_message_ids
+
+
+async def _chat(plugin, prompt, message_id, reply="", request=None, route=ROUTE):
     request = request or ProviderRequest(prompt)
-    event = AstrMessageEvent(text=prompt, message_id=message_id)
+    event = AstrMessageEvent(unified_msg_origin=route, text=prompt, message_id=message_id)
     await plugin.add_state_context(event, request)
     if reply:
         await plugin.store_response(event, LLMResponse(reply))
@@ -373,11 +400,12 @@ async def _due_event(rig, plugin, message_id, hours=4):
     return event
 
 
-async def _poll_until(plugin, suffix):
+async def _poll_until(plugin, suffix, gateways=None):
     await plugin.initialize()
     async with asyncio.timeout(10):
-        while not any(path.endswith(suffix) for _, path, _ in plugin.gateway.calls):
-            await asyncio.sleep(0.01)
+        for gateway in gateways or [plugin.gateway]:
+            while not any(path.endswith(suffix) for _, path, _ in gateway.calls):
+                await asyncio.sleep(0.01)
     await plugin.terminate()
 
 
@@ -410,8 +438,10 @@ async def test_wrong_platform_gets_routing_error_and_reaches_no_gateway(config):
 
         logger.messages.clear()
         await unrouted.initialize()
-        assert unrouted.poll_task is None
-        assert logger.messages == ["[dusha] platform_id is empty. Gateway routing is disabled"]
+        assert unrouted.bindings == []
+        assert logger.messages == [
+            "[dusha] No companion sets platform_id or config_profile. Routing is disabled"
+        ]
         assert await rig.search("secret wrong platform reply") == []
         assert await rig.facts(include_inactive=True) == []
         assert await rig.memos() == []
@@ -427,7 +457,7 @@ async def test_evergreen_tools_remember_revise_forget_and_review(config):
         assert plain["fact"]["source_message_id"] is None
 
         await _chat(plugin, "my name is Ada", "m-1")
-        source_id = plugin.latest_source_message_ids[ROUTE]
+        source_id = _sources(plugin)[ROUTE]
         remembered = await _tool(
             plugin,
             "remember_evergreen_fact",
@@ -688,7 +718,7 @@ async def test_chat_turn_stores_message_injects_context_and_archives_reply(confi
         assert "the amber window is open" not in request.system_prompt
         assert "sha256" not in request.system_prompt
 
-        user_id = plugin.latest_source_message_ids[ROUTE]
+        user_id = _sources(plugin)[ROUTE]
         stored = await rig.json("GET", f"/state/v1/messages/{user_id}")
         assert stored["harness"] == "astrbot"
         assert stored["external_conversation_id"] == stored["route"] == ROUTE
@@ -730,7 +760,7 @@ async def test_chat_turn_stores_message_injects_context_and_archives_reply(confi
         assert " assistant] I will close it at dusk" in bridge.text
         assert fresh.text.startswith("<evergreen_facts>\n")
         assert "<previous_session>" not in fresh.text and "I will close it at dusk" not in fresh.text
-        assert plugin.latest_source_message_ids[ROUTE] == user_id + 2
+        assert _sources(plugin)[ROUTE] == user_id + 2
         assert ("GET", "/health", 200) not in plugin.gateway.calls[len(calls) :]
 
         later = ProviderRequest("and after that")
@@ -746,17 +776,17 @@ async def test_chat_turn_keeps_context_when_message_storage_fails(config):
     async with _running(config) as rig:
         plugin = await rig.plugin()
         await _chat(plugin, "first stored turn", "m-1")
-        assert ROUTE in plugin.latest_source_message_ids
+        assert ROUTE in _sources(plugin)
 
         failures = [(httpx.ReadTimeout("slow decision plugin"), "slow decision plugin"), (500, "500")]
         for index, (failure, logged) in enumerate(failures):
-            plugin.latest_source_message_ids[ROUTE] = 1
+            _sources(plugin)[ROUTE] = 1
             plugin.gateway.failures = {"/state/v1/messages": failure}
             logger.messages.clear()
             request = await _chat(plugin, f"unstored nightjar {index}", f"m-lost-{index}")
             assert "<previous_session>" in request.system_prompt
             assert "first stored turn" in request.system_prompt
-            assert plugin.latest_source_message_ids == {}
+            assert _sources(plugin) == {}
             assert len(logger.messages) == 1
             assert logger.messages[0].startswith("[dusha] Message archive failed:")
             assert logged in logger.messages[0]
@@ -779,7 +809,7 @@ async def test_chat_turn_survives_a_failed_context_call(config):
             ("POST", "/state/v1/context", None),
         ]
         assert len(logger.messages) == 1 and "Context unavailable" in logger.messages[0]
-        stored = await rig.json("GET", f"/state/v1/messages/{plugin.latest_source_message_ids[ROUTE]}")
+        stored = await rig.json("GET", f"/state/v1/messages/{_sources(plugin)[ROUTE]}")
         assert stored["text"] == "the context call was refused"
         assert [item["text"] for item in await rig.search("refused answering")] == [
             "the context call was refused",
@@ -799,18 +829,27 @@ async def test_chat_turn_survives_a_failed_context_call(config):
 async def test_settings_take_schema_defaults_and_harness_names_the_stored_state(config):
     schema = json.loads((_INTEGRATION_DIR / "_conf_schema.json").read_text(encoding="utf-8"))
     async with _running(_proactive_config(config)) as rig:
+        fields = {name: field for name, field in schema.items() if name != "bindings"}
+        assert schema["bindings"]["templates"]["companion"]["items"] == fields
         default = await rig.plugin()
-        assert default.base_url == schema["gateway_url"]["default"]
-        assert default.harness == schema["harness"]["default"] == "astrbot"
-        assert default.poll_interval_seconds == schema["poll_interval_seconds"]["default"]
-        assert default.proactive_enabled is schema["proactive_enabled"]["default"]
-        assert list(default.proactive_tool_keywords) == schema["proactive_tool_keywords"]["default"]
-        assert default.headers == {}
-        assert default.client.timeout == httpx.Timeout(schema["request_timeout_seconds"]["default"])
-        assert (await rig.plugin(request_timeout_seconds=90)).client.timeout == httpx.Timeout(90.0)
-        clamped = await rig.plugin(
-            request_timeout_seconds=0, poll_interval_seconds=1, harness="  ", gateway_url="http://gateway/"
-        )
+        (binding,) = default.bindings
+        assert binding.base_url == schema["gateway_url"]["default"]
+        assert binding.harness == schema["harness"]["default"] == "astrbot"
+        assert binding.poll_interval_seconds == schema["poll_interval_seconds"]["default"]
+        assert binding.proactive_enabled is schema["proactive_enabled"]["default"]
+        assert list(binding.proactive_tool_keywords) == schema["proactive_tool_keywords"]["default"]
+        assert binding.headers == {}
+        assert binding.client.timeout == httpx.Timeout(schema["request_timeout_seconds"]["default"])
+        longer = await rig.plugin(request_timeout_seconds=90)
+        assert longer.bindings[0].client.timeout == httpx.Timeout(90.0)
+        clamped = (
+            await rig.plugin(
+                request_timeout_seconds=0,
+                poll_interval_seconds=1,
+                harness="  ",
+                gateway_url="http://gateway/",
+            )
+        ).bindings[0]
         assert clamped.client.timeout == httpx.Timeout(1.0)
         assert (clamped.poll_interval_seconds, clamped.harness, clamped.base_url) == (
             5,
@@ -932,6 +971,113 @@ async def test_proactive_failures_acknowledge_failed_and_store_nothing(config):
         assert other.context.generations == []
         assert other.context.sent == []
         assert await rig.search("thinking") == []
+
+
+ALICE_URL = "http://alice:8765"
+BRUNO_URL = "http://bruno:8765"
+ALICE_ROUTE = "telegram-dusha:FriendMessage:alice-fan"
+BRUNO_ROUTE = "telegram-dusha:FriendMessage:bruno-fan"
+STRANGER_ROUTE = "telegram-dusha:FriendMessage:stranger"
+DISCORD_BRUNO_ROUTE = "discord-dusha:FriendMessage:bruno-fan"
+COMPANION_BINDINGS = [
+    {
+        "__template_key": "companion",
+        "gateway_url": ALICE_URL,
+        "config_profile": "Alice profile",
+        "harness": "alice-bot",
+    },
+    {
+        "__template_key": "companion",
+        "gateway_url": BRUNO_URL + "/",
+        "platform_id": PLATFORM,
+        "config_profile": "conf-b",
+        "api_token": "bruno-secret",
+    },
+]
+
+
+def _companion_config(config, tmp_path, name, token=""):
+    companion = copy.deepcopy(_proactive_config(config))
+    companion.home = companion.data_dir = tmp_path / name
+    companion.data_dir.mkdir()
+    companion.api_token = token
+    return companion
+
+
+def _event(route, text="hello", message_id="m-1"):
+    return AstrMessageEvent(route.partition(":")[0], route, text=text, message_id=message_id)
+
+
+async def test_config_profiles_reach_their_own_companion_gateway(config, tmp_path):
+    alice_config = _companion_config(config, tmp_path, "alice")
+    bruno_config = _companion_config(config, tmp_path, "bruno", token="bruno-secret")
+    profiles = {
+        ALICE_ROUTE: ("conf-a", "Alice profile"),
+        BRUNO_ROUTE: ("conf-b", "Bruno profile"),
+        DISCORD_BRUNO_ROUTE: ("conf-b", "Bruno profile"),
+    }
+    async with _running(alice_config) as alice, _running(bruno_config) as bruno:
+        apps = {ALICE_URL: alice.app, BRUNO_URL: bruno.app}
+        bruno.http.headers["X-Companion-Token"] = "bruno-secret"
+        context = Context(profiles=dict(profiles))
+        plugin = await alice.plugin(context=context, platform_id="", apps=apps, bindings=COMPANION_BINDINGS)
+        assert [(item.base_url, item.harness) for item in plugin.bindings] == [
+            (ALICE_URL, "alice-bot"),
+            (BRUNO_URL, "astrbot"),
+        ]
+
+        companions = (
+            (ALICE_ROUTE, alice, "alice", "water the ferns", "tune the cello"),
+            (BRUNO_ROUTE, bruno, "bruno", "tune the cello", "water the ferns"),
+        )
+        for route, rig, _, memo, _ in companions:
+            assert (await _tool(plugin, "yumecho_add", _event(route), text=memo))["ok"] is True
+            assert [item["text"] for item in await rig.memos()] == [memo]
+        for route, _, name, memo, other in companions:
+            await _chat(plugin, f"note for {memo}", "m-1", reply=f"noted {memo}", route=route)
+            prompt = (await _chat(plugin, f"what about {memo}", "m-2", route=route)).system_prompt
+            assert memo in prompt and other not in prompt
+            assert f" {name}] noted {memo}" in prompt
+        assert {item["harness"] for item in await alice.search("ferns")} == {"alice-bot"}
+        assert {item["harness"] for item in await bruno.search("cello")} == {"astrbot"}
+        assert await alice.search("cello") == [] and await bruno.search("ferns") == []
+
+        calls = {url: len(gateway.calls) for url, gateway in plugin.gateways.items()}
+        for route in (STRANGER_ROUTE, DISCORD_BRUNO_ROUTE):
+            event = _event(route, text="a secret for nobody")
+            assert await _tool(plugin, "yumecho_add", event, text="never stored") == ROUTING_ERROR
+            request = ProviderRequest("a secret for nobody", func_tool=ToolSet(TOOL_CALLS))
+            await plugin.add_state_context(event, request)
+            assert (request.system_prompt, request.func_tool.tools) == ("persona", [])
+            await plugin.store_response(event, LLMResponse("a reply for nobody"))
+        assert {url: len(gateway.calls) for url, gateway in plugin.gateways.items()} == calls
+
+        for rig in (alice, bruno):
+            _backdate(rig.app, utc_now() - timedelta(hours=4, minutes=5))
+            assert (await rig.json("POST", "/state/v1/proactive/evaluate"))["event"] is not None
+        await _poll_until(plugin, "/ack", list(plugin.gateways.values()))
+        assert sorted(context.sent) == [(ALICE_ROUTE, NUDGE), (BRUNO_ROUTE, NUDGE)]
+        for rig, harness, route in ((alice, "alice-bot", ALICE_ROUTE), (bruno, "astrbot", BRUNO_ROUTE)):
+            stored = [item for item in await rig.search("thinking") if item["role"] == "assistant"]
+            assert [(item["harness"], item["route"]) for item in stored] == [(harness, route)]
+
+        rerouted = Context(profiles={**profiles, ALICE_ROUTE: ("conf-b", "Bruno profile")})
+        moved = await alice.plugin(context=rerouted, platform_id="", apps=apps, bindings=COMPANION_BINDINGS)
+        _backdate(alice.app, utc_now() - timedelta(hours=8, minutes=5))
+        event = (await alice.json("POST", "/state/v1/proactive/evaluate"))["event"]
+        assert event["target"]["route"] == ALICE_ROUTE
+        logger.messages.clear()
+        await _poll_until(moved, "/ack", [moved.gateways[ALICE_URL]])
+        assert rerouted.sent == [] and rerouted.generations == []
+        assert logger.messages == [
+            "[dusha] Proactive delivery failed: event target is not routed to this companion"
+        ]
+        assert moved.gateways[ALICE_URL].calls[-1] == (
+            "POST",
+            f"/state/v1/proactive/events/{event['id']}/ack",
+            200,
+        )
+        assert (await alice.json("GET", "/state/v1/affect"))["unanswered_proactive"] == 1
 
 
 AVAILABLE_TOOLS = (

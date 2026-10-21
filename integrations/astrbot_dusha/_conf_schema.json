@@ -5,7 +5,12 @@
     "default": "http://127.0.0.1:8765"
   },
   "platform_id": {
-    "description": "Exact AstrBot platform ID allowed to use this gateway. Run /sid on the selected bot and copy Bot ID. An empty value disables routing.",
+    "description": "Exact AstrBot platform ID allowed to use this gateway. Run /sid on the selected bot and copy Bot ID. Empty matches every platform when config_profile is set.",
+    "type": "string",
+    "default": ""
+  },
+  "config_profile": {
+    "description": "AstrBot config profile ID or name allowed to use this gateway. Empty matches every profile. Leave both this and platform_id empty to disable this companion.",
     "type": "string",
     "default": ""
   },
@@ -38,6 +43,70 @@
   "proactive_tool_keywords": {
     "description": "Proactive messages can call the gateway tools plus every AstrBot tool whose name contains one of these words. Matching ignores case. With an empty list, proactive messages get the gateway tools and nothing else.",
     "type": "list",
-    "default": ["donsetch", "fetch"]
+    "default": [
+      "donsetch",
+      "fetch"
+    ]
+  },
+  "bindings": {
+    "description": "Extra companions, each with its own gateway. The first companion that matches a chat serves it, and the settings above serve chats that none of these match.",
+    "type": "template_list",
+    "templates": {
+      "companion": {
+        "name": "Companion",
+        "items": {
+          "gateway_url": {
+            "description": "Dusha URL",
+            "type": "string",
+            "default": "http://127.0.0.1:8765"
+          },
+          "platform_id": {
+            "description": "Exact AstrBot platform ID allowed to use this gateway. Run /sid on the selected bot and copy Bot ID. Empty matches every platform when config_profile is set.",
+            "type": "string",
+            "default": ""
+          },
+          "config_profile": {
+            "description": "AstrBot config profile ID or name allowed to use this gateway. Empty matches every profile. Leave both this and platform_id empty to disable this companion.",
+            "type": "string",
+            "default": ""
+          },
+          "api_token": {
+            "description": "Value for X-Companion-Token",
+            "type": "string",
+            "default": "",
+            "obvious_hint": true
+          },
+          "harness": {
+            "description": "Harness name sent to the gateway. The gateway keys stored conversations and proactive events by this name. Keep the default once conversations exist. After a rename every chat starts with empty recent history, and the plugin stops receiving proactive events queued under the old name.",
+            "type": "string",
+            "default": "astrbot"
+          },
+          "request_timeout_seconds": {
+            "description": "Seconds to wait for one gateway response. Message storage runs plugin hooks in the gateway process. Values below 1 clamp to 1.",
+            "type": "float",
+            "default": 60.0
+          },
+          "poll_interval_seconds": {
+            "description": "Proactive event poll interval",
+            "type": "int",
+            "default": 30
+          },
+          "proactive_enabled": {
+            "description": "Poll and send proactive events",
+            "type": "bool",
+            "default": true
+          },
+          "proactive_tool_keywords": {
+            "description": "Proactive messages can call the gateway tools plus every AstrBot tool whose name contains one of these words. Matching ignores case. With an empty list, proactive messages get the gateway tools and nothing else.",
+            "type": "list",
+            "default": [
+              "donsetch",
+              "fetch"
+            ]
+          }
+        }
+      }
+    },
+    "default": []
   }
 }

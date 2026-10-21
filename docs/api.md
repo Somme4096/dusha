@@ -263,13 +263,19 @@ Restart AstrBot or reload the plugin from its manager. Keep AstrBot's chat provi
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `gateway_url` | `http://127.0.0.1:8765` | |
-| `platform_id` | `""` | AstrBot platform ID allowed to use the gateway. Empty disables the plugin. Run `/sid` through your Discord bot and copy its `Bot ID`. |
+| `platform_id` | `""` | AstrBot platform ID allowed to use the gateway. Run `/sid` through your Discord bot and copy its `Bot ID`. |
+| `config_profile` | `""` | AstrBot config profile ID or name allowed to use the gateway. With `platform_id` also set, a chat must match both. With both empty, these settings serve no chat. |
 | `api_token` | `""` | The gateway's API token, when auth is on. |
 | `harness` | `astrbot` | Harness name sent to the gateway. A rename starts each chat with empty recent history. |
 | `request_timeout_seconds` | `60` | Minimum 1. Message storage runs plugin hooks in the gateway process. |
 | `poll_interval_seconds` | `30` | Seconds between proactive polls. Minimum 5. |
 | `proactive_enabled` | `true` | |
 | `proactive_tool_keywords` | `["donsetch", "fetch"]` | AstrBot tools whose names contain a keyword join proactive generation. |
+| `bindings` | `[]` | Extra companions. Each entry takes every field above. |
+
+### Several companions
+
+Run one gateway per companion, each with its own home and port. In AstrBot, route each chat to a config profile, then add one `bindings` entry per companion with that profile in `config_profile` and that gateway in `gateway_url`. The first entry that matches a chat serves it, and the top-level settings serve chats no entry matches. Each companion polls its own gateway for proactive events and acknowledges an event as failed when AstrBot now routes its chat to another companion. Give each config profile its own persona, since proactive messages use the persona of the target chat.
 
 ### Tools
 

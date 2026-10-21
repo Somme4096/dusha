@@ -4,7 +4,7 @@ import asyncio
 import contextlib
 import hashlib
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +16,7 @@ from astrbot.api.provider import LLMResponse, ProviderRequest
 from astrbot.core.config.astrbot_config import AstrBotConfig
 
 from .rendering import MARKERS, render_bridge, render_turn
-from .routing import accepts_platform, platform_id_from_umo
+from .routing import accepts_route, platform_id_from_umo
 
 GATEWAY_TOOL_NAMES = (
     "remember_evergreen_fact",
@@ -31,7 +31,7 @@ GATEWAY_TOOL_NAMES = (
 )
 
 _SCHEMA = json.loads((Path(__file__).parent / "_conf_schema.json").read_text(encoding="utf-8"))
-SETTING_DEFAULTS = {name: field["default"] for name, field in _SCHEMA.items()}
+SETTING_DEFAULTS = {name: field["default"] for name, field in _SCHEMA.items() if name != "bindings"}
 
 PROACTIVE_YUMECHO_NOTE = (
     "Pending yumecho memos are in your context. If this message completes one, call "
@@ -39,46 +39,78 @@ PROACTIVE_YUMECHO_NOTE = (
 )
 
 
-class DushaPlugin(star.Star):
-    def __init__(self, context: star.Context, config: AstrBotConfig) -> None:
-        super().__init__(context)
-        self.config = config
-        self.base_url = str(self._setting("gateway_url")).rstrip("/")
-        self.platform_id = str(self._setting("platform_id")).strip()
-        self.harness = str(self._setting("harness")).strip() or SETTING_DEFAULTS["harness"]
-        self.poll_interval_seconds = max(5, int(self._setting("poll_interval_seconds")))
-        self.proactive_enabled = bool(self._setting("proactive_enabled"))
-        self.request_timeout_seconds = max(1.0, float(self._setting("request_timeout_seconds")))
-        keywords = self._setting("proactive_tool_keywords")
+def _routable(settings: Mapping[str, Any]) -> bool:
+    return any(str(settings.get(name) or "").strip() for name in ("platform_id", "config_profile"))
+
+
+class Binding:
+    def __init__(self, settings: Mapping[str, Any]) -> None:
+        def setting(name: str) -> Any:
+            return settings.get(name, SETTING_DEFAULTS[name])
+
+        self.base_url = str(setting("gateway_url")).rstrip("/")
+        self.platform_id = str(setting("platform_id")).strip()
+        self.config_profile = str(setting("config_profile")).strip()
+        self.harness = str(setting("harness")).strip() or SETTING_DEFAULTS["harness"]
+        self.poll_interval_seconds = max(5, int(setting("poll_interval_seconds")))
+        self.proactive_enabled = bool(setting("proactive_enabled"))
+        self.request_timeout_seconds = max(1.0, float(setting("request_timeout_seconds")))
+        keywords = setting("proactive_tool_keywords")
         if not isinstance(keywords, list):
             keywords = SETTING_DEFAULTS["proactive_tool_keywords"]
         # A blank keyword would match every tool name.
         self.proactive_tool_keywords = tuple(
             word for word in (str(item).strip().casefold() for item in keywords) if word
         )
-        token = str(self._setting("api_token"))
+        token = str(setting("api_token"))
         self.headers = {"X-Companion-Token": token} if token else {}
         self.client = httpx.AsyncClient(timeout=self.request_timeout_seconds)
         self.poll_task: asyncio.Task[None] | None = None
         self.latest_source_message_ids: dict[str, int] = {}
         self.companion_name = ""
 
-    def _setting(self, name: str) -> Any:
-        return self.config.get(name, SETTING_DEFAULTS[name])
+    def accepts(self, platform_id: str, profiles: Collection[str]) -> bool:
+        return accepts_route(self.platform_id, self.config_profile, platform_id, profiles)
+
+    async def post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        response = await self.client.post(self.base_url + path, headers=self.headers, json=payload)
+        response.raise_for_status()
+        return response.json()
+
+    async def get(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
+        response = await self.client.get(self.base_url + path, headers=self.headers, params=params)
+        response.raise_for_status()
+        return response.json()
+
+    def source_message_id(self, event: AstrMessageEvent) -> int | None:
+        return self.latest_source_message_ids.get(event.unified_msg_origin)
+
+
+class DushaPlugin(star.Star):
+    def __init__(self, context: star.Context, config: AstrBotConfig) -> None:
+        super().__init__(context)
+        self.config = config
+        extra = config.get("bindings", [])
+        settings = [item for item in extra if isinstance(item, dict)] if isinstance(extra, list) else []
+        self.bindings = [Binding(item) for item in [*settings, config] if _routable(item)]
 
     async def initialize(self) -> None:
-        if not self.platform_id:
-            logger.warning("[dusha] platform_id is empty. Gateway routing is disabled")
+        if not self.bindings:
+            logger.warning("[dusha] No companion sets platform_id or config_profile. Routing is disabled")
             return
-        if self.proactive_enabled and self.poll_task is None:
-            self.poll_task = asyncio.create_task(self._poll_loop(), name="dusha-poll")
+        for binding in self.bindings:
+            if binding.proactive_enabled and binding.poll_task is None:
+                binding.poll_task = asyncio.create_task(
+                    self._poll_loop(binding), name=f"dusha-poll-{binding.harness}"
+                )
 
     async def terminate(self) -> None:
-        if self.poll_task:
-            self.poll_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self.poll_task
-        await self.client.aclose()
+        for binding in self.bindings:
+            if binding.poll_task:
+                binding.poll_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await binding.poll_task
+            await binding.client.aclose()
 
     def _message_key(self, event: AstrMessageEvent, prefix: str) -> str:
         platform_id = getattr(event.message_obj, "message_id", "")
@@ -87,25 +119,24 @@ class DushaPlugin(star.Star):
         raw = f"{event.unified_msg_origin}:{event.created_at}:{event.get_message_str()}"
         return f"{prefix}:{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:24]}"
 
-    async def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-        response = await self.client.post(self.base_url + path, headers=self.headers, json=payload)
-        response.raise_for_status()
-        return response.json()
-
-    async def _get(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
-        response = await self.client.get(self.base_url + path, headers=self.headers, params=params)
-        response.raise_for_status()
-        return response.json()
-
     @staticmethod
     def _json(value: Any) -> str:
         return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
-    def _source_message_id(self, event: AstrMessageEvent) -> int | None:
-        return self.latest_source_message_ids.get(event.unified_msg_origin)
+    def _profiles(self, umo: str) -> set[str]:
+        manager = getattr(self.context, "astrbot_config_mgr", None)
+        try:
+            info = manager.get_conf_info(umo)
+        except Exception:
+            return set()
+        return {str(info.get(key) or "").strip() for key in ("id", "name")} - {""}
 
-    def _accepts(self, event: AstrMessageEvent) -> bool:
-        return accepts_platform(self.platform_id, event.get_platform_id())
+    def _binding(self, platform_id: str, umo: str) -> Binding | None:
+        profiles = self._profiles(umo) if any(item.config_profile for item in self.bindings) else set()
+        return next((item for item in self.bindings if item.accepts(platform_id, profiles)), None)
+
+    def _event_binding(self, event: AstrMessageEvent) -> Binding | None:
+        return self._binding(event.get_platform_id(), event.unified_msg_origin)
 
     @staticmethod
     def _remove_gateway_tools(req: ProviderRequest) -> None:
@@ -152,15 +183,16 @@ class DushaPlugin(star.Star):
             isinstance(item, dict) and item.get("role") in {"user", "assistant"} for item in history or []
         )
 
-    async def _companion_name(self) -> str:
-        if not self.companion_name:
+    @staticmethod
+    async def _companion_name(binding: Binding) -> str:
+        if not binding.companion_name:
             try:
-                health = await self._get("/health", {})
+                health = await binding.get("/health", {})
             except Exception as error:
                 logger.warning(f"[dusha] Companion name unavailable: {error}")
                 return "assistant"
-            self.companion_name = str(health.get("companion") or "") or "assistant"
-        return self.companion_name
+            binding.companion_name = str(health.get("companion") or "") or "assistant"
+        return binding.companion_name
 
     @staticmethod
     def _tool_error(error: Exception, fallback: str) -> str:
@@ -177,27 +209,28 @@ class DushaPlugin(star.Star):
         self,
         event: AstrMessageEvent,
         fallback: str,
-        operation: Callable[[], Awaitable[dict[str, Any]]],
-        prepare: Callable[[], str | None] | None = None,
+        operation: Callable[[Binding], Awaitable[dict[str, Any]]],
+        prepare: Callable[[Binding], str | None] | None = None,
     ) -> str:
         """Run one gateway tool body under the shared routing guard and error mapping.
 
-        The routing guard runs first so a rejected platform short-circuits before
-        any payload or validation work. ``prepare`` then runs outside the error
-        handler; a non-None return value is serialized as-is (used for local
+        The routing guard runs first so a chat no companion serves short-circuits
+        before any payload or validation work. ``prepare`` then runs outside the error
+        handler. A non-None return value is serialized as-is (used for local
         validation results), while an exception raised there propagates to the
-        caller unchanged. ``operation`` performs the request and returns the
-        response payload; ``ok`` is prepended to it on success. Request errors
-        are logged and mapped to the standard tool error JSON response.
+        caller unchanged. ``operation`` performs the request against the matched
+        companion and returns the response payload. ``ok`` is prepended to it on
+        success. Request errors are logged and mapped to the standard tool error JSON response.
         """
-        if not self._accepts(event):
+        binding = self._event_binding(event)
+        if binding is None:
             return self._routing_error()
         if prepare is not None:
-            prepared = prepare()
+            prepared = prepare(binding)
             if prepared is not None:
                 return prepared
         try:
-            return self._json({"ok": True, **(await operation())})
+            return self._json({"ok": True, **(await operation(binding))})
         except Exception as error:
             logger.warning(f"[dusha] {fallback.capitalize()}: {error}")
             return self._tool_error(error, fallback)
@@ -221,7 +254,8 @@ class DushaPlugin(star.Star):
 
     @filter.on_llm_request()
     async def add_state_context(self, event: AstrMessageEvent, req: ProviderRequest) -> None:
-        if not self._accepts(event):
+        binding = self._event_binding(event)
+        if binding is None:
             self._remove_gateway_tools(req)
             return
         prompt = req.prompt or event.get_message_str()
@@ -229,10 +263,10 @@ class DushaPlugin(star.Star):
             return
         exclude: list[int] = []
         try:
-            stored = await self._post(
+            stored = await binding.post(
                 "/state/v1/messages",
                 {
-                    "harness": self.harness,
+                    "harness": binding.harness,
                     "conversation_id": event.unified_msg_origin,
                     "route": event.unified_msg_origin,
                     "role": "user",
@@ -241,19 +275,19 @@ class DushaPlugin(star.Star):
                 },
             )
             exclude.append(int(stored["id"]))
-            self.latest_source_message_ids[event.unified_msg_origin] = exclude[0]
-            if len(self.latest_source_message_ids) > 1_024:
-                self.latest_source_message_ids.pop(next(iter(self.latest_source_message_ids)))
+            binding.latest_source_message_ids[event.unified_msg_origin] = exclude[0]
+            if len(binding.latest_source_message_ids) > 1_024:
+                binding.latest_source_message_ids.pop(next(iter(binding.latest_source_message_ids)))
         except Exception as error:
             # The previous turn's id would credit tool writes to the wrong message.
-            self.latest_source_message_ids.pop(event.unified_msg_origin, None)
+            binding.latest_source_message_ids.pop(event.unified_msg_origin, None)
             logger.warning(f"[dusha] Message archive failed: {error}")
         first_turn = self._first_turn(req)
         try:
-            context = await self._post(
+            context = await binding.post(
                 "/state/v1/context",
                 {
-                    "harness": self.harness,
+                    "harness": binding.harness,
                     "conversation_id": event.unified_msg_origin,
                     "query": prompt,
                     "exclude_message_ids": exclude,
@@ -263,7 +297,7 @@ class DushaPlugin(star.Star):
         except Exception as error:
             logger.warning(f"[dusha] Context unavailable: {error}")
             return
-        companion = await self._companion_name()
+        companion = await self._companion_name(binding)
         records = list(context.get("records", []))
         recent = [record for record in records if record.get("source") == "recent"]
         recalled = [record for record in records if record.get("source") != "recent"]
@@ -298,19 +332,19 @@ class DushaPlugin(star.Star):
         """
         payload: dict[str, Any] = {}
 
-        def prepare() -> None:
+        def prepare(binding: Binding) -> None:
             payload["key"] = key
             payload["text"] = text
             payload["priority"] = priority
             payload["reason"] = reason
-            source_message_id = self._source_message_id(event)
+            source_message_id = binding.source_message_id(event)
             if source_message_id is not None:
                 payload["source_message_id"] = source_message_id
             self._set_optional_time(payload, "review_after", review_after)
             self._set_optional_time(payload, "expires_at", expires_at)
 
-        async def operation() -> dict[str, Any]:
-            return await self._post("/state/v1/evergreen/facts", payload)
+        async def operation(binding: Binding) -> dict[str, Any]:
+            return await binding.post("/state/v1/evergreen/facts", payload)
 
         return await self._run_tool_call(event, "evergreen fact save failed", operation, prepare)
 
@@ -342,20 +376,20 @@ class DushaPlugin(star.Star):
         """
         payload: dict[str, Any] = {}
 
-        def prepare() -> None:
+        def prepare(binding: Binding) -> None:
             payload["expected_revision"] = expected_revision
             payload["text"] = text
             payload["reason"] = reason
             if priority >= 0:
                 payload["priority"] = priority
-            source_message_id = self._source_message_id(event)
+            source_message_id = binding.source_message_id(event)
             if source_message_id is not None:
                 payload["source_message_id"] = source_message_id
             self._set_optional_time(payload, "review_after", review_after)
             self._set_optional_time(payload, "expires_at", expires_at)
 
-        async def operation() -> dict[str, Any]:
-            return await self._post(f"/state/v1/evergreen/facts/{fact_id}/revisions", payload)
+        async def operation(binding: Binding) -> dict[str, Any]:
+            return await binding.post(f"/state/v1/evergreen/facts/{fact_id}/revisions", payload)
 
         return await self._run_tool_call(event, "evergreen fact revision failed", operation, prepare)
 
@@ -379,15 +413,15 @@ class DushaPlugin(star.Star):
         """
         payload: dict[str, Any] = {}
 
-        def prepare() -> None:
+        def prepare(binding: Binding) -> None:
             payload["expected_revision"] = expected_revision
             payload["reason"] = reason
-            source_message_id = self._source_message_id(event)
+            source_message_id = binding.source_message_id(event)
             if source_message_id is not None:
                 payload["source_message_id"] = source_message_id
 
-        async def operation() -> dict[str, Any]:
-            return await self._post(f"/state/v1/evergreen/facts/{fact_id}/forget", payload)
+        async def operation(binding: Binding) -> dict[str, Any]:
+            return await binding.post(f"/state/v1/evergreen/facts/{fact_id}/forget", payload)
 
         return await self._run_tool_call(event, "evergreen fact forget failed", operation, prepare)
 
@@ -409,8 +443,8 @@ class DushaPlugin(star.Star):
             limit(number): Maximum number of facts from 1 to 100.
         """
 
-        async def operation() -> dict[str, Any]:
-            return await self._get(
+        async def operation(binding: Binding) -> dict[str, Any]:
+            return await binding.get(
                 "/state/v1/evergreen/facts",
                 {
                     "due_only": due_only,
@@ -440,13 +474,13 @@ class DushaPlugin(star.Star):
             limit(number): Maximum number of matches from 1 to 10.
         """
 
-        def prepare() -> str | None:
+        def prepare(binding: Binding) -> str | None:
             if not query.strip():
                 return self._json({"ok": False, "error": "query is required"})
             return None
 
-        async def operation() -> dict[str, Any]:
-            result = await self._post(
+        async def operation(binding: Binding) -> dict[str, Any]:
+            result = await binding.post(
                 "/state/v1/memory/search",
                 {
                     "query": query,
@@ -481,8 +515,8 @@ class DushaPlugin(star.Star):
             context_messages(number): Nearby messages on each side, from 0 to 10.
         """
 
-        async def operation() -> dict[str, Any]:
-            result = await self._get(
+        async def operation(binding: Binding) -> dict[str, Any]:
+            result = await binding.get(
                 f"/state/v1/memory/{memory_id}",
                 {
                     "context_messages": max(0, min(context_messages, 10)),
@@ -510,8 +544,8 @@ class DushaPlugin(star.Star):
         """
         payload: dict[str, Any] = {"text": text}
 
-        async def operation() -> dict[str, Any]:
-            return await self._post("/state/v1/memo/add", payload)
+        async def operation(binding: Binding) -> dict[str, Any]:
+            return await binding.post("/state/v1/memo/add", payload)
 
         return await self._run_tool_call(event, "memo add failed", operation)
 
@@ -529,8 +563,8 @@ class DushaPlugin(star.Star):
             limit(number): Maximum number of memos from 1 to 500.
         """
 
-        async def operation() -> dict[str, Any]:
-            return await self._get(
+        async def operation(binding: Binding) -> dict[str, Any]:
+            return await binding.get(
                 "/state/v1/memo/list",
                 {"status": status, "limit": max(1, min(limit, 500))},
             )
@@ -553,28 +587,29 @@ class DushaPlugin(star.Star):
             reason(string): A short, non-empty reason for completing the memo.
         """
 
-        def prepare() -> str | None:
+        def prepare(binding: Binding) -> str | None:
             if not reason.strip():
                 return self._json({"ok": False, "error": "reason is required"})
             return None
 
-        async def operation() -> dict[str, Any]:
-            return await self._post(f"/state/v1/memo/{note_id}/done", {"reason": reason})
+        async def operation(binding: Binding) -> dict[str, Any]:
+            return await binding.post(f"/state/v1/memo/{note_id}/done", {"reason": reason})
 
         return await self._run_tool_call(event, "memo done failed", operation, prepare)
 
     @filter.on_llm_response()
     async def store_response(self, event: AstrMessageEvent, response: LLMResponse) -> None:
-        if not self._accepts(event):
+        binding = self._event_binding(event)
+        if binding is None:
             return
         text = (response.completion_text or "").strip()
         if not text:
             return
         try:
-            await self._post(
+            await binding.post(
                 "/state/v1/messages",
                 {
-                    "harness": self.harness,
+                    "harness": binding.harness,
                     "conversation_id": event.unified_msg_origin,
                     "route": event.unified_msg_origin,
                     "role": "assistant",
@@ -589,26 +624,20 @@ class DushaPlugin(star.Star):
         except Exception as error:
             logger.warning(f"[dusha] Response archive failed: {error}")
 
-    async def _poll_loop(self) -> None:
+    async def _poll_loop(self, binding: Binding) -> None:
         while True:
             try:
-                response = await self.client.get(
-                    self.base_url + "/state/v1/proactive/events",
-                    headers=self.headers,
-                    params={
-                        "consumer": self.harness,
-                        "harness": self.harness,
-                        "limit": 1,
-                    },
+                polled = await binding.get(
+                    "/state/v1/proactive/events",
+                    {"consumer": binding.harness, "harness": binding.harness, "limit": 1},
                 )
-                response.raise_for_status()
-                for event in response.json().get("events", []):
-                    await self._deliver(event)
+                for event in polled.get("events", []):
+                    await self._deliver(binding, event)
             except asyncio.CancelledError:
                 raise
             except Exception as error:
                 logger.warning(f"[dusha] Proactive poll failed: {error}")
-            await asyncio.sleep(self.poll_interval_seconds)
+            await asyncio.sleep(binding.poll_interval_seconds)
 
     async def _persona_prompt(self, route: str) -> str:
         conversation = None
@@ -672,11 +701,12 @@ class DushaPlugin(star.Star):
                     candidate = getattr(meta(), "id", None)
         return str(candidate).strip() if candidate else ""
 
-    def _is_proactive_tool(self, name: str) -> bool:
+    @staticmethod
+    def _is_proactive_tool(binding: Binding, name: str) -> bool:
         lowered = name.casefold()
-        return name in GATEWAY_TOOL_NAMES or any(word in lowered for word in self.proactive_tool_keywords)
+        return name in GATEWAY_TOOL_NAMES or any(word in lowered for word in binding.proactive_tool_keywords)
 
-    def _gateway_tool_set(self) -> Any:
+    def _gateway_tool_set(self, binding: Binding) -> Any:
         """Build the proactive ToolSet from gateway tools and keyword matches."""
         manager = getattr(self.context, "get_llm_tool_manager", None)
         tool_manager = manager() if callable(manager) else None
@@ -691,7 +721,7 @@ class DushaPlugin(star.Star):
 
         tools = ToolSet()
         for tool in full.tools:
-            if self._is_proactive_tool(tool.name):
+            if self._is_proactive_tool(binding, tool.name):
                 tools.add_tool(tool)
         return tools if not tools.empty() else None
 
@@ -819,24 +849,24 @@ class DushaPlugin(star.Star):
             raise last_error
         raise RuntimeError("no chat provider is available for proactive delivery")
 
-    async def _deliver(self, event: dict[str, Any]) -> None:
+    async def _deliver(self, binding: Binding, event: dict[str, Any]) -> None:
         route = str(event["target"]["route"])
         try:
-            if platform_id_from_umo(route) != self.platform_id:
-                raise RuntimeError("event target does not match the configured platform")
+            if self._binding(platform_id_from_umo(route), route) is not binding:
+                raise RuntimeError("event target is not routed to this companion")
             persona = await self._persona_prompt(route)
             if not persona:
                 raise RuntimeError("no AstrBot persona is configured for this session")
             provider_id = await self.context.get_current_chat_provider_id(route)
             context = event["context"]
             injection = render_turn(
-                context["context"], list(context.get("records", [])), await self._companion_name()
+                context["context"], list(context.get("records", [])), await self._companion_name(binding)
             )
             response = await self._generate_with_fallback(
                 str(event["generation_instruction"]) + "\n" + PROACTIVE_YUMECHO_NOTE,
                 persona + "\n" + injection,
                 provider_id,
-                tools=self._gateway_tool_set(),
+                tools=self._gateway_tool_set(binding),
                 event=self._proactive_event(route),
             )
             text = (response.completion_text or "").strip()
@@ -846,14 +876,14 @@ class DushaPlugin(star.Star):
             if not sent:
                 raise RuntimeError("AstrBot did not find the target platform")
             await self._archive_proactive_history(route, text, event)
-            await self._post(
+            await binding.post(
                 f"/state/v1/proactive/events/{event['id']}/ack",
-                {"consumer": self.harness, "outcome": "sent", "text": text},
+                {"consumer": binding.harness, "outcome": "sent", "text": text},
             )
         except Exception as error:
             logger.warning(f"[dusha] Proactive delivery failed: {error}")
             with contextlib.suppress(Exception):
-                await self._post(
+                await binding.post(
                     f"/state/v1/proactive/events/{event['id']}/ack",
-                    {"consumer": self.harness, "outcome": "failed", "error": str(error)},
+                    {"consumer": binding.harness, "outcome": "failed", "error": str(error)},
                 )
