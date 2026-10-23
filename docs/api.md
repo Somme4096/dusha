@@ -271,6 +271,7 @@ Restart AstrBot or reload the plugin from its manager. Keep AstrBot's chat provi
 | `poll_interval_seconds` | `30` | Seconds between proactive polls. Minimum 5. |
 | `proactive_enabled` | `true` | |
 | `proactive_tool_keywords` | `["donsetch", "fetch"]` | AstrBot tools whose names contain a keyword join proactive generation. |
+| `proactive_request_hooks` | `["astrbot_plugin_opencode_go_session"]` | AstrBot plugins whose LLM request and response hooks run for proactive generation, such as a session header injector. |
 | `bindings` | `[]` | Extra companions. Each entry takes every field above. |
 
 ### Several companions

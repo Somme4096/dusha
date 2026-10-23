@@ -62,6 +62,12 @@ class Binding:
         self.proactive_tool_keywords = tuple(
             word for word in (str(item).strip().casefold() for item in keywords) if word
         )
+        hooks = setting("proactive_request_hooks")
+        if not isinstance(hooks, list):
+            hooks = SETTING_DEFAULTS["proactive_request_hooks"]
+        self.proactive_request_hooks = frozenset(
+            name for name in (str(item).strip() for item in hooks) if name
+        )
         token = str(setting("api_token"))
         self.headers = {"X-Companion-Token": token} if token else {}
         self.client = httpx.AsyncClient(timeout=self.request_timeout_seconds)
@@ -742,6 +748,22 @@ class DushaPlugin(star.Star):
             logger.warning(f"[dusha] Proactive event unavailable: {error}")
             return None
 
+    async def _run_plugin_hooks(self, binding: Binding, kind: str, event: Any, payload: Any) -> None:
+        """Run the listed plugins' LLM hooks, which the pipeline skips for proactive calls."""
+        if event is None or not binding.proactive_request_hooks:
+            return
+        from astrbot.core.star.star import star_map
+        from astrbot.core.star.star_handler import EventType, star_handlers_registry
+
+        for handler in star_handlers_registry.get_handlers_by_event_type(getattr(EventType, kind)):
+            plugin = star_map.get(handler.handler_module_path)
+            if plugin is None or plugin.name not in binding.proactive_request_hooks:
+                continue
+            try:
+                await handler.handler(event, payload)
+            except Exception as error:
+                logger.warning(f"[dusha] Proactive {kind} hook of {plugin.name} failed: {error}")
+
     def _provider_instances(self) -> list[Any]:
         manager = getattr(self.context, "provider_manager", None)
         get_insts = getattr(manager, "get_insts", None) if manager is not None else None
@@ -862,13 +884,24 @@ class DushaPlugin(star.Star):
             injection = render_turn(
                 context["context"], list(context.get("records", [])), await self._companion_name(binding)
             )
-            response = await self._generate_with_fallback(
-                str(event["generation_instruction"]) + "\n" + PROACTIVE_YUMECHO_NOTE,
-                persona + "\n" + injection,
-                provider_id,
-                tools=self._gateway_tool_set(binding),
-                event=self._proactive_event(route),
+            hook_event = self._proactive_event(route)
+            request = ProviderRequest(
+                prompt=str(event["generation_instruction"]) + "\n" + PROACTIVE_YUMECHO_NOTE,
+                system_prompt=persona + "\n" + injection,
+                session_id=route,
             )
+            await self._run_plugin_hooks(binding, "OnLLMRequestEvent", hook_event, request)
+            response = LLMResponse(role="err")
+            try:
+                response = await self._generate_with_fallback(
+                    request.prompt or "",
+                    request.system_prompt,
+                    provider_id,
+                    tools=self._gateway_tool_set(binding),
+                    event=hook_event,
+                )
+            finally:
+                await self._run_plugin_hooks(binding, "OnLLMResponseEvent", hook_event, response)
             text = (response.completion_text or "").strip()
             if not text:
                 raise RuntimeError("the provider returned an empty message")

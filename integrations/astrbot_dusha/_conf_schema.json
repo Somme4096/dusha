@@ -48,6 +48,13 @@
       "fetch"
     ]
   },
+  "proactive_request_hooks": {
+    "description": "Proactive messages run the LLM request and response hooks of these AstrBot plugins, such as a plugin that adds a session header to provider requests. Hooks of other plugins never run for proactive messages.",
+    "type": "list",
+    "default": [
+      "astrbot_plugin_opencode_go_session"
+    ]
+  },
   "bindings": {
     "description": "Extra companions, each with its own gateway. The first companion that matches a chat serves it, and the settings above serve chats that none of these match.",
     "type": "template_list",
@@ -102,6 +109,13 @@
             "default": [
               "donsetch",
               "fetch"
+            ]
+          },
+          "proactive_request_hooks": {
+            "description": "Proactive messages run the LLM request and response hooks of these AstrBot plugins, such as a plugin that adds a session header to provider requests. Hooks of other plugins never run for proactive messages.",
+            "type": "list",
+            "default": [
+              "astrbot_plugin_opencode_go_session"
             ]
           }
         }

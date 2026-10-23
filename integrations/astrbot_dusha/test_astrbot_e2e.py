@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import copy
 import importlib.util
 import json
@@ -48,13 +49,34 @@ class MessageChain:
 
 
 class LLMResponse:
-    def __init__(self, completion_text=""):
-        self.completion_text = completion_text
+    def __init__(self, completion_text="", role="assistant"):
+        self.completion_text, self.role = completion_text, role
 
 
 class ProviderRequest:
-    def __init__(self, prompt="hello", system_prompt="persona", func_tool=None):
+    def __init__(self, prompt="hello", system_prompt="persona", func_tool=None, session_id=""):
         self.prompt, self.system_prompt, self.func_tool = prompt, system_prompt, func_tool
+        self.session_id = session_id
+
+
+class EventType:
+    OnLLMRequestEvent = "request"
+    OnLLMResponseEvent = "response"
+
+
+class _HandlerRegistry:
+    def __init__(self):
+        self.handlers = []
+
+    def get_handlers_by_event_type(self, event_type):
+        return [handler for handler in self.handlers if handler.event_type == event_type]
+
+    def add(self, plugin_name, event_type, function):
+        module_path = f"plugins.{plugin_name}.main"
+        star_map[module_path] = types.SimpleNamespace(name=plugin_name)
+        self.handlers.append(
+            types.SimpleNamespace(event_type=event_type, handler_module_path=module_path, handler=function)
+        )
 
 
 class AstrMessageEvent:
@@ -166,6 +188,11 @@ class _ConfigManager:
         return {"id": conf_id, "name": name, "path": f"{conf_id}.json"}
 
 
+star_map = {}
+star_handlers_registry = _HandlerRegistry()
+SESSION_HEADER = contextvars.ContextVar("session_header", default=None)
+
+
 class Context:
     def __init__(
         self,
@@ -192,7 +219,7 @@ class Context:
         return self.pinned
 
     async def llm_generate(self, **kwargs):
-        self.generations.append(kwargs)
+        self.generations.append({**kwargs, "session_header": SESSION_HEADER.get()})
         reply = self.replies.get(kwargs["chat_provider_id"], NUDGE)
         if isinstance(reply, Exception):
             raise reply
@@ -247,6 +274,12 @@ _STUBS = {
     "astrbot.core.exceptions": {"ProviderNotFoundError": ProviderNotFoundError},
     "astrbot.core.cron": {},
     "astrbot.core.cron.events": {"CronMessageEvent": CronMessageEvent},
+    "astrbot.core.star": {},
+    "astrbot.core.star.star": {"star_map": star_map},
+    "astrbot.core.star.star_handler": {
+        "EventType": EventType,
+        "star_handlers_registry": star_handlers_registry,
+    },
     "astrbot.core.platform": {},
     "astrbot.core.platform.message_session": {"MessageSession": MessageSession},
 }
@@ -838,6 +871,7 @@ async def test_settings_take_schema_defaults_and_harness_names_the_stored_state(
         assert binding.poll_interval_seconds == schema["poll_interval_seconds"]["default"]
         assert binding.proactive_enabled is schema["proactive_enabled"]["default"]
         assert list(binding.proactive_tool_keywords) == schema["proactive_tool_keywords"]["default"]
+        assert list(binding.proactive_request_hooks) == schema["proactive_request_hooks"]["default"]
         assert binding.headers == {}
         assert binding.client.timeout == httpx.Timeout(schema["request_timeout_seconds"]["default"])
         longer = await rig.plugin(request_timeout_seconds=90)
@@ -1156,6 +1190,74 @@ async def test_proactive_tool_loop_runs_gateway_tools_and_relaxes_missing_provid
         assert [(item["id"], item["reason"]) for item in archived] == [(memo["id"], "asked in the nudge")]
         assert [item["role"] for item in await rig.search("how did the interview go")] == ["assistant"]
         assert (await rig.json("GET", "/state/v1/affect"))["unanswered_proactive"] == 1
+
+
+HEADER_PLUGIN = "astrbot_plugin_opencode_go_session"
+
+
+@pytest.fixture
+def header_plugins():
+    calls = []
+
+    async def set_header(event, request):
+        calls.append(("set", event.unified_msg_origin, request.session_id))
+        request.system_prompt += "\nheader plugin was here"
+        SESSION_HEADER.set(f"session-{event.unified_msg_origin}")
+
+    async def clear_header(event, response):
+        calls.append(("clear", response.role, response.completion_text))
+        SESSION_HEADER.set(None)
+
+    async def unlisted(event, payload):
+        calls.append(("unlisted", event.unified_msg_origin, None))
+
+    async def broken(event, payload):
+        raise RuntimeError("hook exploded")
+
+    star_handlers_registry.add(HEADER_PLUGIN, EventType.OnLLMRequestEvent, set_header)
+    star_handlers_registry.add(HEADER_PLUGIN, EventType.OnLLMResponseEvent, clear_header)
+    star_handlers_registry.add("astrbot_plugin_affection", EventType.OnLLMRequestEvent, unlisted)
+    star_handlers_registry.add("broken_plugin", EventType.OnLLMRequestEvent, broken)
+    yield calls
+    star_handlers_registry.handlers.clear()
+    star_map.clear()
+
+
+async def test_proactive_generation_runs_listed_plugin_request_hooks(config, header_plugins):
+    async with _running(_proactive_config(config)) as rig:
+        context = Context(provider_ids=("prov", "backup"), replies={"prov": RuntimeError("Connection error")})
+        plugin = await rig.plugin(context=context)
+        await _due_event(rig, plugin, "m-1")
+        await _poll_until(plugin, "/ack")
+        assert [(item["chat_provider_id"], item["session_header"]) for item in context.generations] == [
+            ("prov", f"session-{ROUTE}"),
+            ("backup", f"session-{ROUTE}"),
+        ]
+        assert context.generations[0]["system_prompt"].endswith("\nheader plugin was here")
+        assert header_plugins == [("set", ROUTE, ROUTE), ("clear", "assistant", NUDGE)]
+        assert SESSION_HEADER.get() is None
+
+        header_plugins.clear()
+        logger.messages.clear()
+        failing = Context(replies={"prov": RuntimeError("Connection error")})
+        listed = await rig.plugin(context=failing, proactive_request_hooks=["broken_plugin", HEADER_PLUGIN])
+        await _due_event(rig, listed, "m-2", hours=6)
+        await _poll_until(listed, "/ack")
+        assert [item["session_header"] for item in failing.generations] == [f"session-{ROUTE}"]
+        assert header_plugins == [("set", ROUTE, ROUTE), ("clear", "err", "")]
+        assert (
+            "[dusha] Proactive OnLLMRequestEvent hook of broken_plugin failed: hook exploded"
+            in logger.messages
+        )
+        assert failing.sent == []
+
+        header_plugins.clear()
+        quiet = Context()
+        unhooked = await rig.plugin(context=quiet, proactive_request_hooks=[])
+        await _due_event(rig, unhooked, "m-3", hours=8)
+        await _poll_until(unhooked, "/ack")
+        assert [item["session_header"] for item in quiet.generations] == [None]
+        assert header_plugins == []
 
 
 async def test_plugin_state_survives_gateway_restart(config):
