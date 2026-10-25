@@ -75,7 +75,7 @@ curl -X POST http://127.0.0.1:8765/state/v1/context \
   -d '{"query":"Hello"}'
 ```
 
-The [proxy](api.md#proxy) sends the header for your harnesses. Put the token in `server.token` of `proxy.json`.
+The [proxy](api.md#proxy) sends the header for your harnesses. On another machine, put the token in `proxy.server.token`. On the same machine, the proxy reads `api_token` itself.
 
 With auth on:
 
@@ -122,9 +122,9 @@ dusha memory reindex
 | Startup fails on an unknown `api_token_env` field | Rename it to `api_token` and put the token value there. |
 | Startup fails on an unknown `memory_plugin` or `decision` field | Move the external plugin under [`plugins`](configuration.md#external-plugins) and `decision.increment` to `plugins.affect.increment`. |
 | Requests return `401` | Send `X-Companion-Token` with the token value. |
-| Startup fails on `upstream` or `api_openai` moved to `proxy.json` | Delete them from `config.json` and add a [profile](configuration.md#proxy) to `proxy.json` instead. Clients that used `/v1/...` on the server now use `http://127.0.0.1:8766/<profile>`. |
+| Startup fails on `upstream` or `api_openai` moved to `proxy.upstreams` | Delete them and add a [profile](configuration.md#proxy) under `proxy.upstreams` instead. Clients that used `/v1/...` on the server now use `http://127.0.0.1:8766/<profile>`. |
 | The proxy returns `502` | The provider is unreachable or timed out. Read the `detail`, then check the profile's `base_url`. |
-| The proxy forwards but nothing is stored | `GET /health` on the proxy shows `server.status`. Check `server.url` and `server.token` in `proxy.json`. |
+| The proxy forwards but nothing is stored | `GET /health` on the proxy shows `server.status`. Check `proxy.server.url` and `proxy.server.token`. |
 | Memory, fact, memo, affect, or proactive routes return `503` | The `detail` names the plugin. Remove its `"disabled": true`, or turn on the plugin it needs, and restart. Your stored rows are intact. |
 | Startup fails on an external plugin import or `apply` error | The traceback names the plugin directory and the failing module. Check that directory, its `[tool.dusha]` table in `pyproject.toml`, and the traceback. |
 | An external plugin stopped working after an upgrade | External plugins define `apply(ctx, config)` and name it in `[tool.dusha]`. See the [Plugin API](https://github.com/Somme4096/dusha#plugin-api). |

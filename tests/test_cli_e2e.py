@@ -300,19 +300,22 @@ def _get_json(url: str):
         return None
 
 
-def test_cli_proxy_creates_its_config_and_reaches_the_local_server(tmp_path: Path) -> None:
-    home = tmp_path / "dusha" / "edge"
-    created = _serve(tmp_path, "edge", command="proxy")
-    _, stderr = created.communicate(timeout=30)
-    assert created.returncode == 2
-    assert f"created {home / 'proxy.json'}" in stderr
-    assert "server.url is empty and no config.json" in stderr
-    generated = json.loads((home / "proxy.json").read_text(encoding="utf-8"))
-    assert generated["upstreams"] == {} and generated["port"] == 8766
-
+def test_cli_proxy_reaches_the_server_named_in_the_same_config(tmp_path: Path) -> None:
+    config = tmp_path / "dusha" / "edge" / "config.json"
     server_port, proxy_port = _free_port(), _free_port()
-    (home / "config.json").write_text(json.dumps({"port": server_port, "api_token": "t"}), encoding="utf-8")
-    (home / "proxy.json").write_text(json.dumps({**generated, "port": proxy_port}), encoding="utf-8")
+    first = _serve(tmp_path, "edge", command="proxy")
+    try:
+        _wait_for(config.is_file)
+    finally:
+        first.terminate()
+        _, stderr = first.communicate(timeout=10)
+    assert f"created {config}" in stderr
+    generated = json.loads(config.read_text(encoding="utf-8"))
+    assert generated["proxy"]["upstreams"] == {} and generated["proxy"]["port"] == 8766
+
+    generated.update(port=server_port, api_token="t")
+    generated["proxy"]["port"] = proxy_port
+    config.write_text(json.dumps(generated), encoding="utf-8")
     server = _serve(tmp_path, "edge")
     proxy = _serve(tmp_path, "edge", command="proxy")
     try:

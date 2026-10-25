@@ -38,22 +38,22 @@ Rules for the file:
 | `timezone` | `Asia/Taipei` | IANA zone for quiet hours and the daily limit. |
 | `api_token` | `""` | The API token. Empty turns auth off. See [Auth](guide.md#auth). |
 
-`upstream` and `api_openai` moved to [proxy.json](#proxy). Startup rejects them in `config.json`.
+`upstream` and `api_openai` moved to [proxy.upstreams](#proxy). Startup rejects them.
 
 ## Proxy
 
-`dusha proxy <name>` reads `proxy.json` from the companion home, found in the same order as `config.json`. The first run writes the file. The home can hold `config.json`, `proxy.json`, or both.
+`dusha proxy <name>` reads the `proxy` section of the same `config.json`. On a machine that only runs the proxy, the other sections keep their defaults and go unused.
 
 | Key | Default | Notes |
 | --- | --- | --- |
-| `host` | `127.0.0.1` | Must be a loopback address. The proxy has no auth of its own. |
-| `port` | `8766` | |
-| `server.url` | `""` | The server's base URL. Empty uses the `config.json` beside `proxy.json`, with its `host`, `port`, and `api_token`. |
-| `server.token` | `""` | The server's `api_token`. The file then holds a secret, so run `chmod 600` on it. |
-| `server.timeout_seconds` | `10` | |
-| `upstreams.<name>.base_url` | | Provider base URL, exactly as the harness would use it. |
-| `upstreams.<name>.headers` | `{}` | Headers set on every forwarded request. Values can hold `{conversation_id}` and `{env:NAME}`. A missing variable fails startup. |
-| `upstreams.<name>.timeout_seconds` | `120` | |
+| `proxy.host` | `127.0.0.1` | Must be a loopback address. The proxy has no auth of its own. |
+| `proxy.port` | `8766` | |
+| `proxy.server.url` | `""` | The server's base URL. Empty uses the server in the same file, with its `host`, `port`, and `api_token`. |
+| `proxy.server.token` | `""` | The server's `api_token`. The file then holds a secret, so run `chmod 600` on it. |
+| `proxy.server.timeout_seconds` | `10` | |
+| `proxy.upstreams.<name>.base_url` | | Provider base URL, exactly as the harness would use it. |
+| `proxy.upstreams.<name>.headers` | `{}` | Headers set on every forwarded request. Values can hold `{conversation_id}` and `{env:NAME}`. A missing variable fails startup. |
+| `proxy.upstreams.<name>.timeout_seconds` | `120` | |
 
 A profile name holds letters, digits, dots, dashes, and underscores, and cannot be `health`. See [Proxy](api.md#proxy) for how requests are routed.
 

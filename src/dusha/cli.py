@@ -11,14 +11,11 @@ import uvicorn
 from .api import create_app
 from .config import (
     CONFIG_FILE,
-    PROXY_FILE,
     companion_home,
     config_root,
     create_default_config,
-    create_default_proxy_config,
     list_companions,
     load_config,
-    load_proxy_config,
 )
 from .interfaces import CommandError, Commands
 from .proxy import create_proxy_app
@@ -69,18 +66,13 @@ def _command(argv: list[str]) -> tuple[argparse.Namespace, str | None]:
     return known, next((item for item in rest if not item.startswith("-")), None)
 
 
-def _config(args: argparse.Namespace, companion: str | None, serve: bool, proxy: bool = False) -> Any:
-    name, create, load = (
-        (PROXY_FILE, create_default_proxy_config, load_proxy_config)
-        if proxy
-        else (CONFIG_FILE, create_default_config, load_config)
-    )
+def _config(args: argparse.Namespace, companion: str | None, serve: bool) -> Any:
     try:
         if serve and args.config is None and (args.home or companion):
             home = Path(args.home).expanduser() if args.home else companion_home(companion)
-            if not (home / name).exists():
-                print(f"created {create(home)}", file=sys.stderr)
-        return load(args.config, home=args.home, companion=companion)
+            if not (home / CONFIG_FILE).exists():
+                print(f"created {create_default_config(home)}", file=sys.stderr)
+        return load_config(args.config, home=args.home, companion=companion)
     except (FileNotFoundError, ValueError) as error:
         print(error, file=sys.stderr)
         raise SystemExit(2) from error
@@ -95,10 +87,11 @@ def main(argv: list[str] | None = None) -> None:
         if args.command == "list":
             _print({"root": str(config_root()), "companions": list_companions()})
             return
-        proxy = args.command == "proxy"
-        cfg = _config(args, args.companion or args.serve_companion, serve=True, proxy=proxy)
-        app = create_proxy_app(cfg) if proxy else create_app(cfg)
-        uvicorn.run(app, host=cfg.host, port=cfg.port, log_level="info")
+        cfg = _config(args, args.companion or args.serve_companion, serve=True)
+        if args.command == "proxy":
+            uvicorn.run(create_proxy_app(cfg), host=cfg.proxy.host, port=cfg.proxy.port, log_level="info")
+        else:
+            uvicorn.run(create_app(cfg), host=cfg.host, port=cfg.port, log_level="info")
         return
     cfg = _config(known, known.companion, serve=False)
     service = CompanionService(cfg, commands)

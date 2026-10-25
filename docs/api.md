@@ -313,17 +313,19 @@ curl http://127.0.0.1:8765/health
 
 ## Proxy
 
-`dusha proxy <name>` runs on the machine with your harness and reads `proxy.json` from the companion home. The first run writes the file. It forwards model requests to your provider and makes the server calls from the [client flow](#client-flow) itself, so a harness only needs a base URL. Keys are in [configuration.md](configuration.md#proxy).
+`dusha proxy <name>` runs on the machine with your harness and reads the `proxy` section of the companion's `config.json`. The first run writes the file. It forwards model requests to your provider and makes the server calls from the [client flow](#client-flow) itself, so a harness only needs a base URL. Keys are in [configuration.md](configuration.md#proxy).
 
-Each entry under `upstreams` is a profile:
+Each entry under `proxy.upstreams` is a profile:
 
 ```json
 {
-  "server": {"url": "https://dusha.example.com", "token": "replace-with-the-server-api-token"},
-  "upstreams": {
-    "openai": {"base_url": "https://api.openai.com/v1"},
-    "llama": {"base_url": "http://127.0.0.1:8080/v1"},
-    "anthropic": {"base_url": "https://api.anthropic.com", "headers": {"x-api-key": "{env:ANTHROPIC_API_KEY}"}}
+  "proxy": {
+    "server": {"url": "https://dusha.example.com", "token": "replace-with-the-server-api-token"},
+    "upstreams": {
+      "openai": {"base_url": "https://api.openai.com/v1"},
+      "llama": {"base_url": "http://127.0.0.1:8080/v1"},
+      "anthropic": {"base_url": "https://api.anthropic.com", "headers": {"x-api-key": "{env:ANTHROPIC_API_KEY}"}}
+    }
   }
 }
 ```

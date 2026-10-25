@@ -15,7 +15,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 from starlette.background import BackgroundTask
 
-from .config import PLACEHOLDER, ProxyConfig, UpstreamProfile
+from .config import PLACEHOLDER, AppConfig, ProxyConfig, UpstreamProfile
 
 logger = logging.getLogger("dusha.proxy")
 
@@ -159,7 +159,8 @@ def _reply_from_stream(lines: list[str]) -> dict[str, Any] | None:
     return {"role": "assistant", "content": text} if text else None
 
 
-def create_proxy_app(cfg: ProxyConfig) -> FastAPI:
+def create_proxy_app(config: AppConfig) -> FastAPI:
+    cfg = config.proxy
     server = Server(cfg)
     upstreams = {
         name: httpx.AsyncClient(timeout=profile.timeout_seconds) for name, profile in cfg.upstreams.items()

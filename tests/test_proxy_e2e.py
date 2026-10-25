@@ -13,7 +13,7 @@ import pytest
 import uvicorn
 
 from dusha import api
-from dusha.config import load_proxy_config
+from dusha.config import load_config
 from dusha.proxy import create_proxy_app
 
 STREAM_CHUNKS = [
@@ -105,11 +105,11 @@ def server(config):
         yield url
 
 
-def _proxy_config(tmp_path: Path, raw: dict):
-    path = tmp_path / "proxy" / "proxy.json"
+def _proxy_config(tmp_path: Path, proxy: dict, **server):
+    path = tmp_path / "edge" / "config.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(raw), encoding="utf-8")
-    return load_proxy_config(path)
+    path.write_text(json.dumps({**server, "proxy": proxy}), encoding="utf-8")
+    return load_config(path)
 
 
 @asynccontextmanager
@@ -311,9 +311,9 @@ async def test_proxy_sends_the_server_token_itself(tmp_path, config, provider):
 @pytest.mark.parametrize(
     ("raw", "pattern"),
     [
-        ({"host": "0.0.0.0"}, "host must be a loopback address"),
-        ({"bogus": 1}, r"unknown top-level field\(s\)"),
-        ({"server": {"url": "remote:8765"}}, "server.url must be an http or https URL"),
+        ({"host": "0.0.0.0"}, "proxy.host must be one of"),
+        ({"bogus": 1}, r"unknown field\(s\) under proxy"),
+        ({"server": {"url": "remote:8765"}}, "proxy.server.url must be an http or https URL"),
         ({"upstreams": {"health": {"base_url": "https://a.invalid"}}}, "upstream name must be"),
         ({"upstreams": {"a": {"base_url": "a.invalid/v1"}}}, "upstreams.a.base_url must be an http"),
         ({"upstreams": {"a": {"base_url": "https://u:p@a.invalid"}}}, "must not carry credentials"),
@@ -323,7 +323,7 @@ async def test_proxy_sends_the_server_token_itself(tmp_path, config, provider):
         ({"upstreams": {"a": {"base_url": "https://a.invalid", "headers": {"x": "{env:DUSHA_NOPE}"}}}},
          "needs the environment variable DUSHA_NOPE"),
         ({"upstreams": {"a": {"base_url": "https://a.invalid", "region": "eu"}}},
-         r"unknown field\(s\) under upstreams.a"),
+         r"unknown field\(s\) under proxy.upstreams.a"),
     ],
 )
 def test_proxy_config_rejects_invalid_files(tmp_path, raw, pattern):
@@ -331,14 +331,9 @@ def test_proxy_config_rejects_invalid_files(tmp_path, raw, pattern):
         _proxy_config(tmp_path, {"server": {"url": "http://127.0.0.1:8765"}, **raw})
 
 
-def test_proxy_config_finds_a_local_server_beside_it(tmp_path):
-    home = tmp_path / "proxy"
-    home.mkdir()
-    with pytest.raises(ValueError, match="server.url is empty and no config.json"):
-        _proxy_config(tmp_path, {})
-    (home / "config.json").write_text(
-        json.dumps({"host": "0.0.0.0", "port": 9123, "api_token": "local-secret"}), encoding="utf-8"
-    )
-    cfg = _proxy_config(tmp_path, {})
+def test_proxy_config_defaults_to_the_server_in_the_same_file(tmp_path):
+    cfg = _proxy_config(tmp_path, {}, host="0.0.0.0", port=9123, api_token="local-secret").proxy
     assert (cfg.server.url, cfg.server.token) == ("http://127.0.0.1:9123", "local-secret")
     assert (cfg.host, cfg.port) == ("127.0.0.1", 8766)
+    remote = _proxy_config(tmp_path, {"server": {"url": "https://remote.invalid/"}}, api_token="x").proxy
+    assert (remote.server.url, remote.server.token) == ("https://remote.invalid", "")
