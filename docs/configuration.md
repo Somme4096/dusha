@@ -64,7 +64,7 @@ A profile name holds letters, digits, dots, dashes, and underscores, and cannot 
 Every part of the companion is a plugin under `plugins`, keyed by name. The built-in plugins are `identity`, `memory`, `evergreen`, `memo`, `affect`, and `proactive`. Any other name is an [external plugin](#external-plugins), which lives in a directory under `plugins_dir` and is imported into the gateway process. Messages are always stored. Earlier releases called these mods, and the old `mods_dir` key and `DUSHA_MODS_DIR` variable are no longer accepted.
 
 - Plugins run in the order you list them, which is also the order of their blocks in the injection. Built-in plugins you leave out keep their packaged order ahead of the ones you list.
-- `"disabled": true` turns a plugin off and keeps the rest of its settings. A plugin that is off leaves the injection, its routes return `503`, and its commands exit with `1`. Stored rows stay on disk.
+- `"disabled": true` turns a plugin off and keeps the rest of its settings. A plugin that is off leaves the injection, its routes return `503`, and its commands disappear from `dusha --help`. Stored rows stay on disk.
 - A plugin that needs a service another plugin provides stays inactive while that plugin is off. `proactive` needs `affect`.
 
 ```json
