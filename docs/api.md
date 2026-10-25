@@ -280,8 +280,6 @@ Run one gateway per companion, each with its own home and port. In AstrBot, rout
 
 Tools return JSON with `ok: true`, or `ok: false` plus `error` and, for HTTP failures, `status`.
 
-The OpenCode plugin in `integrations/opencode_dusha` adds an affect status tool and prefixes its tools with the companion name from `/health`, for example `dusha_affect_status`.
-
 ### Behavior
 
 On each turn the plugin:
