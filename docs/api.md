@@ -331,7 +331,7 @@ Each entry under `proxy.upstreams` is a profile:
 }
 ```
 
-In your harness, replace the provider base URL with `http://127.0.0.1:8766/<profile>`. The proxy appends the rest of the request path to the profile's `base_url` unchanged, so any `/v1` in the path belongs to the provider:
+In your harness, replace the provider base URL with `http://127.0.0.1:8766/<profile>`. The proxy appends the rest of the request path to the profile's `base_url` unchanged, so any `/v1` in the path belongs to the provider. When the base URL already ends in `/v1`, a leading `v1/` in the path is dropped instead of doubled. A model request goes to the profile's `endpoints` entry for its protocol when it has one:
 
 | Harness request | Forwarded to |
 | --- | --- |

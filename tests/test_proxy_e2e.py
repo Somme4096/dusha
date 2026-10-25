@@ -380,6 +380,42 @@ async def test_proxy_passes_other_paths_through_verbatim(tmp_path, server, provi
     assert _stored(server) == []
 
 
+async def test_proxy_sends_its_own_key_and_routes_each_protocol_to_its_endpoint(
+    tmp_path, server, provider, monkeypatch
+):
+    monkeypatch.setenv("DUSHA_STUB_KEY", "real-key")
+    base = f"http://{provider.host}"
+    upstreams = {
+        "mixed": {
+            "base_url": f"{base}/openai/v1",
+            "endpoints": {"messages": f"{base}/anthropic/v1"},
+            "key": "{env:DUSHA_STUB_KEY}",
+        },
+        "plain": {"base_url": f"{base}/plain/v1", "key": "plain-key", "auth": "x-api-key"},
+    }
+    cfg = _proxy_config(tmp_path, {"server": {"url": server}, "upstreams": upstreams})
+    dummy = {"Authorization": "Bearer dummy", "x-api-key": "dummy", "api-key": "dummy"}
+    app = create_proxy_app(cfg)
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://proxy") as client:
+            await _chat(client, [{"role": "user", "content": "Chat."}], dummy, "/mixed/chat/completions")
+            await client.post(
+                "/mixed/v1/messages", headers=dummy,
+                json={"model": "m", "max_tokens": 8, "messages": [{"role": "user", "content": "Claude."}]},
+            )
+            await client.get("/mixed/v1/models", headers=dummy)
+            await _chat(client, [{"role": "user", "content": "Plain."}], dummy, "/plain/chat/completions")
+    paths = [item["path"] for item in provider.seen]
+    names = ("authorization", "x-api-key", "api-key")
+    keys = [tuple(item["headers"].get(name) for name in names) for item in provider.seen]
+    assert paths == [
+        "/openai/v1/chat/completions", "/anthropic/v1/messages", "/openai/v1/models",
+        "/plain/v1/chat/completions",
+    ]
+    assert keys == [("Bearer real-key", None, None)] * 3 + [(None, "plain-key", None)]
+
+
 async def test_proxy_reports_unknown_profiles_and_passes_upstream_errors(tmp_path, server, provider):
     provider.status = 503
     async with _proxy(tmp_path, server, provider) as client:
@@ -463,6 +499,15 @@ async def test_proxy_sends_the_server_token_itself(tmp_path, config, provider, r
          "needs the environment variable DUSHA_NOPE"),
         ({"upstreams": {"a": {"base_url": "https://a.invalid", "region": "eu"}}},
          r"unknown field\(s\) under proxy.upstreams.a"),
+        ({"upstreams": {"a": {"base_url": "https://a.invalid", "endpoints": {"gemini": "https://g.invalid"}}}},
+         r"unknown field\(s\) under proxy.upstreams.a.endpoints"),
+        ({"upstreams": {"a": {"base_url": "https://a.invalid", "endpoints": {"chat": "g.invalid"}}}},
+         "endpoints.chat must be an http"),
+        ({"upstreams": {"a": {"base_url": "https://a.invalid", "auth": "basic"}}}, "auth must be one of"),
+        ({"upstreams": {"a": {"base_url": "https://a.invalid", "key": "{env:DUSHA_NOPE}"}}},
+         "key needs the environment variable DUSHA_NOPE"),
+        ({"upstreams": {"a": {"base_url": "https://a.invalid", "key": "{conversation_id}"}}},
+         r"key has an unknown placeholder"),
     ],
 )
 def test_proxy_config_rejects_invalid_files(tmp_path, raw, pattern):

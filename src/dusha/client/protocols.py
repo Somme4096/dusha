@@ -20,6 +20,8 @@ def _is(item: Any, **fields: Any) -> bool:
 
 
 class ChatCompletions:
+    kind = "chat"
+
     def transcript(self, body: dict[str, Any]) -> list[Any] | None:
         messages = body.get("messages")
         return messages if isinstance(messages, list) else None
@@ -122,6 +124,8 @@ def _asks(message: Any) -> bool:
 
 
 class AnthropicMessages:
+    kind = "messages"
+
     def transcript(self, body: dict[str, Any]) -> list[Any] | None:
         messages = body.get("messages")
         if not isinstance(messages, list):
@@ -223,6 +227,8 @@ def _responses_items(items: list[Any]) -> list[dict[str, Any]]:
 
 
 class OpenAIResponses:
+    kind = "responses"
+
     def transcript(self, body: dict[str, Any]) -> list[Any] | None:
         items = body.get("input")
         if isinstance(items, str):

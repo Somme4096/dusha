@@ -56,6 +56,9 @@ Rules for the file:
 | `proxy.upstreams.<name>.base_url` | | Provider base URL, exactly as the harness would use it. |
 | `proxy.upstreams.<name>.headers` | `{}` | Headers set on every forwarded request. Values can hold `{conversation_id}`, the matched conversation's name, and `{env:NAME}`. A missing variable fails startup. |
 | `proxy.upstreams.<name>.timeout_seconds` | `120` | |
+| `proxy.upstreams.<name>.key` | `""` | The provider key. The proxy then drops the harness's `authorization`, `x-api-key`, and `api-key` headers and sends this key itself, so the harness can use any dummy key. Can hold `{env:NAME}`. The file then holds a secret, so keep it at mode `600`. |
+| `proxy.upstreams.<name>.auth` | `bearer` | How `key` is sent: `bearer` as `Authorization: Bearer`, or `x-api-key`. |
+| `proxy.upstreams.<name>.endpoints` | `{}` | A base URL per protocol, keyed `chat`, `messages`, or `responses`. A protocol it leaves out goes to `base_url`. |
 
 A profile name holds letters, digits, dots, dashes, and underscores, and cannot be `health`. See [Proxy](api.md#proxy) for how requests are routed.
 

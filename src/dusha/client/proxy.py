@@ -38,6 +38,7 @@ _DROPPED_HEADERS = _ROUTING_HEADERS | {
     "upgrade",
     "x-companion-token",
 }
+_KEY_HEADERS = frozenset({"authorization", "x-api-key", "api-key"})
 _METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
 _KEPT = 256
 _FLUSH_SECONDS = 2.0
@@ -154,16 +155,24 @@ def _render(value: str, conversation_id: str) -> str:
 
 
 def _upstream_headers(request: Request, profile: Upstream, conversation_id: str) -> httpx.Headers:
-    headers = httpx.Headers(
-        {name: value for name, value in request.headers.items() if name not in _DROPPED_HEADERS}
-    )
+    dropped = _DROPPED_HEADERS | _KEY_HEADERS if profile.key else _DROPPED_HEADERS
+    headers = httpx.Headers({name: value for name, value in request.headers.items() if name not in dropped})
+    if profile.key:
+        key = _render(profile.key, conversation_id)
+        if profile.auth == "x-api-key":
+            headers["x-api-key"] = key
+        else:
+            headers["authorization"] = f"Bearer {key}"
     for name, value in profile.headers.items():
         headers[name] = _render(value, conversation_id)
     return headers
 
 
-def _upstream_url(request: Request, profile: Upstream, path: str) -> str:
-    url = f"{profile.base_url}/{path}"
+def _upstream_url(request: Request, profile: Upstream, path: str, kind: str | None) -> str:
+    base = profile.endpoints.get(kind, profile.base_url) if kind else profile.base_url
+    if base.endswith("/v1") and path.startswith("v1/"):
+        path = path.removeprefix("v1/")
+    url = f"{base}/{path}"
     return f"{url}?{request.url.query}" if request.url.query else url
 
 
@@ -215,12 +224,14 @@ def create_proxy_app(cfg: Settings) -> FastAPI:
             "upstreams": sorted(cfg.upstreams),
         }
 
-    async def send(request: Request, name: str, path: str, content: bytes, conversation_id: str):
+    async def send(
+        request: Request, name: str, path: str, content: bytes, conversation_id: str, kind: str | None = None
+    ):
         profile = cfg.upstreams[name]
         client = upstreams[name]
         upstream_request = client.build_request(
             request.method,
-            _upstream_url(request, profile, path),
+            _upstream_url(request, profile, path, kind),
             headers=_upstream_headers(request, profile, conversation_id),
             content=content,
         )
@@ -256,7 +267,7 @@ def create_proxy_app(cfg: Settings) -> FastAPI:
         messages = protocol.transcript(body) if isinstance(body, dict) else None
         if messages is None:
             named = request.headers.get("x-conversation-id", "")
-            return streamed(await send(request, name, path, raw, named))
+            return streamed(await send(request, name, path, raw, named, protocol.kind))
         turn = Turn(
             harness=request.headers.get("x-harness") or name,
             conversation_id=request.headers.get("x-conversation-id", ""),
@@ -264,8 +275,8 @@ def create_proxy_app(cfg: Settings) -> FastAPI:
             after=server.responses.get(protocol.previous(body)),
         )
         injection, conversation = await server.context(turn, messages)
-        forwarded = protocol.inject(body, injection) if injection else body
-        response = await send(request, name, path, json.dumps(forwarded).encode(), conversation)
+        forwarded = json.dumps(protocol.inject(body, injection) if injection else body).encode()
+        response = await send(request, name, path, forwarded, conversation, protocol.kind)
         if response.status_code >= 400:
             return streamed(response)
 
