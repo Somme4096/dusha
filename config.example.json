@@ -17,16 +17,6 @@
     "batch_size": 32,
     "failure_cooldown_seconds": 60
   },
-  "proxy": {
-    "host": "127.0.0.1",
-    "port": 8766,
-    "server": {
-      "url": "",
-      "token": "",
-      "timeout_seconds": 10
-    },
-    "upstreams": {}
-  },
   "plugins": {
     "identity": {},
     "memory": {

@@ -9,10 +9,11 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 
 from . import schema as _schema
+from .commands import CommandError, arg, option
 from .config import MemoryConfig
 from .database import Database
 from .hooks import Block, ContextRequest
-from .interfaces import CommandError, GatewayInput, call, errors
+from .interfaces import GatewayInput, call, errors
 from .serialization import compact_json
 from .timeutil import isoformat, parse_time, utc_now
 
@@ -374,21 +375,26 @@ def _routes(router: APIRouter, store: MemoryStore) -> None:
 
 
 def _commands(cli: Any, store: MemoryStore) -> None:
-    commands = cli.command("memory", "Inspect canonical memory").add_subparsers(
-        dest="memory_command", required=True
+    memory = cli.group("memory", "Inspect canonical memory")
+    memory.command(
+        "search",
+        lambda query, limit: {"results": store.search(query, limit)},
+        help="Search the archive",
+        args=[arg("query"), option("limit", int, default=8)],
     )
-    search = commands.add_parser("search")
-    search.add_argument("query")
-    search.add_argument("--limit", type=int, default=8)
-    search.set_defaults(run=lambda args: {"results": store.search(args.query, args.limit)})
-    show = commands.add_parser("show")
-    show.add_argument("message_id", type=int)
-    show.set_defaults(run=lambda args: _show(store, args.message_id))
-    recent = commands.add_parser("recent")
-    recent.add_argument("--limit", type=int, default=20)
-    recent.set_defaults(run=lambda args: {"messages": store.recent(limit=args.limit)})
-    reindex = commands.add_parser("reindex")
-    reindex.set_defaults(run=lambda args: _reindex(store))
+    memory.command(
+        "show",
+        lambda message_id: _show(store, message_id),
+        help="Show one message",
+        args=[arg("message_id", int)],
+    )
+    memory.command(
+        "recent",
+        lambda limit: {"messages": store.recent(limit=limit)},
+        help="Show the latest messages",
+        args=[option("limit", int, default=20)],
+    )
+    memory.command("reindex", lambda: _reindex(store), help="Rebuild the search index")
 
 
 def _show(store: MemoryStore, message_id: int) -> dict[str, Any]:

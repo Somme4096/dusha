@@ -7,21 +7,23 @@ dusha serve dusha
 ${EDITOR:-vi} ~/.config/dusha/dusha/config.json
 ```
 
-The generated file matches [config.example.json](../config.example.json) and lists every key. Omit a key to keep its default. Restart the service after an edit.
+The generated file matches [config.example.json](../config.example.json) and lists every server key. Its mode is `600`, readable only by you. Omit a key to keep its default. Restart the service after an edit.
 
 ## Which file loads
 
-A companion home is `$XDG_CONFIG_HOME/dusha/<name>/`, or `~/.config/dusha/<name>/` when `XDG_CONFIG_HOME` is unset. The service takes the first match:
+A companion home is `$XDG_CONFIG_HOME/dusha/<name>/`, or `~/.config/dusha/<name>/` when `XDG_CONFIG_HOME` is unset. `dusha serve`, `dusha proxy`, and every other command take the first match:
 
 1. `--config PATH`. The file's directory becomes the home.
 2. `--home DIR`
-3. `--companion NAME`, or the name after `dusha serve`
+3. `--companion NAME` (`-c NAME`), or the name after `dusha serve` or `dusha proxy`
 4. `DUSHA_HOME`
 5. `DUSHA_COMPANION`
 6. The single companion under the config root
 7. Packaged defaults, when no companion exists
 
-Startup fails when several companions exist and you select none, or when the selected home has no `config.json`. A name holds letters, digits, dots, dashes, and underscores.
+Startup fails when several companions exist and you select none, or when the selected home has no `config.json`. A name holds letters, digits, dots, dashes, and underscores. The exception is the first run of `dusha serve <name>` or `dusha proxy <name>`, which writes the file.
+
+Every command other than `serve`, `proxy`, and `list` talks to the companion's server over HTTP. It takes `proxy.server` from the selected file, and when `proxy.server.url` is empty, the server keys of the same file: `host`, `port`, and `api_token`.
 
 Rules for the file:
 
@@ -42,14 +44,14 @@ Rules for the file:
 
 ## Proxy
 
-`dusha proxy <name>` reads the `proxy` section of the same `config.json`. On a machine that only runs the proxy, the other sections keep their defaults and go unused.
+`dusha proxy <name>` reads the `proxy` section of the same `config.json`, and `dusha serve` ignores it. When `<name>` has no `config.json` on the machine, the first run asks for the server's URL and token and writes a file that holds only this section, with mode `600`. Add your profiles under `proxy.upstreams` afterwards. On the server's own machine, add the section to the existing file by hand.
 
 | Key | Default | Notes |
 | --- | --- | --- |
 | `proxy.host` | `127.0.0.1` | Must be a loopback address. The proxy has no auth of its own. |
 | `proxy.port` | `8766` | |
-| `proxy.server.url` | `""` | The server's base URL. Empty uses the server in the same file, with its `host`, `port`, and `api_token`. |
-| `proxy.server.token` | `""` | The server's `api_token`. The file then holds a secret, so run `chmod 600` on it. |
+| `proxy.server.url` | `""` | The server's base URL. Empty uses the server in the same file, with its `host`, `port`, and `api_token`. The other `dusha` commands use it too. |
+| `proxy.server.token` | `""` | The server's `api_token`. The file then holds a secret. The first run writes it with mode `600`, and a file you edit by hand needs `chmod 600`. |
 | `proxy.server.timeout_seconds` | `10` | |
 | `proxy.upstreams.<name>.base_url` | | Provider base URL, exactly as the harness would use it. |
 | `proxy.upstreams.<name>.headers` | `{}` | Headers set on every forwarded request. Values can hold `{conversation_id}`, the matched conversation's name, and `{env:NAME}`. A missing variable fails startup. |

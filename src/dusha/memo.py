@@ -6,6 +6,7 @@ from typing import Any
 from fastapi import APIRouter, Query
 
 from . import schema as _schema
+from .commands import arg, option
 from .config import MemoConfig
 from .database import Database
 from .hooks import Block, ContextRequest, render
@@ -167,15 +168,20 @@ def _routes(router: APIRouter, store: MemoStore) -> None:
 
 
 def _commands(cli: Any, store: MemoStore) -> None:
-    commands = cli.command("memo", "Manage agent memos").add_subparsers(dest="memo_command", required=True)
-    add = commands.add_parser("add")
-    add.add_argument("text")
-    add.set_defaults(run=lambda args: {"memo": store.add(args.text)})
-    listing = commands.add_parser("list")
-    listing.add_argument("--status", default="active", choices=["active", "archived"])
-    listing.add_argument("--limit", type=int, default=20)
-    listing.set_defaults(run=lambda args: {"memos": store.list(args.status, args.limit)})
-    done = commands.add_parser("done")
-    done.add_argument("note_id", type=int)
-    done.add_argument("reason")
-    done.set_defaults(run=lambda args: {"memo": store.done(args.note_id, args.reason)})
+    memo = cli.group("memo", "Manage agent memos")
+    memo.command("add", lambda text: {"memo": store.add(text)}, help="Add a memo", args=[arg("text")])
+    memo.command(
+        "list",
+        lambda status, limit: {"memos": store.list(status, limit)},
+        help="List memos, oldest first",
+        args=[
+            option("status", choices=("active", "archived"), default="active"),
+            option("limit", int, default=20),
+        ],
+    )
+    memo.command(
+        "done",
+        lambda note_id, reason: {"memo": store.done(note_id, reason)},
+        help="Archive a memo with the reason it is done",
+        args=[arg("note_id", int), arg("reason")],
+    )

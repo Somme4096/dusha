@@ -12,8 +12,9 @@ import httpx
 import pytest
 
 from dusha import api
+from dusha.client import settings
+from dusha.client.proxy import create_proxy_app
 from dusha.config import load_config
-from dusha.proxy import create_proxy_app
 
 STREAM_CHUNKS = [
     b'data: {"choices":[{"delta":{"content":"streamed "}}]}\n\n',
@@ -98,7 +99,7 @@ def _proxy_config(tmp_path: Path, proxy: dict, **server):
     path = tmp_path / "edge" / "config.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({**server, "proxy": proxy}), encoding="utf-8")
-    return load_config(path)
+    return settings.load(path)
 
 
 @asynccontextmanager
@@ -470,11 +471,22 @@ def test_proxy_config_rejects_invalid_files(tmp_path, raw, pattern):
 
 
 def test_proxy_config_defaults_to_the_server_in_the_same_file(tmp_path):
-    cfg = _proxy_config(tmp_path, {}, host="0.0.0.0", port=9123, api_token="local-secret").proxy
+    cfg = _proxy_config(tmp_path, {}, host="0.0.0.0", port=9123, api_token="local-secret")
     assert (cfg.server.url, cfg.server.token) == ("http://127.0.0.1:9123", "local-secret")
     assert (cfg.host, cfg.port) == ("127.0.0.1", 8766)
-    remote = _proxy_config(tmp_path, {"server": {"url": "https://remote.invalid/"}}, api_token="x").proxy
+    assert cfg.data_dir == tmp_path / "edge" / "data"
+    remote = _proxy_config(tmp_path, {"server": {"url": "https://remote.invalid/"}}, api_token="x")
     assert (remote.server.url, remote.server.token) == ("https://remote.invalid", "")
+
+
+def test_server_config_leaves_the_proxy_section_to_the_client(tmp_path):
+    upstream = {"base_url": "https://a.invalid", "headers": {"x": "{env:DUSHA_NOPE}"}}
+    path = tmp_path / "config.json"
+    raw = {"data_dir": str(tmp_path / "data"), "proxy": {"upstreams": {"a": upstream}}}
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    assert load_config(path).port == 8765
+    with pytest.raises(ValueError, match="needs the environment variable DUSHA_NOPE"):
+        settings.load(path)
 
 
 def _texts(server_url):

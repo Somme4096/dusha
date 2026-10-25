@@ -31,7 +31,7 @@ Want it running in the background? Use [deploy/dusha@.service](https://github.co
 
 `user message → dusha → injects context → your model → reply → (harness, dusha)`
 
-`dusha serve` is the server that holds the soul, and it can live on another machine. `dusha proxy` runs next to your harness. Point the harness's provider base URL at `http://127.0.0.1:8766/<profile>` and the proxy stores each message, adds the context to the latest user message, and forwards the request to your provider, see [proxy](https://github.com/Somme4096/dusha/blob/main/docs/api.md#proxy). `dusha mcp` gives the harness the memory, evergreen, and memo tools, see [MCP](https://github.com/Somme4096/dusha/blob/main/docs/api.md#mcp). While the server is away, both keep what they can in an outbox and send it later. Chat platforms that need proactive messages, such as AstrBot, use a plugin that calls the server directly.
+`dusha serve` is the server that holds the soul, and it can live on another machine. `dusha proxy <name>` is the client and runs next to your harness. Its first run asks for the server's URL and token and saves them. Point the harness's provider base URL at `http://127.0.0.1:8766/<profile>` and the proxy stores each message, adds the context to the latest user message, and forwards the request to your provider, see [proxy](https://github.com/Somme4096/dusha/blob/main/docs/api.md#proxy). The server also gives the harness the memory, evergreen, and memo tools over MCP at `/mcp`, see [MCP](https://github.com/Somme4096/dusha/blob/main/docs/api.md#mcp). While the server is away, the proxy keeps the conversation in an outbox and sends it later. Chat platforms that need proactive messages, such as AstrBot, use a plugin that calls the server directly.
 
 <details>
 <summary>How does memory/affect/identity work in Dusha?</summary>
@@ -73,12 +73,45 @@ The module defines `apply(ctx, config)`, which runs at startup. `config` is the 
 | `ctx.emit(event, ...)` | Calls every active plugin listening for `event`, including this plugin's own listeners. |
 | `ctx.collect(event, ...)` | Calls every listener and returns `{"<plugin>": <first non-null result>}` under each plugin's name. |
 | `ctx.api` | The gateway's FastAPI router. Mount routes on it exactly as a built-in plugin does. |
-| `ctx.cli` | The gateway's argparse command registry. Register commands on it exactly as a built-in plugin does. |
+| `ctx.cli` | The gateway's command registry. `ctx.cli.group(name, help)` returns a group, and `group.command(name, handler, help=..., args=[...])` adds `dusha <group> <name>`, see [Commands](#commands). |
 | `ctx.<service>.<method>(...)` | Calls a method of an injected service and returns its result: `messages` (`get`, `recent`, `search`, `context`, `after`), `companion` (`ingest_message`, `build_context`, `latest_route`), `affect` (`status`), `evergreen` (`remember`, `revise`, `forget`, `list_current`, `history`), `memo` (`add`, `list`, `done`), `proactive` (`evaluate`, `poll`, `acknowledge`). |
 
 Services provided by an external plugin are consumed by other plugins through `inject`, and they are direct Python objects.
 
 The first `emotion` in `plugins` order wins. `deltas` from every plugin merge and apply after the increment. Dimension names come from your `emotions.json`.
+
+### Commands
+
+A command runs on the server. `dusha` on any machine fetches the server's command list and builds the command from it, so a plugin's commands work wherever you run `dusha -c <name>`. Describe the arguments with `arg` and `option` from `dusha.commands`:
+
+```python
+from dusha.commands import arg, option
+
+
+def apply(ctx, config):
+    notes = ctx.cli.group("notes", "Manage notes")
+    notes.command(
+        "add",
+        lambda text, pinned, tags: {"note": save(text, pinned, tags)},
+        help="Add a note",
+        args=[arg("text"), option("pinned", bool), option("tags", repeated=True)],
+    )
+```
+
+`dusha notes add "Buy tea" --pinned --tags home --tags errand` sends the values to the server as JSON and prints the handler's return value as JSON.
+
+| Helper | Makes |
+| --- | --- |
+| `arg(name, type=str, help="", choices=(), optional=False, repeated=False)` | A positional argument. |
+| `option(name, type=str, help="", default=None, choices=(), required=False, repeated=False)` | `--name`, with each underscore as a dash. A `bool` option is a flag. |
+
+- `type` is `str`, `int`, `float`, or `bool`. `choices` limits a value to a list of strings.
+- The handler receives every argument by name. A value the caller leaves out arrives as its `default`.
+- The server checks names and types before the handler runs. Check rules that span arguments, such as two flags that exclude each other, in the handler.
+- Raise `CommandError` from `dusha.commands`, `ValueError`, or `KeyError` to fail the command. `dusha` prints the message and exits with `1`.
+- `ctx.cli.command(name, handler, ...)` adds a top-level command, as core does for `health` and `backup`. `serve`, `proxy`, `list`, and `plugins` are taken.
+- A disabled plugin registers nothing, so `dusha --help` leaves its commands out and running one ends in `No such command`.
+- `dusha` keeps the last command list per server, so `--help` works while the server is down.
 
 ## Documentation
 

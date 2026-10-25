@@ -411,9 +411,9 @@ def apply(ctx: Any, config: AffectConfig) -> None:
     ctx.on("context", engine.on_context)
     ctx.on_dispose(engine.close)
     _routes(ctx.api, engine)
-    commands = ctx.cli.command("affect", "Inspect affect")
-    commands = commands.add_subparsers(dest="affect_command", required=True)
-    commands.add_parser("show").set_defaults(run=lambda args: engine.status())
+    ctx.cli.group("affect", "Inspect affect").command(
+        "show", engine.status, help="Show the affect state and advance decay"
+    )
 
 
 def _routes(router: APIRouter, engine: AffectEngine) -> None:

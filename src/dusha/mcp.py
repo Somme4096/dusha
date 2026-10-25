@@ -1,187 +1,233 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from importlib import metadata as _metadata
-from typing import IO, Any
+from typing import Any
+from urllib.parse import urlsplit
 
-import httpx
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import JSONResponse, Response
 
-from .config import AppConfig
-from .outbox import Outbox
+from .commands import Arg, CommandError, arg, message, option, validate
+from .evergreen import REVISE_ARGS, revision
 
 logger = logging.getLogger("dusha.mcp")
 
-PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
+PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26")
+LOOPBACK = frozenset({"localhost", "127.0.0.1", "::1"})
 
 
 @dataclass(frozen=True, slots=True)
 class Tool:
     name: str
+    plugin: str
     description: str
-    method: str
-    path: str
-    properties: dict[str, Any]
-    required: tuple[str, ...] = ()
-    queued: bool = False
-    path_params: tuple[str, ...] = ()
+    run: Callable[..., Any]
+    args: tuple[Arg, ...] = ()
+    not_found: str = "not found"
 
     def schema(self) -> dict[str, Any]:
         return {
             "name": self.name,
             "description": self.description,
-            "inputSchema": {"type": "object", "properties": self.properties, "required": list(self.required)},
+            "inputSchema": {
+                "type": "object",
+                "properties": {item.name: item.schema() for item in self.args},
+                "required": [item.name for item in self.args if item.required],
+            },
         }
 
 
-def _field(kind: str, description: str) -> dict[str, str]:
-    return {"type": kind, "description": description}
+def _search(service: Any, query: str, limit: int, context_messages: int) -> dict[str, Any]:
+    hits = service.messages.search(query, max(1, min(limit, 50)), max(0, min(context_messages, 10)))
+    return {"results": hits}
 
 
-_FACT = {
-    "text": _field("string", "Complete fact text."),
-    "priority": _field("integer", "Priority from 0 to 100."),
-    "reason": _field("string", "Why the fact changes."),
-    "review_after": _field("string", "ISO timestamp to review the fact after."),
-    "expires_at": _field("string", "ISO timestamp the fact expires at."),
-}
+def _record(service: Any, message_id: int, context_messages: int) -> dict[str, Any]:
+    messages = service.messages.context(message_id, max(0, min(context_messages, 10)))
+    if not messages:
+        raise KeyError(message_id)
+    return {"messages": messages}
+
+
+def _facts(service: Any, **values: Any) -> dict[str, Any]:
+    return {"facts": service.get("evergreen").list_current(**values)}
+
+
+def _remember(service: Any, **values: Any) -> dict[str, Any]:
+    return {"fact": service.get("evergreen").remember(**values, created_by="agent")}
+
+
+def _revise(service: Any, **values: Any) -> dict[str, Any]:
+    return {"fact": service.get("evergreen").revise(**revision(values), created_by="agent")}
+
+
+def _forget(service: Any, **values: Any) -> dict[str, Any]:
+    return {"fact": service.get("evergreen").forget(**values, created_by="agent")}
+
+
+_FACT = (
+    option("priority", int, default=50, help="Priority from 0 to 100."),
+    option("reason", default="", help="Why the fact changes."),
+    option("review_after", help="ISO timestamp to review the fact after."),
+    option("expires_at", help="ISO timestamp the fact expires at."),
+)
 
 TOOLS = (
     Tool(
         "memory_search",
+        "memory",
         "Search the companion's conversation archive for past exchanges.",
-        "POST",
-        "/state/v1/memory/search",
-        {
-            "query": _field("string", "Search text."),
-            "limit": _field("integer", "Maximum number of hits."),
-            "context_messages": _field("integer", "Neighbor messages to include with each hit."),
-        },
-        ("query",),
+        _search,
+        (
+            arg("query", help="Search text."),
+            option("limit", int, default=8, help="Maximum number of hits."),
+            option("context_messages", int, default=1, help="Neighbor messages to include with each hit."),
+        ),
     ),
     Tool(
         "memory_get",
+        "memory",
         "Read one archived message with its neighbors.",
-        "GET",
-        "/state/v1/memory/{message_id}",
-        {
-            "message_id": _field("integer", "Message id from a search hit."),
-            "context_messages": _field("integer", "Neighbor messages on each side."),
-        },
-        ("message_id",),
-        path_params=("message_id",),
+        _record,
+        (
+            arg("message_id", int, help="Message id from a search hit."),
+            option("context_messages", int, default=1, help="Neighbor messages on each side."),
+        ),
+        "memory record not found",
     ),
     Tool(
         "evergreen_list",
+        "evergreen",
         "List the evergreen facts the companion always remembers.",
-        "GET",
-        "/state/v1/evergreen/facts",
-        {
-            "include_inactive": _field("boolean", "Include forgotten and expired facts."),
-            "due_only": _field("boolean", "Only facts due for review."),
-            "limit": _field("integer", "Maximum number of facts."),
-        },
+        _facts,
+        (
+            option("include_inactive", bool, help="Include forgotten and expired facts."),
+            option("due_only", bool, help="Only facts due for review."),
+            option("limit", int, default=100, help="Maximum number of facts."),
+        ),
     ),
     Tool(
         "evergreen_remember",
+        "evergreen",
         "Store a new evergreen fact the companion should always remember.",
-        "POST",
-        "/state/v1/evergreen/facts",
-        {"key": _field("string", "Stable fact key such as user.name."), **_FACT},
-        ("key", "text"),
-        queued=True,
+        _remember,
+        (
+            arg("key", help="Stable fact key such as user.name."),
+            arg("text", help="Complete fact text."),
+            *_FACT,
+        ),
     ),
     Tool(
         "evergreen_revise",
+        "evergreen",
         "Replace an evergreen fact at the revision you last read.",
-        "POST",
-        "/state/v1/evergreen/facts/{fact_id}/revisions",
-        {
-            "fact_id": _field("string", "Fact id."),
-            "expected_revision": _field("integer", "Revision you last read."),
-            **_FACT,
-        },
-        ("fact_id", "expected_revision", "text"),
-        path_params=("fact_id",),
+        _revise,
+        REVISE_ARGS,
+        "evergreen fact not found",
     ),
     Tool(
         "evergreen_forget",
+        "evergreen",
         "Forget an evergreen fact at the revision you last read.",
-        "POST",
-        "/state/v1/evergreen/facts/{fact_id}/forget",
-        {
-            "fact_id": _field("string", "Fact id."),
-            "expected_revision": _field("integer", "Revision you last read."),
-            "reason": _field("string", "Why the fact is forgotten."),
-        },
-        ("fact_id", "expected_revision", "reason"),
-        path_params=("fact_id",),
+        _forget,
+        (
+            arg("fact_id", help="Fact id."),
+            arg("expected_revision", int, help="Revision you last read."),
+            arg("reason", help="Why the fact is forgotten."),
+        ),
+        "evergreen fact not found",
     ),
     Tool(
         "memo_add",
+        "memo",
         "Add a short memo the companion keeps in view until it is done.",
-        "POST",
-        "/state/v1/memo/add",
-        {"text": _field("string", "Memo text.")},
-        ("text",),
-        queued=True,
+        lambda service, text: {"memo": service.get("memo").add(text)},
+        (arg("text", help="Memo text."),),
     ),
     Tool(
         "memo_list",
-        "List memos.",
-        "GET",
-        "/state/v1/memo/list",
-        {
-            "status": _field("string", "active or archived."),
-            "limit": _field("integer", "Maximum number of memos."),
-        },
+        "memo",
+        "List memos, oldest first.",
+        lambda service, status, limit: {"memos": service.get("memo").list(status, limit)},
+        (
+            option("status", choices=("active", "archived"), default="active", help="Which memos to list."),
+            option("limit", int, default=20, help="Maximum number of memos."),
+        ),
     ),
     Tool(
         "memo_done",
+        "memo",
         "Archive a memo with the reason it is done.",
-        "POST",
-        "/state/v1/memo/{note_id}/done",
-        {"note_id": _field("string", "Memo id."), "reason": _field("string", "Why the memo is done.")},
-        ("note_id", "reason"),
-        path_params=("note_id",),
+        lambda service, note_id, reason: {"memo": service.get("memo").done(note_id, reason)},
+        (arg("note_id", int, help="Memo id."), arg("reason", help="Why the memo is done.")),
+        "memo not found",
     ),
-    Tool("affect_status", "Read the companion's current affect state.", "GET", "/state/v1/affect", {}),
+    Tool(
+        "affect_status",
+        "affect",
+        "Read the companion's current affect state.",
+        lambda service: service.get("affect").status(),
+    ),
 )
-_BY_NAME = {tool.name: tool for tool in TOOLS}
 
 
-class McpServer:
-    def __init__(self, config: AppConfig):
-        server = config.proxy.server
-        self.client = httpx.Client(
-            base_url=server.url,
-            timeout=server.timeout_seconds,
-            headers={"x-companion-token": server.token} if server.token else {},
-        )
-        self.outbox = Outbox(config.data_dir)
+def _content(data: Any, *, error: bool = False) -> dict[str, Any]:
+    text = json.dumps(data, ensure_ascii=False, default=str)
+    return {"content": [{"type": "text", "text": text}], "isError": error}
 
-    def close(self) -> None:
-        self.client.close()
 
-    def serve(self, reader: IO[str], writer: IO[str]) -> None:
-        for line in reader:
-            if not line.strip():
-                continue
-            try:
-                message = json.loads(line)
-            except ValueError:
-                reply = _error(None, -32700, "parse error")
-            else:
-                reply = self.handle(message) if isinstance(message, dict) else _error(None, -32600, "invalid")
-            if reply is not None:
-                writer.write(json.dumps(reply, ensure_ascii=False) + "\n")
-                writer.flush()
+def _result(ident: Any, result: dict[str, Any]) -> dict[str, Any]:
+    return {"jsonrpc": "2.0", "id": ident, "result": result}
 
-    def handle(self, message: dict[str, Any]) -> dict[str, Any] | None:
-        method, ident, params = message.get("method"), message.get("id"), message.get("params") or {}
-        if "id" not in message:
+
+def _error(ident: Any, code: int, text: str) -> dict[str, Any]:
+    return {"jsonrpc": "2.0", "id": ident, "error": {"code": code, "message": text}}
+
+
+def _refused(request: Request) -> Response | None:
+    origin = request.headers.get("origin")
+    if origin and urlsplit(origin).hostname not in LOOPBACK:
+        return JSONResponse({"detail": "origin not allowed"}, status_code=403)
+    version = request.headers.get("mcp-protocol-version")
+    if version and version not in PROTOCOL_VERSIONS:
+        return JSONResponse({"detail": f"unsupported MCP protocol version {version!r}"}, status_code=400)
+    return None
+
+
+def create_mcp_router(service: Any, authorized: Callable[..., Any]) -> APIRouter:
+    router = APIRouter(dependencies=[Depends(authorized)])
+
+    def tools() -> dict[str, Tool]:
+        active = {runtime.name for runtime in service.registry.runtimes if runtime.state == "active"}
+        return {tool.name: tool for tool in TOOLS if tool.plugin in active}
+
+    async def call(tool: Tool, arguments: Any) -> dict[str, Any]:
+        known = {item.name for item in tool.args}
+        try:
+            given = {key: value for key, value in arguments.items() if key in known}
+            values = validate(tool.args, given)
+            data = await asyncio.to_thread(tool.run, service, **values)
+        except KeyError:
+            return _content({"detail": tool.not_found}, error=True)
+        except (CommandError, ValueError) as error:
+            return _content({"detail": message(error)}, error=True)
+        except Exception:
+            logger.exception("%s failed", tool.name)
+            return _content({"detail": f"{tool.name} failed, see the server log"}, error=True)
+        return _content(data)
+
+    async def handle(item: Any) -> dict[str, Any] | None:
+        if not isinstance(item, dict):
+            return _error(None, -32600, "invalid request")
+        if "method" not in item or "id" not in item:
             return None
+        method, ident = item["method"], item["id"]
+        params = item.get("params") if isinstance(item.get("params"), dict) else {}
         if method == "initialize":
             asked = params.get("protocolVersion")
             return _result(
@@ -195,45 +241,35 @@ class McpServer:
         if method == "ping":
             return _result(ident, {})
         if method == "tools/list":
-            return _result(ident, {"tools": [tool.schema() for tool in TOOLS]})
+            return _result(ident, {"tools": [tool.schema() for tool in tools().values()]})
         if method == "tools/call":
-            tool = _BY_NAME.get(params.get("name"))
+            name = params.get("name")
+            tool = tools().get(name) if isinstance(name, str) else None
             if tool is None:
-                return _error(ident, -32602, f"unknown tool {params.get('name')!r}")
-            return _result(ident, self.call(tool, params.get("arguments") or {}))
+                return _error(ident, -32602, f"unknown tool {name!r}")
+            arguments = params.get("arguments") if isinstance(params.get("arguments"), dict) else {}
+            return _result(ident, await call(tool, arguments))
         return _error(ident, -32601, f"method not found: {method}")
 
-    def call(self, tool: Tool, arguments: dict[str, Any]) -> dict[str, Any]:
-        missing = [name for name in tool.required if name not in arguments]
-        if missing:
-            return _content({"error": f"missing argument(s): {missing}"}, error=True)
-        values = {key: value for key, value in arguments.items() if key in tool.properties}
-        path = tool.path.format(**{name: values.pop(name) for name in tool.path_params})
-        self.outbox.flush(self.client)
+    @router.post("/mcp", include_in_schema=False)
+    async def post(request: Request) -> Response:
+        refused = _refused(request)
+        if refused is not None:
+            return refused
         try:
-            if tool.method == "GET":
-                response = self.client.get(path, params=values)
-            else:
-                response = self.client.post(path, json=values)
-        except httpx.RequestError as error:
-            if tool.queued:
-                self.outbox.put(path, values)
-                return _content({"queued": True, "detail": "the server is unreachable, sent once it is back"})
-            return _content({"error": f"the server is unreachable: {error}"}, error=True)
-        try:
-            data = response.json()
+            body = json.loads(await request.body())
         except ValueError:
-            data = {"detail": response.text}
-        return _content(data, error=response.status_code >= 400)
+            return JSONResponse(_error(None, -32700, "parse error"), status_code=400)
+        if isinstance(body, list):
+            replies = [reply for item in body if (reply := await handle(item)) is not None]
+        else:
+            replies = await handle(body)
+        if not replies:
+            return Response(status_code=202)
+        return JSONResponse(replies)
 
+    @router.api_route("/mcp", methods=["GET", "DELETE"], include_in_schema=False)
+    async def other() -> Response:
+        return Response(status_code=405, headers={"Allow": "POST"})
 
-def _content(data: Any, *, error: bool = False) -> dict[str, Any]:
-    return {"content": [{"type": "text", "text": json.dumps(data, ensure_ascii=False)}], "isError": error}
-
-
-def _result(ident: Any, result: dict[str, Any]) -> dict[str, Any]:
-    return {"jsonrpc": "2.0", "id": ident, "result": result}
-
-
-def _error(ident: Any, code: int, message: str) -> dict[str, Any]:
-    return {"jsonrpc": "2.0", "id": ident, "error": {"code": code, "message": message}}
+    return router

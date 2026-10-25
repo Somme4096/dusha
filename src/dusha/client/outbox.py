@@ -6,12 +6,11 @@ import logging
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import httpx
-
-from .timeutil import isoformat, utc_now
 
 logger = logging.getLogger("dusha.outbox")
 
@@ -54,7 +53,7 @@ class Outbox:
         with self._connect() as db:
             db.execute(
                 "INSERT INTO pending(path, body_json, queued_at) VALUES(?,?,?)",
-                (path, json.dumps(body, ensure_ascii=False), isoformat(utc_now())),
+                (path, json.dumps(body, ensure_ascii=False), datetime.now(UTC).isoformat(timespec="seconds")),
             )
 
     def size(self) -> int:

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import asyncio
 from collections.abc import Callable
 from typing import Any
@@ -18,10 +17,6 @@ ERROR_DOCS = {
 
 class GatewayInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
-
-class CommandError(RuntimeError):
-    pass
 
 
 def errors(*statuses: int) -> dict[int, Any]:
@@ -51,11 +46,3 @@ async def call(
             raise HTTPException(status_code=invalid, detail=str(error)) from error
         raise
 
-
-class Commands:
-    def __init__(self, parser: argparse.ArgumentParser | None = None):
-        self.parser = parser or argparse.ArgumentParser(prog="dusha")
-        self.subparsers = self.parser.add_subparsers(dest="command", required=True)
-
-    def command(self, name: str, help: str) -> argparse.ArgumentParser:
-        return self.subparsers.add_parser(name, help=help)

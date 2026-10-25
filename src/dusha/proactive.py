@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Query
 
 from . import schema as _schema
+from .commands import arg, option
 from .config import ProactiveConfig
 from .database import Database
 from .emotions import with_thresholds
@@ -432,22 +433,25 @@ def _routes(router: APIRouter, engine: ProactiveEngine) -> None:
 
 
 def _commands(cli: Any, engine: ProactiveEngine) -> None:
-    commands = cli.command("proactive", "Manage proactive events").add_subparsers(
-        dest="proactive_command", required=True
+    proactive = cli.group("proactive", "Manage proactive events")
+    proactive.command("evaluate", lambda: {"event": engine.evaluate()}, help="Run one evaluation pass")
+    proactive.command(
+        "poll",
+        lambda consumer, limit: {"events": engine.poll(consumer, limit)},
+        help="Lease pending events",
+        args=[option("consumer", default="cli"), option("limit", int, default=1)],
     )
-    commands.add_parser("evaluate").set_defaults(run=lambda args: {"event": engine.evaluate()})
-    poll = commands.add_parser("poll")
-    poll.add_argument("--consumer", default="cli")
-    poll.add_argument("--limit", type=int, default=1)
-    poll.set_defaults(run=lambda args: {"events": engine.poll(args.consumer, args.limit)})
-    ack = commands.add_parser("ack")
-    ack.add_argument("event_id")
-    ack.add_argument("outcome", choices=["sent", "failed", "release"])
-    ack.add_argument("--consumer", default="cli")
-    ack.add_argument("--text", default="")
-    ack.add_argument("--error", default="")
-    ack.set_defaults(
-        run=lambda args: engine.acknowledge(
-            args.event_id, args.consumer, args.outcome, text=args.text, error=args.error
-        )
+    proactive.command(
+        "ack",
+        lambda event_id, outcome, consumer, text, error: engine.acknowledge(
+            event_id, consumer, outcome, text=text, error=error
+        ),
+        help="Acknowledge a leased event",
+        args=[
+            arg("event_id"),
+            arg("outcome", choices=("sent", "failed", "release")),
+            option("consumer", default="cli"),
+            option("text", default=""),
+            option("error", default=""),
+        ],
     )

@@ -20,6 +20,7 @@ PROBE_SOURCE = '''\
 import json
 import pathlib
 
+from dusha.commands import arg, option
 from dusha.hooks import Block
 
 
@@ -52,8 +53,18 @@ def apply(ctx, config):
         def ping():
             return {"ok": True, "name": ctx.name}
     if config.get("command"):
-        parser = ctx.cli.command("probe", "Probe")
-        parser.set_defaults(run=lambda args: {"name": ctx.name})
+        probe = ctx.cli.group("probe", "Probe the plugin")
+        probe.command(
+            "ping",
+            lambda word, times, loud, tags: {
+                "name": ctx.name, "echo": word * times, "loud": loud, "tags": tags,
+            },
+            help="Echo a word",
+            args=[
+                arg("word"), option("times", int, default=1), option("loud", bool),
+                option("tags", repeated=True),
+            ],
+        )
     ctx.on("message", lambda message: on_message(ctx, message, config))
     ctx.on("context", lambda request: on_context(ctx, request, config))
     ctx.on("decide", lambda request: decide(request, config))
@@ -267,25 +278,46 @@ async def test_http_external_plugin_sees_every_event_with_the_documented_argumen
     assert seen["close"] == [True]
 
 
-async def test_http_external_plugin_registers_api_routes_and_cli_commands(tmp_path, plugins_dir):
+async def test_http_external_plugin_registers_api_routes_and_cli_commands(
+    tmp_path, plugins_dir, run_app, free_port
+):
     options = {"route": True, "command": True}
     async with _client(_config(tmp_path, plugins_dir, **options)) as client:
         response = await client.get("/state/v1/probe/ping")
+        manifest = await client.get("/cli/v1/commands")
+        extra = await client.post("/cli/v1/run/probe/ping", json={"word": "hi", "bogus": 1})
+        typed = await client.post("/cli/v1/run/probe/ping", json={"word": "hi", "times": "2"})
+        unknown = await client.post("/cli/v1/run/probe/pong", json={})
     assert response.status_code == 200, response.text
     assert response.json() == {"ok": True, "name": "probe"}
+    [spec] = [item for item in manifest.json()["commands"] if item["group"] == "probe"]
+    assert spec["name"] == "ping"
+    assert [item["name"] for item in spec["args"]] == ["word", "times", "loud", "tags"]
+    assert manifest.json()["groups"]["probe"] == "Probe the plugin"
+    assert manifest.json()["plugins"]["probe"] == "active"
+    assert (extra.status_code, extra.json()["detail"]) == (422, "unknown argument(s): ['bogus']")
+    assert (typed.status_code, typed.json()["detail"]) == (422, "times must be int")
+    assert unknown.status_code == 404
 
     config_path = tmp_path / "config.json"
     config_path.write_text(
         json.dumps({
             "data_dir": str(tmp_path / "data"),
+            "port": free_port(),
             "plugins_dir": os.path.relpath(plugins_dir, tmp_path),
             "plugins": {"probe": {"options": options}},
         }),
         encoding="utf-8",
     )
-    result = _cli(config_path, "probe")
+    cfg = load_config(config_path)
+    with run_app(api.create_app(cfg), port=cfg.port):
+        result = _cli(
+            config_path, "probe", "ping", "ho", "--times", "3", "--loud", "--tags", "a", "--tags", "b"
+        )
+        listed = _cli(config_path, "probe", "--help")
     assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == {"name": "probe"}
+    assert json.loads(result.stdout) == {"name": "probe", "echo": "hohoho", "loud": True, "tags": ["a", "b"]}
+    assert "Echo a word" in listed.stdout
 
 
 async def test_http_external_plugin_calls_back_into_injected_services_only(tmp_path, plugins_dir):

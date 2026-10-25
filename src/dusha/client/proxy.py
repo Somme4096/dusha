@@ -18,8 +18,8 @@ from fastapi.responses import Response, StreamingResponse
 from starlette.background import BackgroundTask
 
 from . import protocols as _protocols
-from .config import PLACEHOLDER, AppConfig, ProxyConfig, UpstreamProfile
 from .outbox import Outbox, retryable
+from .settings import PLACEHOLDER, Connection, Settings, Upstream
 
 logger = logging.getLogger("dusha.proxy")
 
@@ -68,14 +68,13 @@ def _remember(cache: OrderedDict, key: Any, value: Any) -> None:
 
 
 class Server:
-    def __init__(self, cfg: ProxyConfig, outbox: Outbox):
-        token = cfg.server.token
+    def __init__(self, connection: Connection, outbox: Outbox):
         options = {
-            "base_url": cfg.server.url,
-            "timeout": cfg.server.timeout_seconds,
-            "headers": {"x-companion-token": token} if token else {},
+            "base_url": connection.url,
+            "timeout": connection.timeout_seconds,
+            "headers": connection.headers(),
         }
-        self.url = cfg.server.url
+        self.url = connection.url
         self.client = httpx.AsyncClient(**options)
         self.flusher = httpx.Client(**options)
         self.outbox = outbox
@@ -154,7 +153,7 @@ def _render(value: str, conversation_id: str) -> str:
     return PLACEHOLDER.sub(fill, value)
 
 
-def _upstream_headers(request: Request, profile: UpstreamProfile, conversation_id: str) -> httpx.Headers:
+def _upstream_headers(request: Request, profile: Upstream, conversation_id: str) -> httpx.Headers:
     headers = httpx.Headers(
         {name: value for name, value in request.headers.items() if name not in _DROPPED_HEADERS}
     )
@@ -163,7 +162,7 @@ def _upstream_headers(request: Request, profile: UpstreamProfile, conversation_i
     return headers
 
 
-def _upstream_url(request: Request, profile: UpstreamProfile, path: str) -> str:
+def _upstream_url(request: Request, profile: Upstream, path: str) -> str:
     url = f"{profile.base_url}/{path}"
     return f"{url}?{request.url.query}" if request.url.query else url
 
@@ -177,9 +176,8 @@ def _media_type(response: httpx.Response) -> str | None:
     return response.headers.get("content-type")
 
 
-def create_proxy_app(config: AppConfig) -> FastAPI:
-    cfg = config.proxy
-    server = Server(cfg, Outbox(config.data_dir))
+def create_proxy_app(cfg: Settings) -> FastAPI:
+    server = Server(cfg.server, Outbox(cfg.data_dir))
     upstreams = {
         name: httpx.AsyncClient(timeout=profile.timeout_seconds) for name, profile in cfg.upstreams.items()
     }

@@ -2,218 +2,216 @@ from __future__ import annotations
 
 import json
 import os
-import socket
+import re
+import stat
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import httpx
 import pytest
 
+from dusha import api
+from dusha.config import load_config
+
+SRC = str(Path(__file__).parents[1] / "src")
+
+
+def _env(root: Path, **extra: str) -> dict[str, str]:
+    return {**os.environ, "PYTHONPATH": SRC, "XDG_CONFIG_HOME": str(root), **extra}
+
+
+def _cli(root: Path, *args: str, stdin: str = "", **env: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-m", "dusha.cli", *args], input=stdin, capture_output=True, text=True,
+        env=_env(root, **env), check=False, start_new_session=True,
+    )
+
+
+def _home(root: Path, name: str, **raw) -> Path:
+    path = root / "dusha" / name / "config.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    return path
+
 
 @pytest.fixture
-def cli_config(tmp_path: Path) -> Path:
-    config = tmp_path / "config.json"
-    config.write_text(json.dumps({"data_dir": str(tmp_path / "data")}), encoding="utf-8")
-    return config
+def serving(run_app):
+    @contextmanager
+    def start(path: Path):
+        cfg = load_config(path)
+        with run_app(api.create_app(cfg), port=cfg.port) as url:
+            yield url
+
+    return start
 
 
-def _run(config: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    env = {**os.environ, "PYTHONPATH": str(Path(__file__).parents[1] / "src")}
-    return subprocess.run(
-        [sys.executable, "-m", "dusha.cli", "--config", str(config), *args],
-        capture_output=True,
-        text=True,
-        env=env,
-        check=False,
+def _json(result: subprocess.CompletedProcess[str]):
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def test_cli_runs_plugin_commands_on_the_server_and_state_survives_a_restart(tmp_path, free_port, serving):
+    path = _home(tmp_path, "nova", port=free_port())
+    with serving(path):
+        remembered = _json(
+            _cli(tmp_path, "evergreen", "remember", "favorite", "green tea", "--priority", "70")
+        )
+        facts = _json(_cli(tmp_path, "evergreen", "list"))
+        fact = remembered["fact"]
+        clash = _cli(
+            tmp_path, "evergreen", "revise", fact["fact_id"], "1", "black tea",
+            "--review-after", "2027-01-01T00:00:00+00:00", "--clear-review-after",
+        )
+        revised = _json(_cli(tmp_path, "evergreen", "revise", fact["fact_id"], "1", "black tea"))
+        note = _json(_cli(tmp_path, "memo", "add", "Draft the yumecho report."))["memo"]
+        blank = _cli(tmp_path, "memo", "done", str(note["id"]), "   ")
+        done = _json(_cli(tmp_path, "memo", "done", str(note["id"]), "Published."))
+        missing = _cli(tmp_path, "memory", "show", "999999")
+        bad_type = _cli(tmp_path, "memo", "done", "not-a-number", "Published.")
+        bad_choice = _cli(tmp_path, "memo", "list", "--status", "lost")
+        health = _json(_cli(tmp_path, "health"))
+        recent = _json(_cli(tmp_path, "memory", "recent"))
+        reindex = _json(_cli(tmp_path, "memory", "reindex"))
+        affect = _json(_cli(tmp_path, "affect", "show"))
+        backup = _json(_cli(tmp_path, "backup", str(tmp_path / "backup.sqlite3")))
+    with serving(path):
+        archived = _json(_cli(tmp_path, "memo", "list", "--status", "archived"))
+        active = _json(_cli(tmp_path, "memo", "list"))
+    assert fact["key"] == "favorite" and fact["priority"] == 70
+    assert [(item["key"], item["text"]) for item in facts["facts"]] == [("favorite", "green tea")]
+    assert clash.returncode == 1
+    assert "review_after and clear_review_after cannot be used together" in clash.stderr
+    assert revised["fact"]["text"] == "black tea" and revised["fact"]["revision"] == 2
+    assert blank.returncode == 1 and blank.stderr.strip()
+    assert done["memo"]["status"] == "archived"
+    assert missing.returncode == 1 and missing.stderr.rstrip().endswith("message not found")
+    assert bad_type.returncode == 2 and "not-a-number" in bad_type.stderr
+    assert bad_choice.returncode == 2 and "lost" in bad_choice.stderr
+    assert health == {"database": "ok"}
+    assert recent == {"messages": []}
+    assert reindex == {"status": "rebuilt"}
+    assert {"base", "mood"} <= set(affect)
+    assert Path(backup["backup"]).is_file()
+    assert [memo["reason"] for memo in archived["memos"]] == ["Published."]
+    assert active == {"memos": []}
+
+
+def test_cli_sends_the_token_and_prefers_the_saved_server(tmp_path, free_port, serving):
+    server = _home(tmp_path, "nova", port=free_port(), api_token="server-secret")
+    url = f"http://127.0.0.1:{json.loads(server.read_text())['port']}"
+    _home(tmp_path, "client", proxy={"server": {"url": url, "token": "server-secret"}})
+    _home(tmp_path, "stale", proxy={"server": {"url": url, "token": "wrong"}})
+    with serving(server):
+        local = _json(_cli(tmp_path, "-c", "nova", "memo", "add", "From the server machine."))
+        remote = _json(_cli(tmp_path, "-c", "client", "memo", "list"))
+        plugins = _json(_cli(tmp_path, "-c", "client", "plugins"))
+        denied = _cli(tmp_path, "-c", "stale", "memo", "list")
+        denied_plugins = _cli(tmp_path, "-c", "stale", "plugins")
+    assert [memo["id"] for memo in remote["memos"]] == [local["memo"]["id"]]
+    assert plugins["memo"]["state"] == "active"
+    assert denied.returncode == 1 and "invalid companion token" in denied.stderr
+    assert denied_plugins.returncode == 1 and "invalid companion token" in denied_plugins.stderr
+
+
+def test_cli_hides_the_commands_of_disabled_plugins(tmp_path, free_port, serving):
+    path = _home(
+        tmp_path, "nova", port=free_port(),
+        plugins={"memory": {"disabled": True}, "evergreen": {"disabled": True}},
     )
-
-
-def test_cli_success_and_persistence_across_process_restarts(cli_config: Path) -> None:
-    config = cli_config
-    remembered = _run(config, "evergreen", "remember", "favorite", "green tea")
-    listed = _run(config, "evergreen", "list")
-
-    assert remembered.returncode == 0
-    assert json.loads(remembered.stdout)["fact"]["key"] == "favorite"
+    with serving(path):
+        listed = _cli(tmp_path, "--help")
+        plugins = _json(_cli(tmp_path, "plugins"))
+        memos = _json(_cli(tmp_path, "memo", "list"))
+        refused = [_cli(tmp_path, *args) for args in (("memory", "recent"), ("evergreen", "list"))]
+    commands = re.findall(r"^  (\S+)", listed.stdout.split("Commands:")[1], re.MULTILINE)
     assert listed.returncode == 0
-    assert any(
-        fact["key"] == "favorite" and fact["text"] == "green tea"
-        for fact in json.loads(listed.stdout)["facts"]
-    )
+    assert "memo" in commands and "memory" not in commands and "evergreen" not in commands
+    assert {"serve", "proxy", "list", "plugins", "health", "backup"} <= set(commands)
+    assert plugins["memory"]["state"] == plugins["evergreen"]["state"] == "disabled"
+    assert memos == {"memos": []}
+    for result, name in zip(refused, ("memory", "evergreen"), strict=True):
+        assert result.returncode == 2
+        assert f"No such command '{name}'" in result.stderr
 
 
-def test_cli_memo_lifecycle_across_process_restarts(cli_config: Path) -> None:
-    config = cli_config
-    added = _run(config, "memo", "add", "Draft the yumecho report.")
-    assert added.returncode == 0
-    note = json.loads(added.stdout)["memo"]
-
-    listed = _run(config, "memo", "list")
-    assert listed.returncode == 0
-    assert any(memo["id"] == note["id"] for memo in json.loads(listed.stdout)["memos"])
-
-    empty_reason = _run(config, "memo", "done", str(note["id"]), "   ")
-    assert empty_reason.returncode != 0
-
-    done = _run(config, "memo", "done", str(note["id"]), "Published.")
-    assert done.returncode == 0
-    assert json.loads(done.stdout)["memo"]["status"] == "archived"
-
-    active = _run(config, "memo", "list")
-    assert json.loads(active.stdout)["memos"] == []
-    archived = _run(config, "memo", "list", "--status", "archived")
-    assert json.loads(archived.stdout)["memos"][0]["reason"] == "Published."
+def test_cli_help_works_offline_from_the_cached_command_list(tmp_path, free_port, serving):
+    path = _home(tmp_path, "nova", port=free_port())
+    with serving(path):
+        online = _cli(tmp_path, "memo", "--help")
+    offline = _cli(tmp_path, "memo", "--help")
+    run = _cli(tmp_path, "memo", "list")
+    _home(tmp_path, "nova", port=free_port())
+    moved = _cli(tmp_path, "--help")
+    assert online.returncode == offline.returncode == 0
+    assert offline.stdout == online.stdout and "done" in offline.stdout
+    assert "using the cached command list" in offline.stderr
+    assert run.returncode == 1 and "cannot reach the server at http://127.0.0.1:" in run.stderr
+    assert moved.returncode == 0 and "memo" not in moved.stdout and "serve" in moved.stdout
 
 
-def test_cli_failure_path_uses_nonzero_exit_and_stderr(cli_config: Path) -> None:
-    config = cli_config
-    result = _run(config, "memory", "show", "999999")
-
-    assert result.returncode == 1
-    assert result.stderr.rstrip().endswith("message not found")
-
-
-@pytest.mark.parametrize(
-    ("args", "expected_keys"),
-    [
-        (("health",), ("database",)),
-        (("memory", "recent"), ("messages",)),
-        (("memory", "reindex"), ("status",)),
-        (("affect", "show"), ("base", "mood")),
-    ],
-)
-def test_cli_commands_run_in_a_subprocess(
-    cli_config: Path, args: tuple[str, ...], expected_keys: tuple[str, ...]
-) -> None:
-    config = cli_config
-    result = _run(config, *args)
-
-    assert result.returncode == 0
-    output = json.loads(result.stdout)
-    assert all(key in output for key in expected_keys)
-    if args == ("health",):
-        assert output["database"] == "ok"
-    elif args == ("memory", "recent"):
-        assert output["messages"] == []
-    elif args == ("memory", "reindex"):
-        assert output["status"] == "rebuilt"
-
-
-def test_cli_rejects_yaml_config_in_a_subprocess(tmp_path: Path) -> None:
-    source = tmp_path / "config.yaml"
-    source.write_text("host: example-host\n", encoding="utf-8")
-
-    result = _run(source, "health")
-
-    assert result.returncode != 0
-    assert "unsupported configuration format" in result.stderr
-
-
-def _run_in_root(root: Path, *args: str, **extra_env: str) -> subprocess.CompletedProcess[str]:
-    env = {
-        **os.environ,
-        "PYTHONPATH": str(Path(__file__).parents[1] / "src"),
-        "XDG_CONFIG_HOME": str(root),
-        **extra_env,
-    }
-    return subprocess.run(
-        [sys.executable, "-m", "dusha.cli", *args], capture_output=True, text=True, env=env, check=False
-    )
-
-
-def test_cli_companions_keep_separate_state_across_restarts(tmp_path: Path) -> None:
+def test_cli_resolves_companions_in_the_documented_order(tmp_path, free_port):
+    ports = {}
     for name in ("dusha", "luna"):
-        home = tmp_path / "dusha" / name
-        home.mkdir(parents=True)
-        (home / "config.json").write_text("{}", encoding="utf-8")
+        ports[name] = free_port()
+        _home(tmp_path, name, port=ports[name])
+    ports["elsewhere"], ports["explicit"] = free_port(), free_port()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "config.json").write_text(json.dumps({"port": ports["elsewhere"]}), encoding="utf-8")
+    explicit = tmp_path / "explicit.json"
+    explicit.write_text(json.dumps({"port": ports["explicit"]}), encoding="utf-8")
+    names = {port: name for name, port in ports.items()}
 
-    listed = _run_in_root(tmp_path, "list")
-    assert json.loads(listed.stdout) == {
-        "root": str(tmp_path / "dusha"), "companions": ["dusha", "luna"],
-    }
+    def selected(*args: str, **env: str) -> str:
+        result = _cli(tmp_path, *args, "memo", "list", **env)
+        assert result.returncode == 1, result.stderr
+        return names[int(re.search(r"http://127\.0\.0\.1:(\d+)", result.stderr)[1])]
 
-    added = _run_in_root(tmp_path, "-c", "dusha", "memo", "add", "Only Dusha knows this.")
-    assert added.returncode == 0
-    dusha = json.loads(_run_in_root(tmp_path, "--companion", "dusha", "memo", "list").stdout)
-    luna_home = str(tmp_path / "dusha" / "luna")
-    luna = json.loads(_run_in_root(tmp_path, "--home", luna_home, "memo", "list").stdout)
-    assert [memo["text"] for memo in dusha["memos"]] == ["Only Dusha knows this."]
-    assert luna["memos"] == []
-    assert (tmp_path / "dusha" / "dusha" / "data" / "state.sqlite3").is_file()
-    assert (tmp_path / "dusha" / "luna" / "data" / "state.sqlite3").is_file()
+    both = {"DUSHA_COMPANION": "luna", "DUSHA_HOME": str(elsewhere)}
+    assert selected(DUSHA_COMPANION="luna") == "luna"
+    assert selected(**both) == "elsewhere"
+    assert selected("-c", "dusha", **both) == "dusha"
+    assert selected("--home", str(tmp_path / "dusha" / "luna"), "-c", "dusha", **both) == "luna"
+    assert selected("--config", str(explicit), "--home", str(elsewhere), **both) == "explicit"
 
-
-def test_cli_rejects_ambiguous_and_unknown_companions(tmp_path: Path) -> None:
-    for name in ("dusha", "luna"):
-        home = tmp_path / "dusha" / name
-        home.mkdir(parents=True)
-        (home / "config.json").write_text("{}", encoding="utf-8")
-
-    ambiguous = _run_in_root(tmp_path, "memo", "list")
-    unknown = _run_in_root(tmp_path, "-c", "nobody", "memo", "list")
-    assert ambiguous.returncode == 2
-    assert "several companions exist" in ambiguous.stderr
-    assert unknown.returncode == 2
-    assert "configuration file not found" in unknown.stderr
-
-
-def test_cli_companion_selection_follows_the_documented_order(tmp_path: Path) -> None:
-    homes = {name: tmp_path / "dusha" / name for name in ("dusha", "luna")}
-    homes["elsewhere"] = tmp_path / "elsewhere"
-    for name, home in homes.items():
-        home.mkdir(parents=True)
-        (home / "config.json").write_text("{}", encoding="utf-8")
-        assert _run_in_root(tmp_path, "--home", str(home), "memo", "add", name).returncode == 0
-    explicit = tmp_path / "explicit" / "config.json"
-    explicit.parent.mkdir()
-    explicit.write_text("{}", encoding="utf-8")
-    assert _run_in_root(tmp_path, "--config", str(explicit), "memo", "add", "explicit").returncode == 0
-
-    def selected(*args: str, **env: str) -> list[str]:
-        result = _run_in_root(tmp_path, *args, "memo", "list", **env)
-        assert result.returncode == 0, result.stderr
-        return [memo["text"] for memo in json.loads(result.stdout)["memos"]]
-
-    both = {"DUSHA_COMPANION": "luna", "DUSHA_HOME": str(homes["elsewhere"])}
-    assert selected(DUSHA_COMPANION="luna") == ["luna"]
-    assert selected(**both) == ["elsewhere"]
-    assert selected("-c", "dusha", **both) == ["dusha"]
-    assert selected("--home", str(homes["luna"]), "-c", "dusha", **both) == ["luna"]
-    assert selected("--config", str(explicit), "--home", str(homes["luna"]), **both) == ["explicit"]
-
-    escaped = _run_in_root(tmp_path, "-c", "../escape", "memo", "list")
-    missing = _run_in_root(tmp_path, "--config", str(tmp_path / "missing.json"), "memo", "list")
-    assert escaped.returncode == 2
-    assert "companion name" in escaped.stderr
-    assert missing.returncode == 2
-    assert "configuration file not found" in missing.stderr
+    ambiguous = _cli(tmp_path, "memo", "list")
+    unknown = _cli(tmp_path, "-c", "nobody", "memo", "list")
+    escaped = _cli(tmp_path, "-c", "../escape", "memo", "list")
+    absent = _cli(tmp_path, "--config", str(tmp_path / "missing.json"), "memo", "list")
+    (tmp_path / "config.yaml").write_text("host: example-host\n", encoding="utf-8")
+    yaml = _cli(tmp_path, "--config", str(tmp_path / "config.yaml"), "health")
+    assert ambiguous.returncode == 2 and "several companions exist" in ambiguous.stderr
+    assert unknown.returncode == 2 and "configuration file not found" in unknown.stderr
+    assert escaped.returncode == 2 and "companion name" in escaped.stderr
+    assert absent.returncode == 2 and "configuration file not found" in absent.stderr
+    assert yaml.returncode == 2 and "unsupported configuration format" in yaml.stderr
+    assert _json(_cli(tmp_path, "list")) == {"root": str(tmp_path / "dusha"), "companions": ["dusha", "luna"]}
 
 
-def test_cli_serves_the_only_companion_without_a_selection(tmp_path: Path) -> None:
-    home = tmp_path / "dusha" / "solo"
-    home.mkdir(parents=True)
-    (home / "config.json").write_text("{}", encoding="utf-8")
-
-    added = _run_in_root(tmp_path, "memo", "add", "Solo memo.")
-
-    assert added.returncode == 0, added.stderr
-    assert (home / "data" / "state.sqlite3").is_file()
+def test_cli_talks_to_the_only_companion_without_a_selection(tmp_path, free_port, serving):
+    path = _home(tmp_path, "solo", port=free_port())
+    with serving(path):
+        added = _json(_cli(tmp_path, "memo", "add", "Solo memo."))
+    assert added["memo"]["text"] == "Solo memo."
+    assert (path.parent / "data" / "state.sqlite3").is_file()
 
 
-def _free_port() -> int:
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
-
-
-def _serve(root: Path, *args: str, command: str = "serve") -> subprocess.Popen[str]:
-    env = {**os.environ, "PYTHONPATH": str(Path(__file__).parents[1] / "src"), "XDG_CONFIG_HOME": str(root)}
-    return subprocess.Popen(
-        [sys.executable, "-m", "dusha.cli", command, *args], env=env, text=True,
-        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+def _start(root: Path, *args: str, stdin: str = "", **env: str) -> subprocess.Popen[str]:
+    process = subprocess.Popen(
+        [sys.executable, "-m", "dusha.cli", *args], env=_env(root, **env), text=True,
+        stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, start_new_session=True,
     )
+    process.stdin.write(stdin)
+    process.stdin.close()
+    return process
+
+
+def _stop(process: subprocess.Popen[str]) -> str:
+    process.terminate()
+    return process.communicate(timeout=10)[1]
 
 
 def _wait_for(check, seconds: float = 15.0):
@@ -226,73 +224,6 @@ def _wait_for(check, seconds: float = 15.0):
     raise AssertionError("condition not met in time")
 
 
-def test_cli_serve_creates_the_config_once_and_serves_it_after_restart(tmp_path: Path) -> None:
-    config = tmp_path / "dusha" / "nova" / "config.json"
-    example = json.loads((Path(__file__).parents[1] / "config.example.json").read_text(encoding="utf-8"))
-
-    first = _serve(tmp_path, "nova")
-    try:
-        _wait_for(config.is_file)
-    finally:
-        first.terminate()
-        _, stderr = first.communicate(timeout=10)
-    assert f"created {config}" in stderr
-    generated = json.loads(config.read_text(encoding="utf-8"))
-    assert generated == example
-
-    port = _free_port()
-    config.write_text(json.dumps({**generated, "port": port}), encoding="utf-8")
-    second = _serve(tmp_path, "nova")
-    try:
-        def healthy():
-            try:
-                return httpx.get(f"http://127.0.0.1:{port}/health", timeout=1).json()
-            except httpx.HTTPError:
-                return None
-
-        health = _wait_for(healthy)
-    finally:
-        second.terminate()
-        _, stderr = second.communicate(timeout=10)
-    assert health["status"] == "ok"
-    assert health["companion"] == "nova"
-    assert "created" not in stderr
-    assert json.loads(config.read_text(encoding="utf-8"))["port"] == port
-
-
-def test_cli_serve_rejects_a_bad_companion_name_without_creating_anything(tmp_path: Path) -> None:
-    result = _serve(tmp_path, "../escape")
-    _, stderr = result.communicate(timeout=10)
-    assert result.returncode == 2
-    assert "companion name" in stderr
-    assert not (tmp_path / "dusha").exists()
-
-
-def test_cli_reports_disabled_plugins(tmp_path: Path) -> None:
-    config = tmp_path / "config.json"
-    config.write_text(
-        json.dumps({
-            "data_dir": str(tmp_path / "data"),
-            "plugins": {"memory": {"disabled": True}, "evergreen": {"disabled": True}},
-        }),
-        encoding="utf-8",
-    )
-    for args, name in (
-        (("memory", "recent"), "memory"),
-        (("memory", "show", "1"), "memory"),
-        (("memory", "search", "anything"), "memory"),
-        (("memory", "reindex"), "memory"),
-        (("evergreen", "list"), "evergreen"),
-        (("evergreen", "remember", "key", "value"), "evergreen"),
-    ):
-        result = _run(config, *args)
-        assert result.returncode == 1, result.stdout
-        assert f"the {name} plugin is disabled" in result.stderr, result.stderr
-    memo = _run(config, "memo", "list")
-    assert memo.returncode == 0, memo.stderr
-    assert json.loads(memo.stdout) == {"memos": []}
-
-
 def _get_json(url: str):
     try:
         return httpx.get(url, timeout=1).json()
@@ -300,29 +231,98 @@ def _get_json(url: str):
         return None
 
 
-def test_cli_proxy_reaches_the_server_named_in_the_same_config(tmp_path: Path) -> None:
-    config = tmp_path / "dusha" / "edge" / "config.json"
-    server_port, proxy_port = _free_port(), _free_port()
-    first = _serve(tmp_path, "edge", command="proxy")
+def test_cli_serve_creates_the_config_once_and_serves_it_after_restart(tmp_path, free_port):
+    config = tmp_path / "dusha" / "nova" / "config.json"
+    example = json.loads((Path(__file__).parents[1] / "config.example.json").read_text(encoding="utf-8"))
+
+    first = _start(tmp_path, "serve", "nova")
     try:
         _wait_for(config.is_file)
     finally:
-        first.terminate()
-        _, stderr = first.communicate(timeout=10)
+        stderr = _stop(first)
     assert f"created {config}" in stderr
+    assert stat.S_IMODE(config.stat().st_mode) == 0o600
     generated = json.loads(config.read_text(encoding="utf-8"))
-    assert generated["proxy"]["upstreams"] == {} and generated["proxy"]["port"] == 8766
+    assert generated == example
 
-    generated.update(port=server_port, api_token="t")
-    generated["proxy"]["port"] = proxy_port
-    config.write_text(json.dumps(generated), encoding="utf-8")
-    server = _serve(tmp_path, "edge")
-    proxy = _serve(tmp_path, "edge", command="proxy")
+    port = free_port()
+    config.write_text(json.dumps({**generated, "port": port}), encoding="utf-8")
+    second = _start(tmp_path, "serve", "nova")
     try:
-        _wait_for(lambda: _get_json(f"http://127.0.0.1:{server_port}/health"))
-        health = _wait_for(lambda: _get_json(f"http://127.0.0.1:{proxy_port}/health"))
+        health = _wait_for(lambda: _get_json(f"http://127.0.0.1:{port}/health"))
     finally:
-        for process in (proxy, server):
-            process.terminate()
-            process.communicate(timeout=10)
+        stderr = _stop(second)
+    assert health["status"] == "ok" and health["companion"] == "nova"
+    assert "created" not in stderr
+
+
+def test_cli_serve_follows_the_selection_order(tmp_path, free_port):
+    ports = {name: free_port() for name in ("dusha", "luna")}
+    for name, port in ports.items():
+        _home(tmp_path, name, port=port)
+    server = _start(tmp_path, "serve", DUSHA_COMPANION="luna")
+    try:
+        health = _wait_for(lambda: _get_json(f"http://127.0.0.1:{ports['luna']}/health"))
+    finally:
+        _stop(server)
+    ambiguous = _cli(tmp_path, "serve")
+    assert health["companion"] == "luna"
+    assert ambiguous.returncode == 2 and "several companions exist" in ambiguous.stderr
+
+
+def test_cli_serve_rejects_a_bad_companion_name_without_creating_anything(tmp_path):
+    result = _cli(tmp_path, "serve", "../escape")
+    assert result.returncode == 2
+    assert "companion name" in result.stderr
+    assert not (tmp_path / "dusha").exists()
+
+
+def test_cli_proxy_asks_for_the_server_once_and_saves_it(tmp_path, free_port, serving):
+    server = _home(tmp_path, "nova", port=free_port(), api_token="server-secret")
+    url = f"http://127.0.0.1:{json.loads(server.read_text())['port']}"
+    config = tmp_path / "dusha" / "edge" / "config.json"
+
+    first = _start(tmp_path, "proxy", "edge", stdin=f"ftp://nowhere\n{url}/\nserver-secret\n")
+    try:
+        _wait_for(config.is_file)
+    finally:
+        stderr = _stop(first)
+    assert "Server URL" in stderr and "must be an http or https URL" in stderr
+    assert f"created {config}" in stderr
+    assert stat.S_IMODE(config.stat().st_mode) == 0o600
+    saved = json.loads(config.read_text(encoding="utf-8"))
+    assert saved["proxy"]["server"] == {"url": url, "token": "server-secret", "timeout_seconds": 10}
+    assert saved["proxy"]["upstreams"] == {}
+
+    port = free_port()
+    saved["proxy"]["port"] = port
+    config.write_text(json.dumps(saved), encoding="utf-8")
+    with serving(server):
+        again = _start(tmp_path, "proxy", "edge")
+        try:
+            health = _wait_for(lambda: _get_json(f"http://127.0.0.1:{port}/health"))
+        finally:
+            stderr = _stop(again)
+        memo = _json(_cli(tmp_path, "-c", "edge", "memo", "add", "Through the saved server."))
+    assert health["server"] == {"url": url, "status": "ok"}
+    assert "Server URL" not in stderr and "created" not in stderr
+    assert memo["memo"]["text"] == "Through the saved server."
+
+
+def test_cli_proxy_reaches_the_server_in_the_same_config(tmp_path, free_port, serving):
+    server_port, proxy_port = free_port(), free_port()
+    path = _home(tmp_path, "nova", port=server_port, api_token="t", proxy={"port": proxy_port})
+    with serving(path):
+        proxy = _start(tmp_path, "proxy", "nova")
+        try:
+            health = _wait_for(lambda: _get_json(f"http://127.0.0.1:{proxy_port}/health"))
+        finally:
+            stderr = _stop(proxy)
     assert health["server"] == {"url": f"http://127.0.0.1:{server_port}", "status": "ok"}
+    assert "Server URL" not in stderr
+
+
+def test_cli_proxy_needs_a_companion_name(tmp_path):
+    result = _cli(tmp_path, "proxy")
+    assert result.returncode == 2 and "name a companion" in result.stderr
+    assert not (tmp_path / "dusha").exists()

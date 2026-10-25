@@ -1,6 +1,6 @@
 # API and integration
 
-Base URL: `http://127.0.0.1:8765`. The server serves the state API under `/state/v1/*`. Model requests go through the [proxy](#proxy), which runs next to your harness.
+Base URL: `http://127.0.0.1:8765`. The server serves the state API under `/state/v1/*`, the [MCP](#mcp) tools at `/mcp`, and the [commands](#commands) under `/cli/v1/*`. Model requests go through the [proxy](#proxy), which runs next to your harness.
 
 FastAPI serves the field reference at `/docs` and `/openapi.json`. This page covers the integration flow.
 
@@ -28,6 +28,9 @@ FastAPI serves the field reference at `/docs` and `/openapi.json`. This page cov
 | POST | `/state/v1/proactive/evaluate` | Run one evaluation pass | 200, 401, 503 |
 | GET | `/state/v1/proactive/events` | Poll and lease pending events | 200, 401, 503 |
 | POST | `/state/v1/proactive/events/{event_id}/ack` | Acknowledge a leased event | 200, 401, 404, 409, 503 |
+| POST | `/mcp` | MCP tools over streamable HTTP | 200, 202, 400, 401, 403 |
+| GET | `/cli/v1/commands` | The command list `dusha` builds its commands from | 200, 401 |
+| POST | `/cli/v1/run/{command}` | Run one command | 200, 400, 401, 404, 422 |
 
 Statuses that depend on config:
 
@@ -311,7 +314,7 @@ curl http://127.0.0.1:8765/health
 
 ## Proxy
 
-`dusha proxy <name>` runs on the machine with your harness and reads the `proxy` section of the companion's `config.json`. The first run writes the file. It forwards model requests to your provider and makes the server calls from the [client flow](#client-flow) itself, so a harness only needs a base URL. Keys are in [configuration.md](configuration.md#proxy).
+`dusha proxy <name>` runs on the machine with your harness and reads the `proxy` section of the companion's `config.json`. When `<name>` has no `config.json` on that machine, the first run asks for the server's URL and token, saves them in a new file readable only by you, and starts. Later runs just start. On the server's own machine the file exists, and the proxy uses the server in it. The proxy forwards model requests to your provider and makes the server calls from the [client flow](#client-flow) itself, so a harness only needs a base URL. Keys are in [configuration.md](configuration.md#proxy).
 
 Each entry under `proxy.upstreams` is a profile:
 
@@ -379,26 +382,53 @@ The server keeps each transcript as a tree of messages. A message matches when i
 
 ## MCP
 
-`dusha mcp <name>` serves the companion's tools to a harness over stdio MCP. It reads the same `proxy.server` settings as the proxy and sends the server token itself. Register it in your harness as a stdio server with the command `dusha mcp <name>`.
+`dusha serve` serves the companion's tools over MCP at `/mcp` with the streamable HTTP transport. Register it in your harness as an HTTP MCP server, and set `X-Companion-Token` when [auth](guide.md#auth) is on. The keys differ by harness, a common shape is:
 
-| Tool | Does | While the server is down |
+```json
+{
+  "mcpServers": {
+    "dusha": {
+      "type": "http",
+      "url": "http://127.0.0.1:8765/mcp",
+      "headers": {"X-Companion-Token": "replace-with-the-server-api-token"}
+    }
+  }
+}
+```
+
+The server lists the tools of active plugins only:
+
+| Tool | Plugin | Does |
 | --- | --- | --- |
-| `memory_search` | Search the archive | Fails |
-| `memory_get` | Read one message with its neighbors | Fails |
-| `evergreen_list` | List evergreen facts | Fails |
-| `evergreen_remember` | Store a new fact | Waits in the outbox |
-| `evergreen_revise` | Replace a fact at `expected_revision` | Fails |
-| `evergreen_forget` | Forget a fact at `expected_revision` | Fails |
-| `memo_add` | Add a memo | Waits in the outbox |
-| `memo_list` | List memos | Fails |
-| `memo_done` | Archive a memo | Fails |
-| `affect_status` | Read the affect state | Fails |
+| `memory_search` | `memory` | Search the archive |
+| `memory_get` | `memory` | Read one message with its neighbors |
+| `evergreen_list` | `evergreen` | List evergreen facts |
+| `evergreen_remember` | `evergreen` | Store a new fact |
+| `evergreen_revise` | `evergreen` | Replace a fact at `expected_revision`. `clear_review_after` and `clear_expires_at` remove those times |
+| `evergreen_forget` | `evergreen` | Forget a fact at `expected_revision` |
+| `memo_add` | `memo` | Add a memo |
+| `memo_list` | `memo` | List memos |
+| `memo_done` | `memo` | Archive a memo |
+| `affect_status` | `affect` | Read the affect state |
 
-A tool that fails returns `isError` with the server's `detail`. Revisions and forgets never wait, because a later replay could overwrite a newer revision.
+A tool that fails returns `isError` with the reason in `detail`. The harness reaches the server directly, so every tool fails while the server is down and nothing waits in the [outbox](#outbox).
+
+- The server answers each request with JSON and never opens an SSE stream. `GET` and `DELETE` on `/mcp` return `405`.
+- It speaks MCP `2025-11-25`, `2025-06-18`, and `2025-03-26`. Another `MCP-Protocol-Version` header returns `400`.
+- A request with an `Origin` header that names no loopback host returns `403`.
+
+## Commands
+
+`dusha` builds every command other than `serve`, `proxy`, `list`, and `plugins` from the server, see [Commands](https://github.com/Somme4096/dusha#commands). Both routes need the token when auth is on.
+
+- `GET /cli/v1/commands` returns `groups` (name to help), `commands`, and `plugins` (each plugin's state). Each command holds `group`, empty for a top-level command such as `health`, plus `name`, `help`, and `args`.
+- `POST /cli/v1/run/<group>/<name>`, or `/cli/v1/run/<name>` for a top-level command, takes the arguments as a JSON object and returns the handler's result.
+
+An unknown command returns `404`. An argument the command does not take, a missing one, or a value of the wrong type returns `422`. A command that fails returns `400` with the reason in `detail`.
 
 ## Outbox
 
-The proxy and `dusha mcp` share an outbox, `outbox.sqlite3` in the companion's `data_dir`. Writes wait there while the server is unreachable, answers `401`, `408`, `429`, `502`, or `504`, and are sent in order once it answers again. The proxy retries every two seconds, and `dusha mcp` retries before each tool call. A write the server rejects for another reason is logged and dropped.
+The proxy keeps an outbox, `outbox.sqlite3` in the `data_dir` of the companion's home on its own machine. Transcripts wait there while the server is unreachable or answers `401`, `408`, `429`, `502`, or `504`, and the proxy sends them in order once it answers again. It retries every two seconds. A transcript the server rejects for another reason is logged and dropped.
 
 ## Versions
 

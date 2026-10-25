@@ -10,6 +10,7 @@ from pydantic import Field
 
 from . import prompts as _prompts
 from . import schema as _schema
+from .commands import CommandError, arg, option
 from .config import EvergreenConfig
 from .database import Database
 from .hooks import Block, ContextRequest
@@ -583,94 +584,74 @@ def _routes(router: APIRouter, store: EvergreenStore) -> None:
         return {"fact": fact}
 
 
-def _commands(cli: Any, store: EvergreenStore) -> None:
-    commands = cli.command("evergreen", "Inspect or update evergreen facts").add_subparsers(
-        dest="evergreen_command", required=True
-    )
-    listing = commands.add_parser("list")
-    listing.add_argument("--include-inactive", action="store_true")
-    listing.add_argument("--due-only", action="store_true")
-    listing.add_argument("--limit", type=int, default=100)
-    listing.set_defaults(
-        run=lambda args: {
-            "facts": store.list_current(
-                include_inactive=args.include_inactive, due_only=args.due_only, limit=args.limit
-            )
-        }
-    )
-    history = commands.add_parser("history")
-    history.add_argument("fact_id")
-    history.set_defaults(run=lambda args: {"revisions": store.history(args.fact_id)})
-    remember = commands.add_parser("remember")
-    remember.add_argument("key")
-    remember.add_argument("text")
-    remember.add_argument("--priority", type=int, default=50)
-    remember.add_argument("--source-message-id", type=int)
-    remember.add_argument("--reason", default="")
-    remember.add_argument("--review-after")
-    remember.add_argument("--expires-at")
-    remember.set_defaults(
-        run=lambda args: {
-            "fact": store.remember(
-                key=args.key,
-                text=args.text,
-                priority=args.priority,
-                source_message_id=args.source_message_id,
-                reason=args.reason,
-                review_after=args.review_after,
-                expires_at=args.expires_at,
-                created_by="operator",
-            )
-        }
-    )
-    revise = commands.add_parser("revise")
-    revise.add_argument("fact_id")
-    revise.add_argument("expected_revision", type=int)
-    revise.add_argument("text")
-    revise.add_argument("--priority", type=int)
-    revise.add_argument("--source-message-id", type=int)
-    revise.add_argument("--reason", default="")
-    review_group = revise.add_mutually_exclusive_group()
-    review_group.add_argument("--review-after")
-    review_group.add_argument("--clear-review-after", action="store_true")
-    expiry_group = revise.add_mutually_exclusive_group()
-    expiry_group.add_argument("--expires-at")
-    expiry_group.add_argument("--clear-expires-at", action="store_true")
-    revise.set_defaults(run=lambda args: {"fact": store.revise(**_revise_kwargs(args))})
-    forget = commands.add_parser("forget")
-    forget.add_argument("fact_id")
-    forget.add_argument("expected_revision", type=int)
-    forget.add_argument("--source-message-id", type=int)
-    forget.add_argument("--reason", required=True)
-    forget.set_defaults(
-        run=lambda args: {
-            "fact": store.forget(
-                fact_id=args.fact_id,
-                expected_revision=args.expected_revision,
-                reason=args.reason,
-                source_message_id=args.source_message_id,
-                created_by="operator",
-            )
-        }
-    )
-
-
-def _revise_kwargs(args: Any) -> dict[str, Any]:
-    kwargs: dict[str, Any] = {
-        "fact_id": args.fact_id,
-        "expected_revision": args.expected_revision,
-        "text": args.text,
-        "priority": args.priority,
-        "source_message_id": args.source_message_id,
-        "reason": args.reason,
-        "created_by": "operator",
-    }
-    if args.clear_review_after:
-        kwargs["review_after"] = None
-    elif args.review_after is not None:
-        kwargs["review_after"] = args.review_after
-    if args.clear_expires_at:
-        kwargs["expires_at"] = None
-    elif args.expires_at is not None:
-        kwargs["expires_at"] = args.expires_at
+def revision(values: dict[str, Any]) -> dict[str, Any]:
+    kwargs = dict(values)
+    for name in ("review_after", "expires_at"):
+        clear = kwargs.pop(f"clear_{name}", False)
+        if clear and kwargs.get(name) is not None:
+            raise CommandError(f"{name} and clear_{name} cannot be used together")
+        if clear:
+            kwargs[name] = None
+        elif kwargs.get(name) is None:
+            kwargs.pop(name, None)
     return kwargs
+
+
+REVISE_ARGS = (
+    arg("fact_id", help="Fact id."),
+    arg("expected_revision", int, help="Revision you last read."),
+    arg("text", help="Complete fact text."),
+    option("priority", int, help="Priority from 0 to 100, unchanged when absent."),
+    option("reason", default="", help="Why the fact changes."),
+    option("review_after", help="ISO timestamp to review the fact after."),
+    option("clear_review_after", bool, help="Remove the review time."),
+    option("expires_at", help="ISO timestamp the fact expires at."),
+    option("clear_expires_at", bool, help="Remove the expiry time."),
+)
+
+
+def _commands(cli: Any, store: EvergreenStore) -> None:
+    evergreen = cli.group("evergreen", "Inspect or update evergreen facts")
+    evergreen.command(
+        "list",
+        lambda **values: {"facts": store.list_current(**values)},
+        help="List current facts by priority",
+        args=[option("include_inactive", bool), option("due_only", bool), option("limit", int, default=100)],
+    )
+    evergreen.command(
+        "history",
+        lambda fact_id: {"revisions": store.history(fact_id)},
+        help="List every revision of a fact",
+        args=[arg("fact_id")],
+    )
+    evergreen.command(
+        "remember",
+        lambda **values: {"fact": store.remember(**values, created_by="operator")},
+        help="Remember a fact under a stable key",
+        args=[
+            arg("key"),
+            arg("text"),
+            option("priority", int, default=50),
+            option("source_message_id", int),
+            option("reason", default=""),
+            option("review_after"),
+            option("expires_at"),
+        ],
+    )
+    evergreen.command(
+        "revise",
+        lambda **values: {"fact": store.revise(**revision(values), created_by="operator")},
+        help="Replace a fact at the revision you last read",
+        args=[*REVISE_ARGS, option("source_message_id", int)],
+    )
+    evergreen.command(
+        "forget",
+        lambda **values: {"fact": store.forget(**values, created_by="operator")},
+        help="Forget a fact at the revision you last read",
+        args=[
+            arg("fact_id"),
+            arg("expected_revision", int),
+            option("source_message_id", int),
+            option("reason", required=True),
+        ],
+    )

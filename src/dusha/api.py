@@ -7,14 +7,16 @@ import secrets
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from importlib import metadata as _metadata
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import Body, Depends, FastAPI, Header, HTTPException
 
 from . import schema as _schema
 from .api_state import create_state_router
+from .commands import CommandError, message, validate
 from .config import AppConfig, load_config
 from .hooks import Registry
+from .mcp import create_mcp_router
 from .service import CompanionService
 
 logger = logging.getLogger("dusha")
@@ -76,6 +78,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         openapi_tags=[
             {"name": "health", "description": "https://github.com/Somme4096/dusha"},
             {"name": "state", "description": "https://github.com/Somme4096/dusha"},
+            {"name": "cli", "description": "https://github.com/Somme4096/dusha"},
         ],
     )
     app.state.config = cfg
@@ -100,5 +103,25 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             ],
         }
 
+    @app.get("/cli/v1/commands", tags=["cli"], dependencies=[Depends(authorized)])
+    async def cli_commands() -> dict[str, Any]:
+        states = {name: status["state"] for name, status in service.plugins_status().items()}
+        return {**service.commands.manifest(), "plugins": states}
+
+    @app.post("/cli/v1/run/{path:path}", tags=["cli"], dependencies=[Depends(authorized)])
+    async def cli_run(path: str, body: Annotated[dict[str, Any] | None, Body()] = None) -> Any:
+        command = service.commands.find(tuple(path.split("/")))
+        if command is None:
+            raise HTTPException(status_code=404, detail=f"unknown command: {path.replace('/', ' ')}")
+        try:
+            values = validate(command.args, body or {})
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        try:
+            return await asyncio.to_thread(command.handler, **values)
+        except (CommandError, LookupError, ValueError) as error:
+            raise HTTPException(status_code=400, detail=message(error)) from error
+
     app.include_router(create_state_router(service, authorized))
+    app.include_router(create_mcp_router(service, authorized))
     return app

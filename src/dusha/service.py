@@ -11,11 +11,11 @@ from fastapi import APIRouter, HTTPException
 from . import affect, evergreen, identity, memo, memory, proactive
 from . import external as _external
 from . import prompts as _prompts
+from .commands import Commands, arg
 from .config import AppConfig
 from .context import ContextComposer
 from .database import Database
 from .hooks import ContextRequest, Registry
-from .interfaces import CommandError, Commands
 from .memory import MemoryStore, text_from_content
 from .transcript import ROLES, TranscriptTree, transcript_key
 
@@ -33,7 +33,7 @@ class Disabled:
 
 
 class CompanionService:
-    def __init__(self, config: AppConfig, commands: Commands | None = None):
+    def __init__(self, config: AppConfig):
         self.config = config
         self.database = Database(config.database_path)
         self.prompts = _prompts.resolve_prompts(config.prompts)
@@ -42,7 +42,16 @@ class CompanionService:
         self._transcript_lock = threading.Lock()
         self.composer = ContextComposer(prompts=self.prompts)
         self.router = APIRouter()
-        self.commands = commands or Commands()
+        self.commands = Commands()
+        self.commands.command(
+            "health", lambda: {"database": self.database.integrity_check()}, help="Check the database"
+        )
+        self.commands.command(
+            "backup",
+            lambda destination: {"backup": self.backup(destination)},
+            help="Create a consistent SQLite backup at a path on the server",
+            args=[arg("destination")],
+        )
         self.registry = Registry(
             {
                 "settings": config,
@@ -78,13 +87,6 @@ class CompanionService:
             self.router.add_api_route(
                 path, unavailable, methods=["GET", "POST"], include_in_schema=False
             )
-
-        def refuse(args: Any) -> None:
-            raise CommandError(detail)
-
-        parser = self.commands.command(name, f"Unavailable, {detail}")
-        parser.add_argument("rest", nargs="*")
-        parser.set_defaults(run=refuse)
 
     def get(self, name: str) -> Any:
         return self.registry.get(name)

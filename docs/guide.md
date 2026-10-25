@@ -64,7 +64,7 @@ Auth is off by default, and the service binds to localhost. To turn auth on, put
 }
 ```
 
-`openssl rand -hex 32` makes a good one. The config now holds a secret, so run `chmod 600` on it and keep it out of version control.
+`openssl rand -hex 32` makes a good one. The config now holds a secret. `dusha serve` writes it with mode `600`, so keep that mode and keep the file out of version control.
 
 Send the same value in the `X-Companion-Token` header:
 
@@ -75,11 +75,11 @@ curl -X POST http://127.0.0.1:8765/state/v1/context \
   -d '{"query":"Hello"}'
 ```
 
-The [proxy](api.md#proxy) sends the header for your harnesses. On another machine, put the token in `proxy.server.token`. On the same machine, the proxy reads `api_token` itself.
+The [proxy](api.md#proxy) sends the header for your harnesses, and the other `dusha` commands send it for you. On another machine, the proxy's first run asks for the token and saves it in `proxy.server.token`. On the same machine, both read `api_token` themselves. An [MCP](api.md#mcp) harness reaches the server directly, so put the header in its MCP config.
 
 With auth on:
 
-- Every `/state/v1/*` route needs the header. A wrong token returns `401`.
+- Every `/state/v1/*`, `/cli/v1/*`, and `/mcp` route needs the header. A wrong token returns `401`.
 - `/health` stays public.
 - `/docs`, `/redoc`, and `/openapi.json` are off.
 - A new token needs a restart.
@@ -92,7 +92,7 @@ To reach the service from another device, put a TLS reverse proxy in front of it
 dusha backup /path/to/backups/state-$(date +%F).sqlite3
 ```
 
-The command is safe while the service runs. Do not copy `state.sqlite3` by hand during writes.
+The command runs on the server and writes the backup to that path on the server's machine. It is safe while the service runs. Do not copy `state.sqlite3` by hand during writes.
 
 Back up your own files too: `config.json`, the identity, emotions, and prompts files, and the plugins directory.
 
@@ -109,7 +109,7 @@ dusha plugins
 dusha memory reindex
 ```
 
-`plugins` prints each plugin's `state`, `error`, `inject`, `provides`, and `events`. Each plugin adds its own commands, such as `memory`, `evergreen`, `memo`, `affect`, and `proactive`. `memory reindex` rebuilds the built-in search index.
+`plugins` prints each plugin's `state`, `error`, `inject`, `provides`, and `events`. Each plugin adds its own commands, such as `memory`, `evergreen`, `memo`, `affect`, and `proactive`. `memory reindex` rebuilds the built-in search index. Plugin commands run on the server, so it must be up. `dusha --help` lists them, from the last list it saw while the server is down.
 
 ## Troubleshooting
 
@@ -122,6 +122,9 @@ dusha memory reindex
 | Startup fails on an unknown `api_token_env` field | Rename it to `api_token` and put the token value there. |
 | Startup fails on an unknown `memory_plugin` or `decision` field | Move the external plugin under [`plugins`](configuration.md#external-plugins) and `decision.increment` to `plugins.affect.increment`. |
 | Requests return `401` | Send `X-Companion-Token` with the token value. |
+| A command fails with `cannot reach the server` | Start `dusha serve <name>`, or check `proxy.server.url` and `port` in the companion's `config.json`. |
+| A plugin's command ends in `No such command` | The plugin is disabled or inactive, see `dusha plugins`. |
+| `dusha proxy <name>` asks for the server again | That name has no `config.json` on this machine. Check the name with `dusha list`. |
 | Startup fails on `upstream` or `api_openai` moved to `proxy.upstreams` | Delete them and add a [profile](configuration.md#proxy) under `proxy.upstreams` instead. Clients that used `/v1/...` on the server now use `http://127.0.0.1:8766/<profile>`. |
 | The proxy returns `502` | The provider is unreachable or timed out. Read the `detail`, then check the profile's `base_url`. |
 | The proxy forwards but nothing is stored | `GET /health` on the proxy shows `server.status`. Check `proxy.server.url` and `proxy.server.token`. |
