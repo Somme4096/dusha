@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 from datetime import datetime
 from typing import Any
@@ -14,7 +15,8 @@ from .context import ContextComposer
 from .database import Database
 from .hooks import ContextRequest, Registry
 from .interfaces import CommandError, Commands
-from .memory import MemoryStore
+from .memory import MemoryStore, text_from_content
+from .serialization import canonical
 
 logger = logging.getLogger("dusha")
 
@@ -118,6 +120,37 @@ class CompanionService:
             "conversation_id": message.conversation_id,
             "sha256": message.sha256,
         }
+
+    def ingest_transcript(
+        self,
+        *,
+        harness: str,
+        conversation_id: str,
+        messages: list[Any],
+        route: str = "",
+    ) -> dict[str, Any]:
+        key = ""
+        message_id: int | None = None
+        query = ""
+        for message in messages:
+            if not isinstance(message, dict) or message.get("role") not in {"user", "assistant", "tool"}:
+                continue
+            key = hashlib.sha256(f"{key}\n{canonical(message)}".encode()).hexdigest()
+            content = message.get("content")
+            result = self.ingest_message(
+                harness=harness,
+                conversation_id=conversation_id,
+                role=message["role"],
+                content=content if text_from_content(content).strip() else message,
+                route=route,
+                external_id=f"proxy:{key}",
+                source_payload=message,
+            )
+            if message["role"] == "user":
+                message_id = result["id"]
+                stored = self.messages.get(message_id)
+                query = stored["text"] if stored else ""
+        return {"message_id": message_id, "query": query}
 
     def build_context(
         self,

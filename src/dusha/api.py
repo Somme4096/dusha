@@ -12,7 +12,6 @@ from typing import Any
 from fastapi import FastAPI, Header, HTTPException
 
 from . import schema as _schema
-from .api_openai import PathTokenMiddleware, create_openai_router
 from .api_state import create_state_router
 from .config import AppConfig, load_config
 from .hooks import Registry
@@ -77,7 +76,6 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         openapi_tags=[
             {"name": "health", "description": "https://github.com/Somme4096/dusha"},
             {"name": "state", "description": "https://github.com/Somme4096/dusha"},
-            {"name": "proxy", "description": "https://github.com/Somme4096/dusha"},
         ],
     )
     app.state.config = cfg
@@ -97,14 +95,10 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             "status": "ok",
             "companion": cfg.home.name if cfg.home else "",
             "database": await asyncio.to_thread(service.database.integrity_check),
-            "upstream_configured": bool(cfg.upstream.base_url),
             "plugins": [
                 runtime.name for runtime in service.registry.runtimes if runtime.state == "active"
             ],
         }
 
     app.include_router(create_state_router(service, authorized))
-    if cfg.api_openai.enabled:
-        app.include_router(create_openai_router(cfg, service, authorized))
-        app.add_middleware(PathTokenMiddleware)
     return app

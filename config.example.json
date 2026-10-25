@@ -5,16 +5,8 @@
   "timezone": "Asia/Taipei",
   "api_token": "",
   "plugins_dir": "",
-  "api_openai": {
-    "enabled": true
-  },
   "prompts": {
     "path": ""
-  },
-  "upstream": {
-    "base_url": "",
-    "api_key_env": "UPSTREAM_API_KEY",
-    "timeout_seconds": 120
   },
   "embedding": {
     "base_url": "",

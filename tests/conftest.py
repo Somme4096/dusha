@@ -13,7 +13,6 @@ from dusha.config import (
     MemoConfig,
     MemoryConfig,
     ProactiveConfig,
-    UpstreamConfig,
 )
 from dusha.service import CompanionService
 
@@ -32,7 +31,6 @@ def config(tmp_path: Path) -> AppConfig:
     return AppConfig(
         data_dir=tmp_path,
         timezone="Asia/Taipei",
-        upstream=UpstreamConfig(),
         plugins={
             "identity": IdentityConfig(),
             "memory": MemoryConfig(recent_messages=2, search_hits=4, context_messages=1),

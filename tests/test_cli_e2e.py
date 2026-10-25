@@ -208,10 +208,10 @@ def _free_port() -> int:
         return sock.getsockname()[1]
 
 
-def _serve(root: Path, *args: str) -> subprocess.Popen[str]:
+def _serve(root: Path, *args: str, command: str = "serve") -> subprocess.Popen[str]:
     env = {**os.environ, "PYTHONPATH": str(Path(__file__).parents[1] / "src"), "XDG_CONFIG_HOME": str(root)}
     return subprocess.Popen(
-        [sys.executable, "-m", "dusha.cli", "serve", *args], env=env, text=True,
+        [sys.executable, "-m", "dusha.cli", command, *args], env=env, text=True,
         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
     )
 
@@ -291,3 +291,35 @@ def test_cli_reports_disabled_plugins(tmp_path: Path) -> None:
     memo = _run(config, "memo", "list")
     assert memo.returncode == 0, memo.stderr
     assert json.loads(memo.stdout) == {"memos": []}
+
+
+def _get_json(url: str):
+    try:
+        return httpx.get(url, timeout=1).json()
+    except httpx.HTTPError:
+        return None
+
+
+def test_cli_proxy_creates_its_config_and_reaches_the_local_server(tmp_path: Path) -> None:
+    home = tmp_path / "dusha" / "edge"
+    created = _serve(tmp_path, "edge", command="proxy")
+    _, stderr = created.communicate(timeout=30)
+    assert created.returncode == 2
+    assert f"created {home / 'proxy.json'}" in stderr
+    assert "server.url is empty and no config.json" in stderr
+    generated = json.loads((home / "proxy.json").read_text(encoding="utf-8"))
+    assert generated["upstreams"] == {} and generated["port"] == 8766
+
+    server_port, proxy_port = _free_port(), _free_port()
+    (home / "config.json").write_text(json.dumps({"port": server_port, "api_token": "t"}), encoding="utf-8")
+    (home / "proxy.json").write_text(json.dumps({**generated, "port": proxy_port}), encoding="utf-8")
+    server = _serve(tmp_path, "edge")
+    proxy = _serve(tmp_path, "edge", command="proxy")
+    try:
+        _wait_for(lambda: _get_json(f"http://127.0.0.1:{server_port}/health"))
+        health = _wait_for(lambda: _get_json(f"http://127.0.0.1:{proxy_port}/health"))
+    finally:
+        for process in (proxy, server):
+            process.terminate()
+            process.communicate(timeout=10)
+    assert health["server"] == {"url": f"http://127.0.0.1:{server_port}", "status": "ok"}

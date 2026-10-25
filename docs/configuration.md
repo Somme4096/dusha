@@ -37,12 +37,25 @@ Rules for the file:
 | `data_dir` | `data` | Holds `state.sqlite3`. |
 | `timezone` | `Asia/Taipei` | IANA zone for quiet hours and the daily limit. |
 | `api_token` | `""` | The API token. Empty turns auth off. See [Auth](guide.md#auth). |
-| `api_openai.enabled` | `true` | Serves the [OpenAI proxy](api.md#openai-proxy) under `/v1/*`, including [passthrough](api.md#passthrough). |
-| `upstream.base_url` | `""` | Provider the fixed proxy routes forward to. Empty closes them with `503`. |
-| `upstream.api_key_env` | `UPSTREAM_API_KEY` | Environment variable that holds the provider key. When it is unset, the proxy forwards the caller's `Authorization` header. |
-| `upstream.timeout_seconds` | `120` | Applies to passthrough too. |
 
-[Passthrough](api.md#passthrough) under `/v1/to/*` takes the provider address from the request path. It has no keys of its own, ignores `upstream.base_url`, and never sends the `upstream.api_key_env` key.
+`upstream` and `api_openai` moved to [proxy.json](#proxy). Startup rejects them in `config.json`.
+
+## Proxy
+
+`dusha proxy <name>` reads `proxy.json` from the companion home, found in the same order as `config.json`. The first run writes the file. The home can hold `config.json`, `proxy.json`, or both.
+
+| Key | Default | Notes |
+| --- | --- | --- |
+| `host` | `127.0.0.1` | Must be a loopback address. The proxy has no auth of its own. |
+| `port` | `8766` | |
+| `server.url` | `""` | The server's base URL. Empty uses the `config.json` beside `proxy.json`, with its `host`, `port`, and `api_token`. |
+| `server.token` | `""` | The server's `api_token`. The file then holds a secret, so run `chmod 600` on it. |
+| `server.timeout_seconds` | `10` | |
+| `upstreams.<name>.base_url` | | Provider base URL, exactly as the harness would use it. |
+| `upstreams.<name>.headers` | `{}` | Headers set on every forwarded request. Values can hold `{conversation_id}` and `{env:NAME}`. A missing variable fails startup. |
+| `upstreams.<name>.timeout_seconds` | `120` | |
+
+A profile name holds letters, digits, dots, dashes, and underscores, and cannot be `health`. See [Proxy](api.md#proxy) for how requests are routed.
 
 ## Plugins
 

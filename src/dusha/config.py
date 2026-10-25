@@ -10,15 +10,14 @@ import zoneinfo
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from . import emotions as _emotions
-from .defaults import all_defaults
+from .defaults import all_defaults, proxy_defaults
 from .resources import loads_strict
 
 _DEFAULTS = all_defaults()
 _EMOTIONS = _emotions.default_emotions()
-_UPSTREAM = _DEFAULTS["upstream"]
-_API_OPENAI = _DEFAULTS["api_openai"]
 _PLUGINS = _DEFAULTS["plugins"]
 _MEMORY = _PLUGINS["memory"]
 _EMBEDDING = _DEFAULTS["embedding"]
@@ -27,9 +26,11 @@ _MEMO = _PLUGINS["memo"]
 _AFFECT_KNOBS = _EMOTIONS["affect"]
 _PROACTIVE = _PLUGINS["proactive"]
 _PROMPTS = _DEFAULTS["prompts"]
+_PROXY = proxy_defaults()
 
 
 CONFIG_FILE = "config.json"
+PROXY_FILE = "proxy.json"
 IDENTITY_FILE = "identity.md"
 HOME_ENV = "DUSHA_HOME"
 COMPANION_ENV = "DUSHA_COMPANION"
@@ -56,11 +57,22 @@ def create_default_config(home: Path) -> Path:
     return path
 
 
+def create_default_proxy_config(home: Path) -> Path:
+    home.mkdir(parents=True, exist_ok=True)
+    path = home / PROXY_FILE
+    path.write_text(json.dumps(proxy_defaults(), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    return path
+
+
 def list_companions() -> list[str]:
     root = config_root()
     if not root.is_dir():
         return []
-    return sorted(item.name for item in root.iterdir() if (item / CONFIG_FILE).is_file())
+    return sorted(
+        item.name
+        for item in root.iterdir()
+        if (item / CONFIG_FILE).is_file() or (item / PROXY_FILE).is_file()
+    )
 
 
 _UNSET: Any = _emotions.UNSET
@@ -80,7 +92,6 @@ def _fill_unset(config_obj: Any, knobs: dict[str, Any], explicit_attr: str) -> N
 
 
 _BOUNDS: dict[str, dict[str, tuple[float | None, float | None]]] = {
-    "upstream": {"timeout_seconds": (0, None)},
     "embedding": {
         "dimensions": (1, None),
         "timeout_seconds": (0, None),
@@ -124,21 +135,6 @@ def _check_bounds(section: Any, name: str) -> None:
             edge = "above" if key in _EXCLUSIVE_ZERO else "at least"
             limit = f"{edge} {low}" + (f" and at most {high}" if high is not None else "")
             raise ValueError(f"{name}.{key} must be {limit}")
-
-
-@dataclass(slots=True)
-class UpstreamConfig:
-    base_url: str = _UPSTREAM["base_url"]
-    api_key_env: str = _UPSTREAM["api_key_env"]
-    timeout_seconds: float = _UPSTREAM["timeout_seconds"]
-
-    def __post_init__(self) -> None:
-        _check_bounds(self, "upstream")
-
-
-@dataclass(slots=True)
-class ApiOpenAIConfig:
-    enabled: bool = _API_OPENAI["enabled"]
 
 
 @dataclass(slots=True)
@@ -282,9 +278,7 @@ class AppConfig:
     timezone: str = _DEFAULTS["timezone"]
     api_token: str = _DEFAULTS["api_token"]
     plugins_dir: str = _DEFAULTS["plugins_dir"]
-    api_openai: ApiOpenAIConfig = field(default_factory=ApiOpenAIConfig)
     prompts: PromptsConfig = field(default_factory=lambda: PromptsConfig())
-    upstream: UpstreamConfig = field(default_factory=UpstreamConfig)
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     plugins: dict[str, Any] = field(default_factory=dict)
 
@@ -439,6 +433,9 @@ def _plugin_section(name: str, raw: Any, source_dir: Path) -> PluginEntry:
 
 def _app_config_from_raw(raw: dict[str, Any], source_dir: Path) -> AppConfig:
     allowed = set(typing.get_type_hints(AppConfig)) - {"home"}
+    moved = sorted(set(raw) & {"api_openai", "upstream"})
+    if moved:
+        raise ValueError(f"{moved} moved to {PROXY_FILE}, see https://github.com/Somme4096/dusha")
     unknown = sorted(set(raw) - allowed)
     if unknown:
         raise ValueError(f"unknown top-level field(s): {unknown}")
@@ -472,9 +469,7 @@ def _app_config_from_raw(raw: dict[str, Any], source_dir: Path) -> AppConfig:
     return AppConfig(
         **kwargs,
         prompts=prompts,
-        upstream=_strict_section(UpstreamConfig, raw.get("upstream"), "upstream"),
         embedding=_strict_section(EmbeddingConfig, raw.get("embedding"), "embedding"),
-        api_openai=_strict_section(ApiOpenAIConfig, raw.get("api_openai"), "api_openai"),
         plugins=plugins,
     )
 
@@ -526,12 +521,130 @@ def _validate_packaged_defaults() -> None:
     hints = typing.get_type_hints(AppConfig)
     for key in ("data_dir", "host", "port", "timezone", "api_token", "plugins_dir"):
         _validate_value(f"packaged defaults {key}", _DEFAULTS[key], hints[key])
-    _strict_section(UpstreamConfig, _DEFAULTS["upstream"], "packaged defaults upstream")
     _strict_section(EmbeddingConfig, _DEFAULTS["embedding"], "packaged defaults embedding")
-    _strict_section(ApiOpenAIConfig, _DEFAULTS["api_openai"], "packaged defaults api_openai")
     _strict_section(PromptsConfig, _DEFAULTS["prompts"], "packaged defaults prompts")
     for name, raw in _DEFAULTS["plugins"].items():
         _plugin_section(name, raw, Path.cwd())
+
+
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+PROXY_ROUTES = frozenset({"health"})
+PLACEHOLDER = re.compile(r"\{([^{}]*)\}")
+
+
+@dataclass(slots=True)
+class ServerConfig:
+    url: str = _PROXY["server"]["url"]
+    token: str = _PROXY["server"]["token"]
+    timeout_seconds: float = _PROXY["server"]["timeout_seconds"]
+
+
+@dataclass(slots=True)
+class UpstreamProfile:
+    base_url: str = ""
+    headers: dict[str, str] = field(default_factory=dict)
+    timeout_seconds: float = 120.0
+
+
+@dataclass(slots=True)
+class ProxyConfig:
+    home: Path | None = field(default=None, repr=False, compare=False)
+    host: str = _PROXY["host"]
+    port: int = _PROXY["port"]
+    server: ServerConfig = field(default_factory=ServerConfig)
+    upstreams: dict[str, UpstreamProfile] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.host not in LOOPBACK_HOSTS:
+            raise ValueError(f"host must be a loopback address {sorted(LOOPBACK_HOSTS)}, got {self.host!r}")
+        if isinstance(self.port, bool) or not 0 <= self.port <= 65535:
+            raise ValueError("port must be at least 0 and at most 65535")
+
+
+def _timeout(value: float, label: str) -> None:
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{label} must be above 0")
+
+
+def _http_url(value: str, label: str) -> str:
+    parts = urlsplit(value)
+    if parts.scheme not in {"http", "https"} or not parts.hostname or parts.query or parts.fragment:
+        raise ValueError(f"{label} must be an http or https URL without a query, got {value!r}")
+    if "@" in parts.netloc:
+        raise ValueError(f"{label} must not carry credentials")
+    return value.rstrip("/")
+
+
+def _upstream_profile(name: str, raw: Any) -> UpstreamProfile:
+    label = f"upstreams.{name}"
+    if not _COMPANION_NAME.fullmatch(name) or name in PROXY_ROUTES:
+        raise ValueError(
+            f"upstream name must be letters, digits, dot, dash, or underscore and not one of "
+            f"{sorted(PROXY_ROUTES)}, got {name!r}"
+        )
+    profile = _strict_section(UpstreamProfile, raw, label)
+    profile.base_url = _http_url(profile.base_url, f"{label}.base_url")
+    _timeout(profile.timeout_seconds, f"{label}.timeout_seconds")
+    for header, value in profile.headers.items():
+        if not isinstance(value, str):
+            raise ValueError(f"{label}.headers.{header} must be str")
+        for token in PLACEHOLDER.findall(value):
+            variable = token.removeprefix("env:")
+            if token == "conversation_id":
+                continue
+            if token == variable or not variable:
+                raise ValueError(f"{label}.headers.{header} has an unknown placeholder {{{token}}}")
+            if variable not in os.environ:
+                raise ValueError(f"{label}.headers.{header} needs the environment variable {variable}")
+    return profile
+
+
+def _local_server(home: Path) -> tuple[str, str]:
+    if not (home / CONFIG_FILE).is_file():
+        raise ValueError(f"server.url is empty and no {CONFIG_FILE} sits beside {PROXY_FILE} in {home}")
+    local = load_config(home / CONFIG_FILE)
+    host = "127.0.0.1" if local.host in {"", "0.0.0.0", "::"} else local.host
+    return f"http://{f'[{host}]' if ':' in host else host}:{local.port}", local.api_token
+
+
+def _proxy_config_from_raw(raw: dict[str, Any], source_dir: Path) -> ProxyConfig:
+    unknown = sorted(set(raw) - {"host", "port", "server", "upstreams"})
+    if unknown:
+        raise ValueError(f"unknown top-level field(s): {unknown}")
+    hints = typing.get_type_hints(ProxyConfig)
+    kwargs = {key: raw[key] for key in ("host", "port") if key in raw}
+    for key, value in kwargs.items():
+        _validate_value(key, value, hints[key])
+    server = _strict_section(ServerConfig, raw.get("server"), "server")
+    _timeout(server.timeout_seconds, "server.timeout_seconds")
+    if server.url:
+        server.url = _http_url(server.url, "server.url")
+    else:
+        server.url, token = _local_server(source_dir)
+        server.token = server.token or token
+    upstreams = raw.get("upstreams") or {}
+    if not isinstance(upstreams, dict):
+        raise ValueError("upstreams must be an object")
+    profiles = {str(name): _upstream_profile(str(name), value) for name, value in upstreams.items()}
+    return ProxyConfig(**kwargs, server=server, upstreams=profiles)
+
+
+def load_proxy_config(
+    path: str | Path | None = None,
+    *,
+    home: str | Path | None = None,
+    companion: str | None = None,
+) -> ProxyConfig:
+    if path is not None:
+        config_path = _config_file(path)
+    else:
+        selected = resolve_home(home, companion)
+        if selected is None:
+            raise FileNotFoundError(f"no {PROXY_FILE} found. Name a companion to create one")
+        config_path = _config_file(selected / PROXY_FILE)
+    cfg = _proxy_config_from_raw(_read_config_file(config_path), config_path.parent)
+    cfg.home = config_path.parent
+    return cfg
 
 
 _validate_packaged_defaults()

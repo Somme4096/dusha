@@ -31,7 +31,7 @@ Want it running in the background? Use [deploy/dusha@.service](https://github.co
 
 `user message → dusha → injects context → your model → reply → (harness, dusha)`
 
-Integrations (e.g. opencode-dusha) send each message to `dusha` and add its context to the system prompt before calling your model. That's it, so it works with any harness or provider. If your client only supports the OpenAI API, use `dusha` as a proxy instead. Set the client's base URL to `http://127.0.0.1:8765/v1/to/<provider-host>/v1` and keep your own key and model, see [passthrough](https://github.com/Somme4096/dusha/blob/main/docs/api.md#passthrough).
+`dusha serve` is the server that holds the soul, and it can live on another machine. `dusha proxy` runs next to your harness. Point the harness's provider base URL at `http://127.0.0.1:8766/<profile>` and the proxy stores each message, adds the context to the system prompt, and forwards the request to your provider, see [proxy](https://github.com/Somme4096/dusha/blob/main/docs/api.md#proxy). Integrations (e.g. opencode-dusha) can call the server directly instead.
 
 <details>
 <summary>How does memory/affect/identity work in Dusha?</summary>

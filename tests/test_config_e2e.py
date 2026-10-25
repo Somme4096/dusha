@@ -54,7 +54,7 @@ def _prompts_file(tmp_path, mutate, name="prompts.json"):
         ('{"plugins": {"memory": {"retrieval_mode": "x"}}}', r"unknown field\(s\) under plugins.memory"),
         ('{"plugins": {"affect": {"bogus": 1}}}', r"unknown field\(s\) under plugins.affect"),
         ('{"plugins": {"affect": {"emotions": {"bogus": 1}}}}', r"under plugins.affect.emotions"),
-        ('{"upstream": {"timeout_seconds": NaN}}', "non-finite"),
+        ('{"embedding": {"timeout_seconds": NaN}}', "non-finite"),
         ('{"host": "a" // jsonc comment\n}', "invalid JSON"),
         ('{"port": "abc"}', "port must be int"),
         ('{"plugins": {"proactive": {"disabled": "yes"}}}', "plugins.proactive.disabled must be bool"),
@@ -72,8 +72,10 @@ def _prompts_file(tmp_path, mutate, name="prompts.json"):
         ('{"plugins": {"proactive": {"quiet_start_hour": 99}}}', "plugins.proactive.quiet_start_hour"),
         ('{"plugins": {"proactive": {"poll_interval_seconds": -5}}}', "plugins.proactive.poll_interval"),
         ('{"plugins": {"evergreen": {"max_items": -3}}}', "plugins.evergreen.max_items"),
-        ('{"upstream": {"timeout_seconds": 0}}', "upstream.timeout_seconds must be above 0"),
-        ('{"upstream": {"allowed_hosts": ["*"]}}', r"unknown field\(s\) under upstream"),
+        ('{"embedding": {"timeout_seconds": 0}}', "embedding.timeout_seconds must be above 0"),
+        ('{"embedding": {"allowed_hosts": ["*"]}}', r"unknown field\(s\) under embedding"),
+        ('{"upstream": {"base_url": "https://provider.invalid/v1"}}', r"\['upstream'\] moved to proxy\.json"),
+        ('{"api_openai": {"enabled": true}}', r"\['api_openai'\] moved to proxy\.json"),
         ('{"api_token_env": "COMPANION_TOKEN"}', "unknown top-level field"),
         ('{"api_token": 42}', "api_token must be str"),
         ('{"plugins": {"memo": {"text_max_chars": 0}}}', "plugins.memo.text_max_chars"),
@@ -190,7 +192,6 @@ async def test_http_example_config_starts_and_serves(tmp_path):
         health = await client.get("/health")
         context = await client.post("/state/v1/context", json={"query": ""})
     assert health.json()["status"] == "ok"
-    assert health.json()["upstream_configured"] is False
     assert context.status_code == 200
 
 

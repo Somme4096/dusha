@@ -1,6 +1,6 @@
 # API and integration
 
-Base URL: `http://127.0.0.1:8765`. The state API lives under `/state/v1/*` and the optional OpenAI proxy under `/v1/*`.
+Base URL: `http://127.0.0.1:8765`. The server serves the state API under `/state/v1/*`. Model requests go through the [proxy](#proxy), which runs next to your harness.
 
 FastAPI serves the field reference at `/docs` and `/openapi.json`. This page covers the integration flow.
 
@@ -10,6 +10,7 @@ FastAPI serves the field reference at `/docs` and `/openapi.json`. This page cov
 | --- | --- | --- | --- |
 | GET | `/health` | Process and database status, the `companion` name, and the names of the active plugins | 200 |
 | POST | `/state/v1/messages` | Store one message, update affect for a new user message | 200, 401, 422 |
+| POST | `/state/v1/transcript` | Store the new messages of an OpenAI-style transcript | 200, 401, 422 |
 | GET | `/state/v1/messages/{message_id}` | Read one stored message | 200, 401, 404 |
 | POST | `/state/v1/memory/search` | Search the archive with adjacent context | 200, 401, 503 |
 | GET | `/state/v1/memory/{message_id}` | Read a message plus neighbors | 200, 401, 404, 503 |
@@ -27,22 +28,15 @@ FastAPI serves the field reference at `/docs` and `/openapi.json`. This page cov
 | POST | `/state/v1/proactive/evaluate` | Run one evaluation pass | 200, 401, 503 |
 | GET | `/state/v1/proactive/events` | Poll and lease pending events | 200, 401, 503 |
 | POST | `/state/v1/proactive/events/{event_id}/ack` | Acknowledge a leased event | 200, 401, 404, 409, 503 |
-| GET | `/v1/models` | Proxy a model list | 401, 502, 503, upstream |
-| POST | `/v1/chat/completions` | Proxy chat completions and store the transcript | 401, 422, 502, 503, upstream |
-| GET | `/v1/to/{upstream}/models` | Proxy a model list from the upstream in the path | 401, 422, 502, upstream |
-| POST | `/v1/to/{upstream}/chat/completions` | Proxy chat completions to the upstream in the path | 401, 422, 502, upstream |
 
 Statuses that depend on config:
 
-- `401` applies with [auth](guide.md#auth) on. Send the token in `X-Companion-Token`. Proxy clients that cannot set headers can put it in the [base URL](#token-in-the-base-url).
+- `401` applies with [auth](guide.md#auth) on. Send the token in `X-Companion-Token`.
 - `503` on a `/state/v1/*` route means its [plugin](configuration.md#plugins) is disabled or inactive. The `detail` names the plugin.
-- `/v1/*` returns `404` when `api_openai.enabled` is `false` and `503` when `upstream.base_url` is empty.
-- Every proxy route returns `502` when the provider cannot be reached or times out. The `detail` carries the reason.
-- `/v1/to/*` does not need `upstream.base_url`. It returns `422` for an address that is not a valid host and path.
 
 ## Client flow
 
-One exchange takes four steps. The [OpenAI proxy](#openai-proxy) runs all four for you.
+One exchange takes four steps. The [proxy](#proxy) runs all four for you.
 
 ### 1. Ingest the user message
 
@@ -104,15 +98,7 @@ The injection has no overall cap. Each part has its own limit in [config.json](c
 
 ### 3. Call the provider
 
-Send the provider request yourself. When you use the proxy, add the routing headers:
-
-```text
-X-Conversation-Id: stable-conversation-id
-X-Harness: my-harness
-X-Companion-Route: opaque-return-address
-```
-
-`X-Companion-Route` is the return address for proactive messages.
+Send the provider request yourself. Pass the same `route` on ingest as the return address for proactive messages.
 
 ### 4. Archive the assistant reply
 
@@ -325,52 +311,50 @@ Check the AstrBot log for lines that begin with `[dusha]`, and confirm the gatew
 curl http://127.0.0.1:8765/health
 ```
 
-## OpenAI proxy
+## Proxy
 
-`GET /v1/models` and `POST /v1/chat/completions` forward OpenAI-shaped requests to `upstream.base_url`. The proxy:
+`dusha proxy <name>` runs on the machine with your harness and reads `proxy.json` from the companion home. The first run writes the file. It forwards model requests to your provider and makes the server calls from the [client flow](#client-flow) itself, so a harness only needs a base URL. Keys are in [configuration.md](configuration.md#proxy).
 
-- Inserts the context as a system message after any leading system messages.
-- Stores the transcript's user, assistant, and tool turns before the call, and the reply after a successful call.
-- Keeps unknown request fields.
-- Forwards responses byte for byte, including streams and upstream errors.
+Each entry under `upstreams` is a profile:
 
-Send the routing headers from [step 3](#3-call-the-provider). Without `X-Conversation-Id`, conversations collapse into `default`. AstrBot cannot set per-session headers, so use the plugin there.
-
-The proxy sends the provider key from `upstream.api_key_env`. See [configuration.md](configuration.md#server). OAuth flows and Responses-style endpoints are out of scope.
-
-### Passthrough
-
-Passthrough lets the client pick the provider per request. A client that can set headers keeps the plain base URL `http://127.0.0.1:8765/v1` and names the provider in a header:
-
-```text
-X-Upstream-Endpoint: https://api.example.com/v1
+```json
+{
+  "server": {"url": "https://dusha.example.com", "token": "replace-with-the-server-api-token"},
+  "upstreams": {
+    "openai": {"base_url": "https://api.openai.com/v1"},
+    "llama": {"base_url": "http://127.0.0.1:8080/v1"},
+    "anthropic": {"base_url": "https://api.anthropic.com", "headers": {"x-api-key": "{env:ANTHROPIC_API_KEY}"}}
+  }
+}
 ```
 
-The scheme defaults to `https` when the value has none. The header wins over an address in the path.
+In your harness, replace the provider base URL with `http://127.0.0.1:8766/<profile>`. The proxy appends the rest of the request path to the profile's `base_url` unchanged, so any `/v1` in the path belongs to the provider:
 
-Any other client puts the provider address in the path and uses the result as its base URL:
+| Harness request | Forwarded to |
+| --- | --- |
+| `http://127.0.0.1:8766/openai/chat/completions` | `https://api.openai.com/v1/chat/completions` |
+| `http://127.0.0.1:8766/llama/models` | `http://127.0.0.1:8080/v1/models` |
+| `http://127.0.0.1:8766/anthropic/v1/messages` | `https://api.anthropic.com/v1/messages` |
 
-```text
-http://127.0.0.1:8765/v1/to/api.example.com/v1
-http://127.0.0.1:8765/v1/to/http/127.0.0.1:11434/v1
-```
+The proxy:
 
-- The address is the provider base URL without the scheme. It defaults to `https`. A leading `http/` or `https/` segment sets the scheme.
-- Any host is accepted. Anyone who can call the service can relay through it, so turn on [auth](guide.md#auth) before you expose the port.
-- The proxy forwards the caller's headers and query string, including `Authorization`. It drops the routing headers, `X-Companion-Token`, and hop-by-hop headers.
-- The proxy never sends the `upstream.api_key_env` key on these routes. The client logs in and refreshes its own tokens.
-- Context injection, transcript storage, and the `model` field work the same as on the fixed routes.
+- Sends the transcript of each `POST` that ends in `chat/completions` to `/state/v1/transcript`, then inserts the context as a system message after any leading system messages.
+- Archives the reply, streamed or not, and forwards the response byte for byte, including upstream errors.
+- Forwards every other path untouched. Nothing is stored for them.
+- Forwards the caller's headers and query string, including `Authorization`, then sets the profile's `headers` on top. It drops the routing headers, `X-Companion-Token`, and hop-by-hop headers.
+- Sends `X-Companion-Token` to the server itself. Harnesses never need the server token.
+- Forwards without context when the server is down or rejects the token, and logs a warning. That turn is not stored.
+- Returns `404` for an unknown profile, `422` for a chat body without a `messages` list, and `502` when the provider cannot be reached.
 
-### Token in the base URL
+Routing headers are optional:
 
-With [auth](guide.md#auth) on, a client that cannot send `X-Companion-Token` puts the token after `/v1/token/`. Every `/v1/*` proxy route accepts the prefix:
+| Header | Default | Purpose |
+| --- | --- | --- |
+| `X-Conversation-Id` | `default` | Keeps conversations apart. Without it, conversations collapse into one. |
+| `X-Harness` | The profile name | Labels stored messages. |
+| `X-Companion-Route` | `""` | Return address for proactive messages. |
 
-```text
-http://127.0.0.1:8765/v1/token/<token>
-http://127.0.0.1:8765/v1/token/<token>/to/api.example.com/v1
-```
-
-The token must not contain `/`. The service strips it before routing, so its own access log shows the path without it. Other hops, such as a reverse proxy, still see the full URL.
+`GET /health` on the proxy reports `server.status` as `ok`, `unauthorized`, `unreachable`, or `http <status>`, and lists the profile names.
 
 ## Versions
 

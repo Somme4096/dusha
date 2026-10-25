@@ -21,6 +21,13 @@ class MessageInput(GatewayInput):
     occurred_at: str | None = None
 
 
+class TranscriptInput(GatewayInput):
+    harness: str = "api"
+    conversation_id: str = "default"
+    route: str = ""
+    messages: list[Any]
+
+
 class ContextInput(GatewayInput):
     query: str = ""
     harness: str = ""
@@ -57,6 +64,23 @@ def create_state_router(service: CompanionService, authorized) -> APIRouter:
             route=body.route,
             external_id=body.external_id,
             occurred_at=body.occurred_at,
+            errors=(ValueError,),
+        )
+
+    @router.post(
+        "/state/v1/transcript",
+        tags=["state"],
+        response_model=_schema.TranscriptResponse,
+        summary="Ingest a transcript",
+        responses=errors(422),
+    )
+    async def ingest_transcript(body: TranscriptInput) -> dict[str, Any]:
+        return await call(
+            service.ingest_transcript,
+            harness=body.harness,
+            conversation_id=body.conversation_id,
+            messages=body.messages,
+            route=body.route,
             errors=(ValueError,),
         )
 

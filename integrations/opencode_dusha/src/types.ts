@@ -26,7 +26,6 @@ export interface HealthResponse {
   status: string;
   companion?: string;
   database: string;
-  upstream_configured: boolean;
   plugins?: string[];
   [key: string]: unknown;
 }

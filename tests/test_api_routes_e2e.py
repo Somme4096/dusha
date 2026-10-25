@@ -9,7 +9,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from dusha import api, api_openai
+from dusha import api
 
 
 async def _run_inline(function, /, *args, **kwargs):
@@ -36,68 +36,6 @@ def _to_thread_inline(monkeypatch):
     monkeypatch.setattr(api.asyncio, "to_thread", _run_inline)
 
 
-def _proxy_app(config, monkeypatch, fake_upstream):
-    config.upstream.base_url = "https://upstream.invalid/v1"
-    monkeypatch.setattr(api_openai, "_upstream_request", fake_upstream)
-    return api.create_app(config)
-
-
-def _reply(content, **kwargs):
-    return httpx.Response(
-        200, json={"choices": [{"index": 0, "message": {"role": "assistant", "content": content}}]}, **kwargs
-    )
-
-
-def _chat(client, messages, headers=None, **extra):
-    return client.post(
-        "/v1/chat/completions",
-        json={"model": "upstream", "messages": messages, **extra},
-        headers=headers,
-    )
-
-
-STREAM_CHUNKS = [
-    b'data: {"choices":[{"delta":{"content":"streamed "}}]}\n\n',
-    b'data: {"choices":[{"delta":{"content":"reply"}}]}\n\n',
-    b"data: [DONE]\n\n",
-]
-
-
-class _FakeStreamClient:
-    def __init__(self, chunks, status_code=200, content_type="text/event-stream"):
-        self._chunks = chunks
-        self.status_code = status_code
-        self.headers = {"content-type": content_type}
-        self.content = b"".join(chunks)
-
-    async def aiter_bytes(self):
-        for chunk in self._chunks:
-            yield chunk
-
-    async def aread(self):
-        return self.content
-
-    async def aclose(self):
-        pass
-
-    def build_request(self, method, url, **kwargs):
-        return ("build_request", url)
-
-    async def send(self, request, stream=False):
-        return self
-
-
-async def _stream_post(config, monkeypatch, fake, content="Hi"):
-    config.upstream.base_url = "https://upstream.invalid/v1"
-    app = api.create_app(config)
-    async with _client(app) as client:
-        monkeypatch.setattr(api_openai.httpx, "AsyncClient", lambda *args, **kwargs: fake)
-        response = await client.post("/v1/chat/completions",
-                                     json={"model": "upstream", "stream": True,
-                                           "messages": [{"role": "user", "content": content}]})
-    return app, response
-
-
 async def test_consolidated_error_mappings_keep_status_and_detail(config, monkeypatch):
     cases = [
         ("GET", "/state/v1/evergreen/facts/missing/history", None, 404, "evergreen fact not found"),
@@ -119,325 +57,6 @@ async def test_consolidated_error_mappings_keep_status_and_detail(config, monkey
             assert response.status_code == status
             if detail is not None:
                 assert response.json()["detail"] == detail
-
-
-async def test_state_api_and_openai_proxy_preserve_one_canonical_transcript(config, monkeypatch):
-    captured: list[dict] = []
-    replies = iter(["First reply.", "Second reply."])
-
-    async def fake_upstream(request, cfg, path, body):
-        captured.append(body)
-        return _reply(next(replies), headers={"content-type": "application/json"})
-
-    app = _proxy_app(config, monkeypatch, fake_upstream)
-    async with _client(app) as client:
-        headers = {"X-Conversation-Id": "portable-thread", "X-Harness": "test-harness"}
-        first = await _chat(client, [{"role": "user", "content": "Hello."}], headers)
-        assert first.status_code == 200
-        second = await _chat(client, [{"role": "user", "content": "Hello."},
-                                      {"role": "assistant", "content": "First reply."},
-                                      {"role": "user", "content": "Remember the amber window."}], headers)
-        assert second.status_code == 200
-        search = await client.post("/state/v1/memory/search", json={"query": "amber window"})
-        assert search.status_code == 200
-        recalled = [m["text"] for hit in search.json()["results"] for m in hit["messages"]]
-        assert "Remember the amber window." in recalled
-    stored = await _stored(app)
-    assert [m["text"] for m in stored] == ["Hello.", "First reply.", "Remember the amber window.",
-                                           "Second reply."]
-    assert stored[0]["content"] == {"role": "user", "content": "Hello."}
-    assert len(captured) == 2
-    injected = captured[1]["messages"][0]
-    assert injected["role"] == "system"
-    assert "<companion_state>" in injected["content"]
-    assert "amber window" not in injected["content"]
-    assert "First reply." not in injected["content"]
-
-
-async def test_proxy_replay_dedups_through_upstream_round_trip(config, monkeypatch):
-    async def fake_upstream(request, cfg, path, body):
-        return _reply("Final reply.")
-
-    app = _proxy_app(config, monkeypatch, fake_upstream)
-    transcript = [
-        {"role": "system", "content": "ignored"},
-        {"role": "user", "content": "Hello."},
-        {"role": "assistant", "content": "A reply."},
-        {"role": "user", "content": "Remember the amber window."},
-    ]
-    async with _client(app) as client:
-        first = await _chat(client, transcript)
-        replay = await _chat(client, transcript)
-        assert first.status_code == replay.status_code == 200
-    stored = await _stored(app)
-    assert [m["text"] for m in stored] == [
-        "Hello.", "A reply.", "Remember the amber window.", "Final reply.",
-    ]
-
-
-async def test_proxy_tool_call_body_preserved_and_archived(config, monkeypatch):
-    tool_message = {
-        "role": "assistant", "content": None,
-        "tool_calls": [{"id": "call_1", "type": "function",
-                        "function": {"name": "lookup", "arguments": '{"key":"value"}'}}],
-    }
-    captured: list[dict] = []
-
-    async def fake_tool_reply(request, cfg, path, body):
-        return httpx.Response(200, json={"choices": [{"index": 0, "message": tool_message}]})
-
-    async def fake_ok_reply(request, cfg, path, body):
-        captured.append(body)
-        return _reply("ok")
-
-    app = _proxy_app(config, monkeypatch, fake_tool_reply)
-    async with _client(app) as client:
-        response = await _chat(
-            client, [{"role": "user", "content": "Look it up."}], {"X-Conversation-Id": "tools"}
-        )
-    assert response.status_code == 200
-    stored = await _stored(app)
-    assert stored[-1]["content"] == tool_message
-    assert '"name":"lookup"' in stored[-1]["text"]
-
-    app2 = _proxy_app(config, monkeypatch, fake_ok_reply)
-    async with _client(app2) as client:
-        forwarded = await _chat(client, [{"role": "user", "content": "Look it up."}, tool_message])
-    assert forwarded.status_code == 200
-    assert captured[0]["messages"][2] == tool_message
-
-
-async def test_proxy_preserves_unknown_fields_and_caller_auth(config, monkeypatch):
-    captured: dict = {}
-
-    async def fake_upstream(request, cfg, path, body):
-        captured.update(body)
-        captured["_headers"] = dict(request.headers)
-        return _reply("ok")
-
-    async with _client(_proxy_app(config, monkeypatch, fake_upstream)) as client:
-        response = await _chat(
-            client, [{"role": "user", "content": "Hello.", "custom_message_field": "preserved"}],
-            {"Authorization": "Bearer caller-token"}, custom_top_level_field={"keep": "me"},
-        )
-    assert response.status_code == 200
-    assert captured["custom_top_level_field"] == {"keep": "me"}
-    assert captured["messages"][0]["role"] == "system"
-    assert "<companion_state>" in captured["messages"][0]["content"]
-    assert captured["messages"][1] == {"role": "user", "content": "Hello.",
-                                       "custom_message_field": "preserved"}
-    assert captured["_headers"].get("authorization") == "Bearer caller-token"
-
-    async def fake_error(request, cfg, path, body):
-        return httpx.Response(503, content=b"raw upstream error body", headers={"content-type": "text/plain"})
-
-    async with _client(_proxy_app(config, monkeypatch, fake_error)) as client:
-        error = await _chat(client, [{"role": "user", "content": "Hi"}])
-    assert error.status_code == 503
-    assert error.content == b"raw upstream error body"
-
-
-async def test_proxy_models_503_and_passthrough(config, monkeypatch):
-    config.upstream.base_url = ""
-    async with _client(api.create_app(config)) as client:
-        models = await client.get("/v1/models")
-    assert models.status_code == 503
-    assert models.json()["detail"] == "upstream.base_url is not configured"
-
-    captured: dict = {}
-
-    async def fake_upstream(request, cfg, path, body):
-        captured.update({"path": path, "body": body})
-        return httpx.Response(
-            200, content=b'{"data":[{"id":"gpt-test"}]}', headers={"content-type": "application/json"}
-        )
-
-    async with _client(_proxy_app(config, monkeypatch, fake_upstream)) as client:
-        response = await client.get("/v1/models")
-    assert response.status_code == 200
-    assert captured == {"path": "/models", "body": None}
-    assert response.content == b'{"data":[{"id":"gpt-test"}]}'
-    assert response.headers["content-type"] == "application/json"
-
-
-@pytest.fixture
-def provider_stub():
-    # Stands in for an external chat provider.
-    import threading
-    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-
-    seen: list[dict] = []
-
-    class Handler(BaseHTTPRequestHandler):
-        def _record(self, body):
-            seen.append({"path": self.path, "headers": {k.lower(): v for k, v in self.headers.items()},
-                         "body": body})
-
-        def _send(self, payload, content_type):
-            self.send_response(200)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Content-Length", str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
-
-        def do_GET(self):
-            self._record(None)
-            self._send(b'{"data":[{"id":"stub-model"}]}', "application/json")
-
-        def do_POST(self):
-            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-            self._record(body)
-            if body.get("stream"):
-                self._send(b"".join(STREAM_CHUNKS), "text/event-stream")
-            else:
-                reply = {"choices": [{"index": 0, "message": {"role": "assistant", "content": "stub reply"}}]}
-                self._send(json.dumps(reply).encode(), "application/json")
-
-        def log_message(self, *args):
-            pass
-
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    yield f"127.0.0.1:{server.server_address[1]}", seen
-    server.shutdown()
-    server.server_close()
-
-
-async def test_passthrough_forwards_to_the_upstream_named_in_the_path(config, monkeypatch, provider_stub):
-    host, seen = provider_stub
-    monkeypatch.setenv("UPSTREAM_API_KEY", "fixed-upstream-key")
-    app = api.create_app(config)
-    base = f"/v1/to/http/{host}/v1"
-    headers = {
-        "Authorization": "Bearer caller-oauth-token",
-        "X-Provider-Extra": "kept",
-        "X-Conversation-Id": "passthrough",
-        "X-Harness": "e2e",
-        "X-Companion-Route": "return-address",
-    }
-    async with _client(app) as client:
-        models = await client.get(f"{base}/models?api-version=7", headers=headers)
-        chat = await client.post(
-            f"{base}/chat/completions", headers=headers,
-            json={"model": "any-model", "messages": [{"role": "user", "content": "Passthrough hello."}]},
-        )
-        stream = await client.post(
-            f"{base}/chat/completions", headers=headers,
-            json={"model": "any-model", "stream": True,
-                  "messages": [{"role": "user", "content": "Passthrough stream."}]},
-        )
-    assert models.json() == {"data": [{"id": "stub-model"}]}
-    assert chat.json()["choices"][0]["message"]["content"] == "stub reply"
-    assert stream.content == b"".join(STREAM_CHUNKS)
-    assert [item["path"] for item in seen] == [
-        "/v1/models?api-version=7", "/v1/chat/completions", "/v1/chat/completions",
-    ]
-    for item in seen:
-        assert item["headers"]["authorization"] == "Bearer caller-oauth-token"
-        assert item["headers"]["x-provider-extra"] == "kept"
-        assert item["headers"]["host"] == host
-        assert not {"x-conversation-id", "x-harness", "x-companion-route"} & set(item["headers"])
-    assert seen[1]["body"]["model"] == "any-model"
-    assert "<companion_state>" in seen[1]["body"]["messages"][0]["content"]
-    stored = [(item["role"], item["text"]) for item in await _stored(app)]
-    assert stored == [
-        ("user", "Passthrough hello."), ("assistant", "stub reply"),
-        ("user", "Passthrough stream."), ("assistant", "streamed reply"),
-    ]
-
-
-async def test_passthrough_reads_the_upstream_header_and_the_path_token(config, provider_stub):
-    host, seen = provider_stub
-    config.api_token = "path-secret"
-    app = api.create_app(config)
-    body = {"model": "any-model", "messages": [{"role": "user", "content": "Header hello."}]}
-    endpoint = {"X-Upstream-Endpoint": f"http://{host}/v1", "Authorization": "Bearer provider-key"}
-    async with _client(app) as client:
-        responses = [
-            await client.get("/v1/models", headers={**endpoint, "X-Companion-Token": "path-secret"}),
-            await client.post("/v1/token/path-secret/chat/completions", headers=endpoint, json=body),
-            await client.get(f"/v1/token/path-secret/to/http/{host}/v1/models?page=2",
-                             headers={"Authorization": "Bearer provider-key"}),
-        ]
-        denied = [
-            await client.get("/v1/models", headers=endpoint),
-            await client.get(f"/v1/token/wrong/to/http/{host}/v1/models"),
-            await client.get("/v1/token/wrong/models", headers=endpoint),
-        ]
-        invalid = await client.get(
-            "/v1/token/path-secret/models", headers={"X-Upstream-Endpoint": f"ftp://{host}/v1"}
-        )
-    assert [response.status_code for response in responses] == [200, 200, 200]
-    assert [response.status_code for response in denied] == [401, 401, 401]
-    assert invalid.status_code == 422
-    assert [item["path"] for item in seen] == ["/v1/models", "/v1/chat/completions", "/v1/models?page=2"]
-    for item in seen:
-        assert item["headers"]["authorization"] == "Bearer provider-key"
-        assert not {"x-companion-token", "x-upstream-endpoint"} & set(item["headers"])
-        assert "path-secret" not in json.dumps(item)
-    assert "<companion_state>" in seen[1]["body"]["messages"][0]["content"]
-
-
-@pytest.mark.parametrize("stream", [False, True])
-async def test_proxy_maps_an_unreachable_upstream_to_502(config, stream):
-    import socket
-
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        port = probe.getsockname()[1]
-    config.upstream.base_url = f"http://127.0.0.1:{port}/v1"
-    body = {"model": "any-model", "stream": stream, "messages": [{"role": "user", "content": "Anyone?"}]}
-    async with _client(api.create_app(config)) as client:
-        responses = [
-            await client.get("/v1/models"),
-            await client.post("/v1/chat/completions", json=body),
-            await client.get(f"/v1/to/http/127.0.0.1:{port}/v1/models"),
-            await client.post(f"/v1/to/http/127.0.0.1:{port}/v1/chat/completions", json=body),
-        ]
-    assert [response.status_code for response in responses] == [502, 502, 502, 502]
-    assert all(response.json()["detail"].startswith("upstream request failed: ") for response in responses)
-
-
-@pytest.mark.parametrize("target", ["http/user@{host}/v1", "http"])
-async def test_passthrough_rejects_an_invalid_upstream_address(config, provider_stub, target):
-    host, seen = provider_stub
-    app = api.create_app(config)
-    base = f"/v1/to/{target.format(host=host)}"
-    async with _client(app) as client:
-        models = await client.get(f"{base}/models")
-        chat = await client.post(
-            f"{base}/chat/completions",
-            json={"model": "any-model", "messages": [{"role": "user", "content": "Address probe."}]},
-        )
-    assert (models.status_code, chat.status_code) == (422, 422)
-    assert not seen
-    assert not await _stored(app)
-
-
-@pytest.mark.parametrize(
-    ("fake", "status", "content", "check"),
-    [
-        (_FakeStreamClient(STREAM_CHUNKS), 200, "Hi", "raw"),
-        (_FakeStreamClient([b"upstream exploded"], status_code=502, content_type="text/plain"),
-         502, "Hi", "error"),
-        (_FakeStreamClient(STREAM_CHUNKS), 200, "Stream it.", "drain"),
-    ],
-)
-async def test_proxy_stream_passthrough_and_drain(config, monkeypatch, fake, status, content, check):
-    app, response = await _stream_post(config, monkeypatch, fake, content=content)
-    assert response.status_code == status
-    if check == "error":
-        assert response.content == b"upstream exploded"
-        assert response.headers["content-type"].startswith("text/plain")
-    elif check == "drain":
-        monkeypatch.undo()
-        stored = await _stored(app)
-        assert [m["role"] for m in stored] == ["user", "assistant"]
-        assert stored[-1]["text"] == stored[-1]["content"] == "streamed reply"
-        assert stored[-1]["external_id"].startswith("proxy:")
-    else:
-        assert STREAM_CHUNKS[0] in response.content
-        assert b"data: [DONE]\n\n" in response.content
 
 
 async def test_unknown_message_field_is_rejected(config):
@@ -584,7 +203,7 @@ async def test_openapi_paths_are_documented(config, monkeypatch):
             "/state/v1/memo/add", "/state/v1/memo/list", "/state/v1/memo/{note_id}/done",
             "/state/v1/context", "/state/v1/affect",
             "/state/v1/proactive/evaluate", "/state/v1/proactive/events",
-            "/state/v1/proactive/events/{event_id}/ack", "/v1/models", "/v1/chat/completions",
+            "/state/v1/proactive/events/{event_id}/ack", "/state/v1/transcript",
         ]:
             assert path in paths, f"missing documented path {path}"
 
@@ -674,20 +293,17 @@ PROTECTED_ROUTES = [
     ("POST", "/state/v1/proactive/evaluate", None, None),
     ("GET", "/state/v1/proactive/events", None, {"consumer": "c"}),
     ("POST", "/state/v1/proactive/events/evt/ack", {"consumer": "c", "outcome": "sent"}, None),
-    ("GET", "/v1/models", None, None),
-    ("POST", "/v1/chat/completions",
-     {"model": "m", "messages": [{"role": "user", "content": "hi"}]}, None),
+    ("POST", "/state/v1/transcript", {"messages": [{"role": "user", "content": "hi"}]}, None),
 ]
 
 
 async def test_auth_disabled_local_mode_is_open(config):
-    config.upstream.base_url = ""
     app = api.create_app(config)
     async with _client(app) as client:
         models = await client.get("/v1/models")
         context = await client.post("/state/v1/context", json={"query": ""})
         openapi = await client.get("/openapi.json")
-    assert models.status_code == 503
+    assert models.status_code == 404
     assert context.status_code == 200
     assert openapi.status_code == 200
 
@@ -697,7 +313,6 @@ async def test_protected_routes_require_companion_token(
     config, monkeypatch, method, path, payload, params
 ):
     config.api_token = "secret-token"
-    config.upstream.base_url = ""
     app = api.create_app(config)
     async with _client(app) as client:
         missing = await client.request(method, path, json=payload, params=params)
@@ -732,39 +347,3 @@ async def test_api_docs_disabled_when_auth_enabled(config, monkeypatch):
         for path in ("/docs", "/redoc", "/openapi.json"):
             response = await client.get(path)
             assert response.status_code == 404, path
-
-
-async def test_auth_enabled_streaming_and_upstream_authorization(config, monkeypatch):
-    config.api_token = "secret-token"
-    config.upstream.base_url = "https://upstream.invalid/v1"
-    app = api.create_app(config)
-
-    fake = _FakeStreamClient(STREAM_CHUNKS)
-    async with _client(app) as client:
-        with monkeypatch.context() as patch:
-            patch.setattr(api_openai.httpx, "AsyncClient", lambda *args, **kwargs: fake)
-            streamed = await client.post(
-                "/v1/chat/completions",
-                json={"model": "upstream", "stream": True,
-                      "messages": [{"role": "user", "content": "Hi"}]},
-                headers={"X-Companion-Token": "secret-token"},
-            )
-    assert streamed.status_code == 200
-    assert STREAM_CHUNKS[0] in streamed.content
-    assert b"data: [DONE]\n\n" in streamed.content
-
-    captured_headers: dict = {}
-
-    async def fake_upstream(request, cfg, path, body):
-        captured_headers.update(api_openai._upstream_headers(request, cfg))
-        return _reply("ok")
-
-    monkeypatch.setattr(api_openai, "_upstream_request", fake_upstream)
-    async with _client(app) as client:
-        forwarded = await _chat(
-            client,
-            [{"role": "user", "content": "Hi"}],
-            {"X-Companion-Token": "secret-token", "Authorization": "Bearer caller-token"},
-        )
-    assert forwarded.status_code == 200
-    assert captured_headers.get("authorization") == "Bearer caller-token"

@@ -17,7 +17,6 @@ class HealthResponse(ExtraAllow):
     status: str
     companion: str = ""
     database: str
-    upstream_configured: bool
     plugins: list[str]
 
 
@@ -45,6 +44,11 @@ class IngestResponse(ExtraAllow):
     duplicate: bool
     conversation_id: int
     sha256: str
+
+
+class TranscriptResponse(ExtraAllow):
+    message_id: int | None
+    query: str
 
 
 class AffectStatusResponse(ExtraAllow):
