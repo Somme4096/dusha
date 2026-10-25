@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import hashlib
 import logging
+import threading
+import uuid
 from datetime import datetime
 from typing import Any
 
@@ -16,7 +17,7 @@ from .database import Database
 from .hooks import ContextRequest, Registry
 from .interfaces import CommandError, Commands
 from .memory import MemoryStore, text_from_content
-from .serialization import canonical
+from .transcript import ROLES, TranscriptTree, transcript_key
 
 logger = logging.getLogger("dusha")
 
@@ -37,6 +38,8 @@ class CompanionService:
         self.database = Database(config.database_path)
         self.prompts = _prompts.resolve_prompts(config.prompts)
         self.messages = MemoryStore(self.database)
+        self.transcripts = TranscriptTree(self.database)
+        self._transcript_lock = threading.Lock()
         self.composer = ContextComposer(prompts=self.prompts)
         self.router = APIRouter()
         self.commands = commands or Commands()
@@ -125,32 +128,44 @@ class CompanionService:
         self,
         *,
         harness: str,
-        conversation_id: str,
         messages: list[Any],
+        conversation_id: str = "",
         route: str = "",
     ) -> dict[str, Any]:
-        key = ""
-        message_id: int | None = None
-        query = ""
-        for message in messages:
-            if not isinstance(message, dict) or message.get("role") not in {"user", "assistant", "tool"}:
-                continue
-            key = hashlib.sha256(f"{key}\n{canonical(message)}".encode()).hexdigest()
-            content = message.get("content")
-            result = self.ingest_message(
-                harness=harness,
-                conversation_id=conversation_id,
-                role=message["role"],
-                content=content if text_from_content(content).strip() else message,
-                route=route,
-                external_id=f"proxy:{key}",
-                source_payload=message,
-            )
-            if message["role"] == "user":
-                message_id = result["id"]
-                stored = self.messages.get(message_id)
-                query = stored["text"] if stored else ""
-        return {"message_id": message_id, "query": query}
+        turns = [item for item in messages if isinstance(item, dict) and item.get("role") in ROLES]
+        conversation = conversation_id
+        parent: int | None = None
+        user: int | None = None
+        with self._transcript_lock:
+            for message in turns:
+                key = transcript_key(message)
+                found = None
+                if parent is not None:
+                    found = self.transcripts.child(parent, key)
+                elif root := self.transcripts.root(harness, key, conversation_id):
+                    found, conversation = root
+                if found is None:
+                    conversation = conversation or f"auto-{uuid.uuid4().hex[:12]}"
+                    content = message.get("content")
+                    result = self.ingest_message(
+                        harness=harness,
+                        conversation_id=conversation,
+                        role=message["role"],
+                        content=content if text_from_content(content).strip() else message,
+                        route=route,
+                        source_payload=message,
+                    )
+                    found = result["id"]
+                    self.transcripts.add(found, parent, result["conversation_id"], key)
+                parent = found
+                if message["role"] == "user":
+                    user = found
+        stored = self.messages.get(user) if user is not None else None
+        return {
+            "conversation_id": conversation,
+            "message_id": user,
+            "query": stored["text"] if stored else "",
+        }
 
     def build_context(
         self,

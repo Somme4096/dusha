@@ -76,7 +76,7 @@ class Server:
             return "unauthorized"
         return "ok" if response.status_code < 400 else f"http {response.status_code}"
 
-    async def inject(self, turn: Turn, messages: list[Any]) -> list[Any] | None:
+    async def inject(self, turn: Turn, messages: list[Any]) -> tuple[list[Any] | None, str]:
         try:
             ingested = await self.post("/state/v1/transcript", turn.transcript(messages))
             context = await self.post(
@@ -84,15 +84,15 @@ class Server:
                 {
                     "query": ingested["query"],
                     "harness": turn.harness,
-                    "conversation_id": turn.conversation_id,
+                    "conversation_id": ingested["conversation_id"],
                     "exclude_message_ids": [ingested["message_id"]] if ingested["message_id"] else [],
                     "include_recent": False,
                 },
             )
         except (httpx.HTTPError, ValueError, KeyError) as error:
             logger.warning("server %s failed, forwarding without context: %s", self.url, error)
-            return None
-        return _inject_context(messages, context["injection"])
+            return None, turn.conversation_id
+        return _inject_context(messages, context["injection"]), ingested["conversation_id"]
 
     async def archive(self, turn: Turn, messages: list[Any], reply: dict[str, Any]) -> None:
         try:
@@ -236,12 +236,12 @@ def create_proxy_app(config: AppConfig) -> FastAPI:
             raise HTTPException(status_code=422, detail="messages must be a list")
         turn = Turn(
             harness=request.headers.get("x-harness") or name,
-            conversation_id=request.headers.get("x-conversation-id") or "default",
+            conversation_id=request.headers.get("x-conversation-id", ""),
             route=request.headers.get("x-companion-route", ""),
         )
-        injected = await server.inject(turn, messages)
+        injected, conversation = await server.inject(turn, messages)
         forwarded = {**body, "messages": injected} if injected is not None else body
-        response = await send(request, name, path, json.dumps(forwarded).encode(), turn.conversation_id)
+        response = await send(request, name, path, json.dumps(forwarded).encode(), conversation)
         if response.status_code >= 400 or injected is None:
             return streamed(response)
         if body.get("stream"):
@@ -270,7 +270,7 @@ def create_proxy_app(config: AppConfig) -> FastAPI:
             raise HTTPException(status_code=404, detail=f"no upstream named {name!r}")
         if request.method == "POST" and path.rstrip("/").endswith("chat/completions"):
             return await chat(request, name, path)
-        conversation_id = request.headers.get("x-conversation-id") or "default"
+        conversation_id = request.headers.get("x-conversation-id", "")
         return streamed(await send(request, name, path, await request.body(), conversation_id))
 
     return app

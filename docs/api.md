@@ -10,7 +10,7 @@ FastAPI serves the field reference at `/docs` and `/openapi.json`. This page cov
 | --- | --- | --- | --- |
 | GET | `/health` | Process and database status, the `companion` name, and the names of the active plugins | 200 |
 | POST | `/state/v1/messages` | Store one message, update affect for a new user message | 200, 401, 422 |
-| POST | `/state/v1/transcript` | Store the new messages of an OpenAI-style transcript | 200, 401, 422 |
+| POST | `/state/v1/transcript` | Store the new messages of an OpenAI-style transcript, see [conversation matching](#conversation-matching) | 200, 401, 422 |
 | GET | `/state/v1/messages/{message_id}` | Read one stored message | 200, 401, 404 |
 | POST | `/state/v1/memory/search` | Search the archive with adjacent context | 200, 401, 503 |
 | GET | `/state/v1/memory/{message_id}` | Read a message plus neighbors | 200, 401, 404, 503 |
@@ -352,9 +352,19 @@ Routing headers are optional:
 
 | Header | Default | Purpose |
 | --- | --- | --- |
-| `X-Conversation-Id` | `default` | Keeps conversations apart. Without it, conversations collapse into one. |
+| `X-Conversation-Id` | Inferred | Names the conversation. See [conversation matching](#conversation-matching). |
 | `X-Harness` | The profile name | Labels stored messages. |
 | `X-Companion-Route` | `""` | Return address for proactive messages. |
+
+### Conversation matching
+
+The server keeps each transcript as a tree of messages. A message matches when its role, text, tool calls, and `tool_call_id` equal a stored one under the same parent. Other fields, such as `cache_control` or `refusal`, and the JSON spacing of tool arguments do not count.
+
+- A transcript that extends a stored one continues that conversation. Only the new messages are stored.
+- An edited or regenerated turn becomes a branch of the same conversation. The shared messages are not stored again.
+- A transcript whose first message matches nothing starts a new conversation named `auto-<id>`.
+- Two sessions that open with the same message share a conversation. Send `X-Conversation-Id` to keep them apart.
+- History rewritten from its first message, such as a compacted session, starts a new conversation.
 
 `GET /health` on the proxy reports `server.status` as `ok`, `unauthorized`, `unreachable`, or `http <status>`, and lists the profile names.
 

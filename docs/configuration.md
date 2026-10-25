@@ -52,7 +52,7 @@ Rules for the file:
 | `proxy.server.token` | `""` | The server's `api_token`. The file then holds a secret, so run `chmod 600` on it. |
 | `proxy.server.timeout_seconds` | `10` | |
 | `proxy.upstreams.<name>.base_url` | | Provider base URL, exactly as the harness would use it. |
-| `proxy.upstreams.<name>.headers` | `{}` | Headers set on every forwarded request. Values can hold `{conversation_id}` and `{env:NAME}`. A missing variable fails startup. |
+| `proxy.upstreams.<name>.headers` | `{}` | Headers set on every forwarded request. Values can hold `{conversation_id}`, the matched conversation's name, and `{env:NAME}`. A missing variable fails startup. |
 | `proxy.upstreams.<name>.timeout_seconds` | `120` | |
 
 A profile name holds letters, digits, dots, dashes, and underscores, and cannot be `health`. See [Proxy](api.md#proxy) for how requests are routed.

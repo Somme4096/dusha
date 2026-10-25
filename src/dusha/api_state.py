@@ -23,7 +23,7 @@ class MessageInput(GatewayInput):
 
 class TranscriptInput(GatewayInput):
     harness: str = "api"
-    conversation_id: str = "default"
+    conversation_id: str = ""
     route: str = ""
     messages: list[Any]
 

@@ -57,6 +57,15 @@ CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE OF text ON messages BEGIN
     INSERT INTO messages_fts(rowid, text) VALUES (new.id, new.text);
 END;
 
+CREATE TABLE IF NOT EXISTS transcript_nodes (
+    message_id INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+    parent_id INTEGER REFERENCES transcript_nodes(message_id) ON DELETE CASCADE,
+    conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    key TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS transcript_children ON transcript_nodes(parent_id);
+CREATE INDEX IF NOT EXISTS transcript_roots ON transcript_nodes(conversation_id) WHERE parent_id IS NULL;
+
 PRAGMA user_version = 5;
 """
 
