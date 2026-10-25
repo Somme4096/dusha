@@ -4,6 +4,7 @@ import contextlib
 import json
 import logging
 import os
+from collections import OrderedDict
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -35,6 +36,7 @@ _DROPPED_HEADERS = _ROUTING_HEADERS | {
     "x-companion-token",
 }
 _METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
+_TURNS_KEPT = 256
 
 
 @dataclass(slots=True, frozen=True)
@@ -61,6 +63,7 @@ class Server:
             timeout=cfg.server.timeout_seconds,
             headers={"x-companion-token": token} if token else {},
         )
+        self.turns: OrderedDict[int, str] = OrderedDict()
 
     async def post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
         response = await self.client.post(path, json=body)
@@ -79,20 +82,29 @@ class Server:
     async def inject(self, turn: Turn, messages: list[Any]) -> tuple[list[Any] | None, str]:
         try:
             ingested = await self.post("/state/v1/transcript", turn.transcript(messages))
-            context = await self.post(
-                "/state/v1/context",
-                {
-                    "query": ingested["query"],
-                    "harness": turn.harness,
-                    "conversation_id": ingested["conversation_id"],
-                    "exclude_message_ids": [ingested["message_id"]] if ingested["message_id"] else [],
-                    "include_recent": False,
-                },
-            )
+            user = ingested["message_id"]
+            injection = self.turns.get(user) if user is not None else None
+            if injection is None:
+                context = await self.post(
+                    "/state/v1/context",
+                    {
+                        "query": ingested["query"],
+                        "harness": turn.harness,
+                        "conversation_id": ingested["conversation_id"],
+                        "exclude_message_ids": [user] if user is not None else [],
+                        "include_recent": False,
+                    },
+                )
+                injection = context["injection"]
+            if user is not None:
+                self.turns[user] = injection
+                self.turns.move_to_end(user)
+                while len(self.turns) > _TURNS_KEPT:
+                    self.turns.popitem(last=False)
         except (httpx.HTTPError, ValueError, KeyError) as error:
             logger.warning("server %s failed, forwarding without context: %s", self.url, error)
             return None, turn.conversation_id
-        return _inject_context(messages, context["injection"]), ingested["conversation_id"]
+        return _inject_context(messages, injection), ingested["conversation_id"]
 
     async def archive(self, turn: Turn, messages: list[Any], reply: dict[str, Any]) -> None:
         try:
@@ -103,15 +115,27 @@ class Server:
 
 def _inject_context(messages: list[Any], injection: str) -> list[Any]:
     output = list(messages)
-    position = next(
-        (
-            index
-            for index, message in enumerate(output)
-            if not isinstance(message, dict) or message.get("role") != "system"
-        ),
-        len(output),
-    )
-    output.insert(position, {"role": "system", "content": injection})
+    users = [
+        index for index, item in enumerate(output) if isinstance(item, dict) and item.get("role") == "user"
+    ]
+    if not users:
+        position = next(
+            (
+                index
+                for index, message in enumerate(output)
+                if not isinstance(message, dict) or message.get("role") != "system"
+            ),
+            len(output),
+        )
+        output.insert(position, {"role": "system", "content": injection})
+        return output
+    message = dict(output[users[-1]])
+    content = message.get("content")
+    if isinstance(content, list):
+        message["content"] = [{"type": "text", "text": injection}, *content]
+    else:
+        message["content"] = f"{injection}\n\n{content}" if content else injection
+    output[users[-1]] = message
     return output
 
 
@@ -148,15 +172,28 @@ def _media_type(response: httpx.Response) -> str | None:
 
 def _reply_from_stream(lines: list[str]) -> dict[str, Any] | None:
     parts: list[str] = []
+    calls: dict[int, dict[str, Any]] = {}
     for line in lines:
         if not line.startswith("data: ") or line == "data: [DONE]":
             continue
         with contextlib.suppress(Exception):
-            value = json.loads(line[6:])["choices"][0]["delta"].get("content")
-            if isinstance(value, str):
-                parts.append(value)
-    text = "".join(parts)
-    return {"role": "assistant", "content": text} if text else None
+            delta = json.loads(line[6:])["choices"][0]["delta"]
+            if isinstance(delta.get("content"), str):
+                parts.append(delta["content"])
+            for call in delta.get("tool_calls") or []:
+                empty = {"id": "", "type": "function", "function": {"name": "", "arguments": ""}}
+                slot = calls.setdefault(call.get("index", 0), empty)
+                slot["id"] = call.get("id") or slot["id"]
+                slot["type"] = call.get("type") or slot["type"]
+                function = call.get("function") or {}
+                slot["function"]["name"] += function.get("name") or ""
+                slot["function"]["arguments"] += function.get("arguments") or ""
+    if not parts and not calls:
+        return None
+    reply: dict[str, Any] = {"role": "assistant", "content": "".join(parts) or None}
+    if calls:
+        reply["tool_calls"] = [calls[index] for index in sorted(calls)]
+    return reply
 
 
 def create_proxy_app(config: AppConfig) -> FastAPI:

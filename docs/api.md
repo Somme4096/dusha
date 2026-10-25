@@ -340,8 +340,9 @@ In your harness, replace the provider base URL with `http://127.0.0.1:8766/<prof
 
 The proxy:
 
-- Sends the transcript of each `POST` that ends in `chat/completions` to `/state/v1/transcript`, then inserts the context as a system message after any leading system messages.
-- Archives the reply, streamed or not, and forwards the response byte for byte, including upstream errors.
+- Sends the transcript of each `POST` that ends in `chat/completions` to `/state/v1/transcript`, then puts the context at the start of the latest user message. A transcript without a user message gets it as a system message after any leading system messages.
+- Builds the context once per user message and reuses it for the tool calls that follow, so the provider's prompt cache keeps everything up to that message.
+- Archives the reply, streamed or not, including streamed tool calls, and forwards the response byte for byte, including upstream errors.
 - Forwards every other path untouched. Nothing is stored for them.
 - Forwards the caller's headers and query string, including `Authorization`, then sets the profile's `headers` on top. It drops the routing headers, `X-Companion-Token`, and hop-by-hop headers.
 - Sends `X-Companion-Token` to the server itself. Harnesses never need the server token.

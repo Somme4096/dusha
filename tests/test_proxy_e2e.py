@@ -23,6 +23,11 @@ STREAM_CHUNKS = [
 ]
 
 
+def _sse(*deltas: dict) -> list[bytes]:
+    events = [b"data: " + json.dumps({"choices": [{"delta": delta}]}).encode() + b"\n\n" for delta in deltas]
+    return [*events, b"data: [DONE]\n\n"]
+
+
 def _free_port() -> int:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
@@ -51,6 +56,7 @@ class Provider:
         self.seen: list[dict] = []
         self.reply: dict = {"role": "assistant", "content": "stub reply"}
         self.status = 200
+        self.stream = STREAM_CHUNKS
         self.host = ""
 
 
@@ -81,7 +87,7 @@ def provider():
             if stub.status >= 400:
                 self._send(stub.status, b"raw upstream error body", "text/plain")
             elif body.get("stream"):
-                self._send(200, b"".join(STREAM_CHUNKS), "text/event-stream")
+                self._send(200, b"".join(stub.stream), "text/event-stream")
             elif self.path.endswith("/messages"):
                 self._send(200, b'{"type":"message"}', "application/json")
             else:
@@ -179,8 +185,9 @@ async def test_proxy_carries_a_conversation_through_the_server_to_the_profile(
         assert not {name.lower() for name in routing} & set(item["headers"])
     opening = provider.seen[0]["body"]
     assert opening["custom_top_level_field"] == {"keep": "me"}
-    assert [message["role"] for message in opening["messages"]] == ["system", "system", "user"]
-    assert "<companion_state>" in opening["messages"][1]["content"]
+    assert opening["messages"][0] == {"role": "system", "content": "caller system"}
+    assert opening["messages"][1]["content"].startswith("<")
+    assert opening["messages"][1]["content"].endswith("</companion_state>\n\nHello.")
     assert provider.seen[1]["body"]["messages"][-1]["custom_message_field"] == "kept"
     stored = _stored(server)
     assert [message["text"] for message in stored] == [
@@ -278,6 +285,67 @@ async def test_proxy_keeps_named_conversations_apart_even_when_they_open_alike(t
     assert [(message["external_conversation_id"], message["text"]) for message in stored] == [
         ("one", "Hi."), ("one", "stub reply"), ("two", "Hi."), ("two", "stub reply"),
     ]
+
+
+async def test_proxy_puts_context_in_the_latest_user_turn_and_keeps_it_for_the_tool_loop(
+    tmp_path, server, provider
+):
+    call = {"id": "call_1", "type": "function", "function": {"name": "lookup", "arguments": "{}"}}
+    earlier = [{"role": "user", "content": "Earlier."}, {"role": "assistant", "content": "Earlier reply."}]
+    asked = {"role": "user", "content": [{"type": "text", "text": "Look it up."}]}
+    loop = [
+        [*earlier, asked],
+        [*earlier, asked, {"role": "assistant", "content": None, "tool_calls": [call]}],
+        [*earlier, asked, {"role": "assistant", "content": None, "tool_calls": [call]},
+         {"role": "tool", "tool_call_id": "call_1", "content": "found"}],
+    ]
+    async with _proxy(tmp_path, server, provider) as client:
+        await _chat(client, earlier[:1])
+        for index, messages in enumerate(loop):
+            await _chat(client, messages)
+            if index == 0:
+                httpx.post(f"{server}/state/v1/memo/add", json={"text": "Water the fern."})
+        await _chat(client, [*loop[-1], {"role": "assistant", "content": "stub reply"},
+                             {"role": "user", "content": "Next."}])
+    bodies = [item["body"]["messages"] for item in provider.seen[1:]]
+    for messages in bodies[:3]:
+        assert messages[:2] == earlier
+        assert messages[2]["content"][1:] == asked["content"]
+        assert messages[3:] == loop[bodies.index(messages)][3:]
+    turn = [messages[2]["content"][0]["text"] for messages in bodies[:3]]
+    assert turn[0] == turn[1] == turn[2]
+    assert "Water the fern." not in turn[0]
+    assert bodies[3][2] == asked
+    assert "Water the fern." in bodies[3][-1]["content"]
+
+
+async def test_proxy_adds_a_system_message_when_there_is_no_user_turn(tmp_path, server, provider):
+    async with _proxy(tmp_path, server, provider) as client:
+        await _chat(client, [{"role": "system", "content": "caller system"}])
+    messages = provider.seen[0]["body"]["messages"]
+    assert [message["role"] for message in messages] == ["system", "system"]
+    assert "<companion_state>" in messages[1]["content"]
+
+
+async def test_proxy_archives_streamed_tool_calls_once(tmp_path, server, provider):
+    first = {"index": 0, "id": "call_9", "type": "function", "function": {"name": "lookup", "arguments": ""}}
+    provider.stream = _sse(
+        {"tool_calls": [first]},
+        {"tool_calls": [{"index": 0, "function": {"arguments": '{"k":'}}]},
+        {"tool_calls": [{"index": 0, "function": {"arguments": '"v"}'}}]},
+    )
+    call = {"id": "call_9", "type": "function", "function": {"name": "lookup", "arguments": '{"k": "v"}'}}
+    async with _proxy(tmp_path, server, provider) as client:
+        await _chat(client, [{"role": "user", "content": "Stream a call."}], stream=True)
+        provider.stream = STREAM_CHUNKS
+        await _chat(client, [
+            {"role": "user", "content": "Stream a call."},
+            {"role": "assistant", "content": None, "tool_calls": [call]},
+            {"role": "tool", "tool_call_id": "call_9", "content": "v"},
+        ], stream=True)
+    stored = _stored(server)
+    assert [message["role"] for message in stored] == ["user", "assistant", "tool", "assistant"]
+    assert stored[1]["content"]["tool_calls"][0]["function"] == {"name": "lookup", "arguments": '{"k":"v"}'}
 
 
 async def test_proxy_streams_unchanged_and_archives_the_streamed_reply(tmp_path, server, provider):
