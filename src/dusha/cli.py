@@ -9,11 +9,12 @@ from typing import Any
 import click
 
 from . import homes
-from .client import remote, settings
+from .client import catalog, presets, remote, settings
 
 STATIC = frozenset({"serve", "proxy", "list", "plugins"})
 _TYPES = {"str": click.STRING, "int": click.INT, "float": click.FLOAT}
 _BUILT = "dusha.commands"
+_PROXY_NAME = "dusha.proxy.name"
 
 
 class ConfigError(click.ClickException):
@@ -172,28 +173,128 @@ def _setup(path: Path) -> None:
     click.echo(f"created {settings.create(path, url, token)}", err=True)
 
 
-@main.command("proxy", help="Run the client proxy next to your harness")
-@click.argument("name", required=False)
-@click.pass_context
-def proxy(ctx: click.Context, name: str | None) -> None:
-    params = _selection(ctx)
-    companion = params.get("companion") or name
+class Proxy(click.Group):
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        if args and not args[0].startswith("-") and args[0] not in self.commands:
+            ctx.meta[_PROXY_NAME] = args.pop(0)
+        return super().parse_args(ctx, args)
 
-    def resolve() -> settings.Settings:
+
+def _proxy_file(ctx: click.Context, *, setup: bool) -> Path:
+    params = _selection(ctx)
+    companion = params.get("companion") or ctx.meta.get(_PROXY_NAME)
+
+    def resolve() -> Path:
         if params.get("config") is None and (home := homes.named_home(params.get("home"), companion)):
-            if not (home / homes.CONFIG_FILE).exists():
+            if setup and not (home / homes.CONFIG_FILE).exists():
                 _setup(home / homes.CONFIG_FILE)
         path = homes.locate(params.get("config"), home=params.get("home"), companion=companion)
         if path is None:
             raise ValueError("name a companion, such as dusha proxy <name>")
-        return settings.load(path)
+        return path
 
-    cfg = _config(resolve)
+    return _config(resolve)
+
+
+@main.group(
+    "proxy", cls=Proxy, invoke_without_command=True, subcommand_metavar="[NAME] [COMMAND] [ARGS]...",
+    help="Run the client proxy next to your harness",
+)
+@click.pass_context
+def proxy(ctx: click.Context) -> None:
+    if ctx.invoked_subcommand is not None:
+        return
+    path = _proxy_file(ctx, setup=True)
+    cfg = _config(lambda: settings.load(path))
     import uvicorn
 
     from .client.proxy import create_proxy_app
 
     uvicorn.run(create_proxy_app(cfg), host=cfg.host, port=cfg.port, log_level="info")
+
+
+@proxy.group("auth", help="Manage the provider profiles the proxy holds keys for")
+def auth() -> None:
+    pass
+
+
+def _pick(found: dict[str, presets.Preset]) -> str:
+    import questionary
+
+    choices = [questionary.Choice(f"{item.name} ({item.id})", value=item.id) for item in found.values()]
+    return questionary.select(
+        "Provider", choices=choices, use_search_filter=True, use_jk_keys=False
+    ).unsafe_ask()
+
+
+@auth.command("login", help="Add a provider profile from the models.dev catalog")
+@click.argument("provider", required=False)
+@click.option("--profile", help="Profile name, the provider id by default.")
+@click.option("--refresh", is_flag=True, help="Refetch the models.dev catalog.")
+@click.pass_context
+def login(ctx: click.Context, provider: str | None, profile: str | None, refresh: bool) -> None:
+    path = _proxy_file(ctx, setup=True)
+    try:
+        data, warning = catalog.load(refresh=refresh)
+    except catalog.CatalogError as error:
+        raise click.ClickException(str(error)) from error
+    if warning:
+        click.echo(warning, err=True)
+    found = presets.build(data)
+    interactive = sys.stdin.isatty()
+    if provider is None:
+        if not interactive:
+            raise ConfigError("name a provider, such as dusha proxy auth login deepseek")
+        provider = _pick(found)
+    if provider not in found:
+        raise ConfigError(f"unknown provider {provider!r}, see https://models.dev for the ids")
+    preset, name = found[provider], profile or provider
+    current = _config(lambda: settings.load(path, environ=False))
+    if name in current.upstreams:
+        click.confirm(f"Replace the profile {name}?", abort=True, err=True)
+    values = {variable: click.prompt(variable, err=True) for variable in preset.variables}
+    fallback = f"{{env:{preset.env}}}" if preset.env else ""
+    key = click.prompt(
+        f"API key for {preset.name}, Enter for {fallback or 'none'}", default="", show_default=False,
+        hide_input=interactive, err=True,
+    )
+    raw = preset.profile(key or fallback, values)
+    _config(lambda: settings.save_upstream(path, name, raw))
+    companion, host = path.parent.name, f"[{current.host}]" if ":" in current.host else current.host
+    harness = f"http://{host}:{current.port}/{name}"
+    click.echo(f"added {name} to {companion}: {harness} -> {raw['base_url']}", err=True)
+    click.echo(f"restart dusha proxy {companion} to use it", err=True)
+
+
+@auth.command("logout", help="Remove a provider profile")
+@click.argument("profile")
+@click.pass_context
+def logout(ctx: click.Context, profile: str) -> None:
+    path = _proxy_file(ctx, setup=False)
+    if profile not in _config(lambda: settings.load(path, environ=False)).upstreams:
+        raise click.ClickException(f"no profile named {profile!r}")
+    _config(lambda: settings.save_upstream(path, profile, None))
+    click.echo(f"removed {profile} from {path.parent.name}", err=True)
+
+
+def _masked(key: str) -> str:
+    if not key or settings.PLACEHOLDER.search(key):
+        return key
+    return f"...{key[-4:]}" if len(key) > 8 else "..."
+
+
+@auth.command("status", help="Show the provider profiles")
+@click.pass_context
+def status(ctx: click.Context) -> None:
+    path = _proxy_file(ctx, setup=False)
+    cfg = _config(lambda: settings.load(path, environ=False))
+    _print({
+        name: {
+            "base_url": profile.base_url, "endpoints": profile.endpoints, "auth": profile.auth,
+            "key": _masked(profile.key),
+        }
+        for name, profile in cfg.upstreams.items()
+    })
 
 
 @main.command("list", help="List companions")

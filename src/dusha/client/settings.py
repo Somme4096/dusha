@@ -202,3 +202,27 @@ def create(path: Path, url: str, token: str) -> Path:
     with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w", encoding="utf-8") as file:
         file.write(json.dumps(raw, indent=2, ensure_ascii=False) + "\n")
     return path
+
+
+def save_upstream(path: Path, name: str, profile: dict[str, Any] | None) -> Path:
+    raw = _read(path)
+    proxy = dict(_object(raw.get("proxy"), "proxy", {"host", "port", "server", "upstreams"}))
+    upstreams = proxy.get("upstreams") or {}
+    if not isinstance(upstreams, dict):
+        raise ValueError("proxy.upstreams must be an object")
+    upstreams = dict(upstreams)
+    if profile is None:
+        upstreams.pop(name, None)
+    else:
+        upstreams[name] = profile
+    raw["proxy"] = {**proxy, "upstreams": upstreams}
+    temp = path.with_name(f".{path.name}.tmp")
+    temp.unlink(missing_ok=True)
+    with os.fdopen(os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w", encoding="utf-8") as file:
+        file.write(json.dumps(raw, indent=2, ensure_ascii=False) + "\n")
+    try:
+        load(temp, environ=False)
+        os.replace(temp, path)
+    finally:
+        temp.unlink(missing_ok=True)
+    return path

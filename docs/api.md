@@ -340,6 +340,33 @@ In your harness, replace the provider base URL with `http://127.0.0.1:8766/<prof
 | `http://127.0.0.1:8766/anthropic/v1/messages` | `https://api.anthropic.com/v1/messages` |
 | `http://127.0.0.1:8766/openai/responses` | `https://api.openai.com/v1/responses` |
 
+### Provider login
+
+`dusha proxy <name> auth login` adds a profile from the [models.dev](https://models.dev) catalog, so the proxy holds the provider's key, endpoints, and required headers. In a terminal it opens a menu you can filter by typing. Otherwise name the provider, such as `dusha proxy nova auth login deepseek`. It asks for the key, and Enter stores `{env:NAME}` with the provider's variable instead. The profile is named after the provider unless you pass `--profile`, and the file keeps mode `600`. Restart the proxy to use it.
+
+```json
+{
+  "proxy": {
+    "upstreams": {
+      "opencode-go": {
+        "base_url": "https://opencode.ai/inference/go/openai/v1",
+        "endpoints": {"messages": "https://opencode.ai/inference/go/anthropic/v1"},
+        "key": "replace-with-your-key",
+        "auth": "bearer",
+        "headers": {"x-opencode-session": "{conversation_id}"}
+      }
+    }
+  }
+}
+```
+
+In the harness, add a custom OpenAI- or Anthropic-compatible provider with the base URL `http://127.0.0.1:8766/opencode-go` and any dummy key. The proxy drops the dummy key and sends its own.
+
+- `dusha proxy <name> auth status` prints each profile with its key masked.
+- `dusha proxy <name> auth logout <profile>` removes one.
+- The catalog is cached in `$XDG_CACHE_HOME/dusha/models-dev.json`, `~/.cache` by default, for a day, and `--refresh` fetches it again. Offline, login uses the stale copy.
+- Providers that need cloud credentials rather than a key, such as Bedrock, Vertex, Azure, and Copilot, are not offered. Gemini's native protocol is not routed, but Google is offered through its OpenAI-compatible endpoint.
+
 The proxy reads three protocols, picked by the end of the path of a `POST`:
 
 | Path ends in | Protocol | Context goes to | Without a user message |
