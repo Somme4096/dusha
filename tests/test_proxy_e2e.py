@@ -57,6 +57,7 @@ class Provider:
         self.reply: dict = {"role": "assistant", "content": "stub reply"}
         self.status = 200
         self.stream = STREAM_CHUNKS
+        self.json: list[dict] = []
         self.host = ""
 
 
@@ -82,14 +83,20 @@ def provider():
             self._send(200, b'{"data":[{"id":"stub-model"}]}', "application/json")
 
         def do_POST(self):
-            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            raw = self.rfile.read(int(self.headers["Content-Length"]))
+            try:
+                body = json.loads(raw)
+            except ValueError:
+                body = raw.decode()
             self._record(body)
             if stub.status >= 400:
                 self._send(stub.status, b"raw upstream error body", "text/plain")
+            elif isinstance(body, str):
+                self._send(200, b'{"echo":true}', "application/json")
             elif body.get("stream"):
                 self._send(200, b"".join(stub.stream), "text/event-stream")
-            elif self.path.endswith("/messages"):
-                self._send(200, b'{"type":"message"}', "application/json")
+            elif stub.json:
+                self._send(200, json.dumps(stub.json.pop(0)).encode(), "application/json")
             else:
                 reply = {"choices": [{"index": 0, "message": stub.reply}]}
                 self._send(200, json.dumps(reply).encode(), "application/json")
@@ -380,14 +387,19 @@ async def test_proxy_archives_a_tool_call_reply_as_sent(tmp_path, server, provid
 async def test_proxy_passes_other_paths_through_verbatim(tmp_path, server, provider):
     async with _proxy(tmp_path, server, provider, base="") as client:
         models = await client.get("/stub/v1/models?page=2", headers={"Authorization": "Bearer k"})
-        messages = await client.post(
-            "/stub/v1/messages", json={"model": "m", "messages": [{"role": "user", "content": "Raw."}]}
+        tokens = await client.post(
+            "/stub/v1/messages/count_tokens", json={"messages": [{"role": "user", "content": "Raw."}]}
         )
+        unshaped = await client.post("/stub/v1/responses", json={"input": 42})
     assert models.json() == {"data": [{"id": "stub-model"}]}
-    assert messages.json() == {"type": "message"}
-    assert [item["path"] for item in provider.seen] == ["/v1/models?page=2", "/v1/messages"]
+    assert tokens.json()["choices"][0]["message"]["content"] == "stub reply"
+    assert unshaped.status_code == 200
+    assert [item["path"] for item in provider.seen] == [
+        "/v1/models?page=2", "/v1/messages/count_tokens", "/v1/responses",
+    ]
     assert provider.seen[0]["headers"]["authorization"] == "Bearer k"
     assert provider.seen[1]["body"]["messages"] == [{"role": "user", "content": "Raw."}]
+    assert provider.seen[2]["body"] == {"input": 42}
     assert _stored(server) == []
 
 
@@ -396,12 +408,14 @@ async def test_proxy_reports_unknown_profiles_and_passes_upstream_errors(tmp_pat
     async with _proxy(tmp_path, server, provider) as client:
         unknown = await _chat(client, [{"role": "user", "content": "Hi"}], path="/nowhere/chat/completions")
         failed = await _chat(client, [{"role": "user", "content": "Hi"}])
+        provider.status = 200
         invalid = await client.post("/stub/chat/completions", content=b"not json")
     assert unknown.status_code == 404
     assert failed.status_code == 503
     assert failed.content == b"raw upstream error body"
     assert failed.headers["content-type"].startswith("text/plain")
-    assert invalid.status_code == 422
+    assert invalid.json() == {"echo": True}
+    assert provider.seen[-1]["body"] == "not json"
     assert [message["text"] for message in _stored(server)] == ["Hi"]
 
 
@@ -476,3 +490,144 @@ def test_proxy_config_defaults_to_the_server_in_the_same_file(tmp_path):
     assert (cfg.host, cfg.port) == ("127.0.0.1", 8766)
     remote = _proxy_config(tmp_path, {"server": {"url": "https://remote.invalid/"}}, api_token="x").proxy
     assert (remote.server.url, remote.server.token) == ("https://remote.invalid", "")
+
+
+def _texts(server_url):
+    return [(message["role"], message["text"]) for message in _stored(server_url)]
+
+
+def _anthropic(*content):
+    return {"type": "message", "role": "assistant", "content": list(content)}
+
+
+async def test_anthropic_messages_carry_context_through_a_tool_loop(tmp_path, server, provider):
+    use = {"type": "tool_use", "id": "tu_1", "name": "lookup", "input": {"k": "v"}}
+    provider.json = [
+        _anthropic({"type": "text", "text": "Hi there."}),
+        _anthropic({"type": "text", "text": "Checking."}, use),
+        _anthropic({"type": "text", "text": "It is 42."}),
+    ]
+    system = [{"type": "text", "text": "caller system", "cache_control": {"type": "ephemeral"}}]
+    cached = {"type": "text", "text": "Look it up.", "cache_control": {"type": "ephemeral"}}
+    ask = {"role": "user", "content": [cached]}
+    opening = [
+        {"role": "user", "content": "Hello."},
+        {"role": "assistant", "content": [{"type": "text", "text": "Hi there."}]},
+    ]
+    path = "/stub/v1/messages"
+    async with _proxy(tmp_path, server, provider, base="") as client:
+        await client.post(path, json={"model": "m", "system": system, "messages": opening[:1]})
+        await client.post(path, json={"model": "m", "system": system, "messages": [*opening, ask]})
+        await client.post(path, json={"model": "m", "system": system, "messages": [
+            *opening, ask, {"role": "assistant", "content": [{"type": "text", "text": "Checking."}, use]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tu_1", "content": "42"}]},
+        ]})
+    bodies = [item["body"] for item in provider.seen]
+    assert all(body["system"] == system for body in bodies)
+    assert bodies[0]["messages"][0]["content"].endswith("</companion_state>\n\nHello.")
+    assert bodies[1]["messages"][:2] == opening
+    turn = [body["messages"][2]["content"] for body in bodies[1:]]
+    assert turn[0] == turn[1]
+    assert turn[0][0]["type"] == "text" and "<companion_state>" in turn[0][0]["text"]
+    assert turn[0][1:] == ask["content"]
+    assert bodies[2]["messages"][4]["content"][0]["type"] == "tool_result"
+    stored = _stored(server)
+    assert [(message["role"], message["text"]) for message in stored] == [
+        ("user", "Hello."), ("assistant", "Hi there."), ("user", "Look it up."),
+        ("assistant", "Checking."), ("tool", "42"), ("assistant", "It is 42."),
+    ]
+    assert stored[3]["content"]["tool_calls"][0]["function"]["name"] == "lookup"
+    assert len({message["conversation_id"] for message in stored}) == 1
+
+
+async def test_anthropic_streams_unchanged_and_archives_text_and_tool_use(tmp_path, server, provider):
+    def event(kind, **data):
+        return f"event: {kind}\ndata: {json.dumps({'type': kind, **data})}\n\n".encode()
+
+    provider.stream = [
+        event("message_start", message={"id": "msg_1", "role": "assistant", "content": []}),
+        event("content_block_start", index=0, content_block={"type": "text", "text": ""}),
+        event("content_block_delta", index=0, delta={"type": "text_delta", "text": "Let me "}),
+        event("content_block_delta", index=0, delta={"type": "text_delta", "text": "check."}),
+        event("content_block_start", index=1,
+              content_block={"type": "tool_use", "id": "tu_2", "name": "lookup", "input": {}}),
+        event("content_block_delta", index=1, delta={"type": "input_json_delta", "partial_json": '{"k":'}),
+        event("content_block_delta", index=1, delta={"type": "input_json_delta", "partial_json": ' "v"}'}),
+        event("message_stop"),
+    ]
+    async with _proxy(tmp_path, server, provider, base="") as client:
+        response = await client.post("/stub/v1/messages", json={
+            "model": "m", "stream": True, "messages": [{"role": "user", "content": "Stream it."}],
+        })
+    assert response.content == b"".join(provider.stream)
+    stored = _stored(server)
+    assert [(message["role"], message["text"]) for message in stored] == [
+        ("user", "Stream it."), ("assistant", "Let me check."),
+    ]
+    call = stored[1]["content"]["tool_calls"][0]
+    assert (call["id"], json.loads(call["function"]["arguments"])) == ("tu_2", {"k": "v"})
+
+
+def _response(response_id, *output):
+    return {"id": response_id, "object": "response", "output": list(output)}
+
+
+def _said(text):
+    return {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": text}]}
+
+
+async def test_responses_carry_context_through_function_calls(tmp_path, server, provider):
+    call = {"type": "function_call", "call_id": "c1", "name": "shell", "arguments": '{"cmd":"ls"}'}
+    reasoning = {"type": "reasoning", "id": "rs_1", "encrypted_content": "opaque"}
+    provider.json = [_response("resp_1", reasoning, call), _response("resp_2", _said("Done."))]
+    ask = {"role": "user", "content": [{"type": "input_text", "text": "Run it."}]}
+    async with _proxy(tmp_path, server, provider) as client:
+        await client.post("/stub/responses", json={"model": "m", "instructions": "be brief", "input": [ask]})
+        await client.post("/stub/responses", json={"model": "m", "instructions": "be brief", "input": [
+            ask, reasoning, {**call, "arguments": '{"cmd": "ls"}'},
+            {"type": "function_call_output", "call_id": "c1", "output": "a.txt"},
+        ]})
+    bodies = [item["body"] for item in provider.seen]
+    assert [item["path"] for item in provider.seen] == ["/v1/responses", "/v1/responses"]
+    assert all(body["instructions"] == "be brief" for body in bodies)
+    turn = [body["input"][0]["content"] for body in bodies]
+    assert turn[0] == turn[1]
+    assert turn[0][0]["type"] == "input_text" and "<companion_state>" in turn[0][0]["text"]
+    assert turn[0][1:] == ask["content"]
+    stored = _stored(server)
+    assert [message["role"] for message in stored] == ["user", "assistant", "tool", "assistant"]
+    assert stored[1]["content"]["tool_calls"][0]["function"]["name"] == "shell"
+    assert (stored[2]["text"], stored[3]["text"]) == ("a.txt", "Done.")
+
+
+async def test_responses_continue_a_conversation_from_previous_response_id(tmp_path, server, provider):
+    provider.json = [_response("resp_a", _said("Noted.")), _response("resp_b", _said("You said amber."))]
+    async with _proxy(tmp_path, server, provider) as client:
+        first = await client.post("/stub/responses", json={"model": "m", "input": "Remember amber."})
+        await client.post("/stub/responses", json={
+            "model": "m", "previous_response_id": "resp_a",
+            "input": [{"role": "user", "content": "What did I say?"}],
+        })
+    assert first.json()["id"] == "resp_a"
+    assert provider.seen[0]["body"]["input"].endswith("</companion_state>\n\nRemember amber.")
+    stored = _stored(server)
+    assert [message["text"] for message in stored] == [
+        "Remember amber.", "Noted.", "What did I say?", "You said amber.",
+    ]
+    assert len({message["conversation_id"] for message in stored}) == 1
+
+
+async def test_responses_stream_unchanged_and_archive_the_completed_response(tmp_path, server, provider):
+    def event(kind, **data):
+        return f"event: {kind}\ndata: {json.dumps({'type': kind, **data})}\n\n".encode()
+
+    provider.stream = [
+        event("response.created", response={"id": "resp_s", "output": []}),
+        event("response.output_text.delta", delta="Streamed "),
+        event("response.output_text.delta", delta="answer."),
+        event("response.completed", response=_response("resp_s", _said("Streamed answer."))),
+    ]
+    async with _proxy(tmp_path, server, provider) as client:
+        response = await client.post("/stub/responses", json={"model": "m", "stream": True, "input": "Go."})
+    assert response.content == b"".join(provider.stream)
+    assert _texts(server) == [("user", "Go."), ("assistant", "Streamed answer.")]

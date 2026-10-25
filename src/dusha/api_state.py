@@ -25,6 +25,7 @@ class TranscriptInput(GatewayInput):
     harness: str = "api"
     conversation_id: str = ""
     route: str = ""
+    after: int | None = None
     messages: list[Any]
 
 
@@ -81,6 +82,7 @@ def create_state_router(service: CompanionService, authorized) -> APIRouter:
             conversation_id=body.conversation_id,
             messages=body.messages,
             route=body.route,
+            after=body.after,
             errors=(ValueError,),
         )
 

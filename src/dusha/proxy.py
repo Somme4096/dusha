@@ -16,6 +16,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 from starlette.background import BackgroundTask
 
+from . import protocols as _protocols
 from .config import PLACEHOLDER, AppConfig, ProxyConfig, UpstreamProfile
 
 logger = logging.getLogger("dusha.proxy")
@@ -36,7 +37,7 @@ _DROPPED_HEADERS = _ROUTING_HEADERS | {
     "x-companion-token",
 }
 _METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
-_TURNS_KEPT = 256
+_KEPT = 256
 
 
 @dataclass(slots=True, frozen=True)
@@ -44,14 +45,23 @@ class Turn:
     harness: str
     conversation_id: str
     route: str
+    after: int | None
 
     def transcript(self, messages: list[Any]) -> dict[str, Any]:
         return {
             "harness": self.harness,
             "conversation_id": self.conversation_id,
             "route": self.route,
+            "after": self.after,
             "messages": messages,
         }
+
+
+def _remember(cache: OrderedDict, key: Any, value: Any) -> None:
+    cache[key] = value
+    cache.move_to_end(key)
+    while len(cache) > _KEPT:
+        cache.popitem(last=False)
 
 
 class Server:
@@ -64,6 +74,7 @@ class Server:
             headers={"x-companion-token": token} if token else {},
         )
         self.turns: OrderedDict[int, str] = OrderedDict()
+        self.responses: OrderedDict[str, int] = OrderedDict()
 
     async def post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
         response = await self.client.post(path, json=body)
@@ -79,7 +90,7 @@ class Server:
             return "unauthorized"
         return "ok" if response.status_code < 400 else f"http {response.status_code}"
 
-    async def inject(self, turn: Turn, messages: list[Any]) -> tuple[list[Any] | None, str]:
+    async def context(self, turn: Turn, messages: list[Any]) -> tuple[str | None, str]:
         try:
             ingested = await self.post("/state/v1/transcript", turn.transcript(messages))
             user = ingested["message_id"]
@@ -95,48 +106,22 @@ class Server:
                         "include_recent": False,
                     },
                 )
-                injection = context["injection"]
+                injection = str(context["injection"])
             if user is not None:
-                self.turns[user] = injection
-                self.turns.move_to_end(user)
-                while len(self.turns) > _TURNS_KEPT:
-                    self.turns.popitem(last=False)
+                _remember(self.turns, user, injection)
         except (httpx.HTTPError, ValueError, KeyError) as error:
             logger.warning("server %s failed, forwarding without context: %s", self.url, error)
             return None, turn.conversation_id
-        return _inject_context(messages, injection), ingested["conversation_id"]
+        return injection, ingested["conversation_id"]
 
-    async def archive(self, turn: Turn, messages: list[Any], reply: dict[str, Any]) -> None:
+    async def archive(self, turn: Turn, messages: list[Any], reply: dict[str, Any], response_id: str) -> None:
         try:
-            await self.post("/state/v1/transcript", turn.transcript([*messages, reply]))
+            stored = await self.post("/state/v1/transcript", turn.transcript([*messages, reply]))
         except (httpx.HTTPError, ValueError) as error:
             logger.warning("server %s failed, reply not archived: %s", self.url, error)
-
-
-def _inject_context(messages: list[Any], injection: str) -> list[Any]:
-    output = list(messages)
-    users = [
-        index for index, item in enumerate(output) if isinstance(item, dict) and item.get("role") == "user"
-    ]
-    if not users:
-        position = next(
-            (
-                index
-                for index, message in enumerate(output)
-                if not isinstance(message, dict) or message.get("role") != "system"
-            ),
-            len(output),
-        )
-        output.insert(position, {"role": "system", "content": injection})
-        return output
-    message = dict(output[users[-1]])
-    content = message.get("content")
-    if isinstance(content, list):
-        message["content"] = [{"type": "text", "text": injection}, *content]
-    else:
-        message["content"] = f"{injection}\n\n{content}" if content else injection
-    output[users[-1]] = message
-    return output
+            return
+        if response_id and stored.get("last_message_id") is not None:
+            _remember(self.responses, response_id, stored["last_message_id"])
 
 
 def _render(value: str, conversation_id: str) -> str:
@@ -168,32 +153,6 @@ def _unreachable(error: httpx.RequestError) -> HTTPException:
 
 def _media_type(response: httpx.Response) -> str | None:
     return response.headers.get("content-type")
-
-
-def _reply_from_stream(lines: list[str]) -> dict[str, Any] | None:
-    parts: list[str] = []
-    calls: dict[int, dict[str, Any]] = {}
-    for line in lines:
-        if not line.startswith("data: ") or line == "data: [DONE]":
-            continue
-        with contextlib.suppress(Exception):
-            delta = json.loads(line[6:])["choices"][0]["delta"]
-            if isinstance(delta.get("content"), str):
-                parts.append(delta["content"])
-            for call in delta.get("tool_calls") or []:
-                empty = {"id": "", "type": "function", "function": {"name": "", "arguments": ""}}
-                slot = calls.setdefault(call.get("index", 0), empty)
-                slot["id"] = call.get("id") or slot["id"]
-                slot["type"] = call.get("type") or slot["type"]
-                function = call.get("function") or {}
-                slot["function"]["name"] += function.get("name") or ""
-                slot["function"]["arguments"] += function.get("arguments") or ""
-    if not parts and not calls:
-        return None
-    reply: dict[str, Any] = {"role": "assistant", "content": "".join(parts) or None}
-    if calls:
-        reply["tool_calls"] = [calls[index] for index in sorted(calls)]
-    return reply
 
 
 def create_proxy_app(config: AppConfig) -> FastAPI:
@@ -263,50 +222,58 @@ def create_proxy_app(config: AppConfig) -> FastAPI:
 
         return StreamingResponse(chunks(), status_code=response.status_code, media_type=_media_type(response))
 
-    async def chat(request: Request, name: str, path: str) -> Response:
+    async def model(request: Request, name: str, path: str, protocol: Any) -> Response:
+        raw = await request.body()
         try:
-            body = json.loads(await request.body())
-        except ValueError as error:
-            raise HTTPException(status_code=422, detail="request body must be JSON") from error
-        messages = body.get("messages") if isinstance(body, dict) else None
-        if not isinstance(messages, list):
-            raise HTTPException(status_code=422, detail="messages must be a list")
+            body = json.loads(raw)
+        except ValueError:
+            body = None
+        messages = protocol.transcript(body) if isinstance(body, dict) else None
+        if messages is None:
+            named = request.headers.get("x-conversation-id", "")
+            return streamed(await send(request, name, path, raw, named))
         turn = Turn(
             harness=request.headers.get("x-harness") or name,
             conversation_id=request.headers.get("x-conversation-id", ""),
             route=request.headers.get("x-companion-route", ""),
+            after=server.responses.get(protocol.previous(body)),
         )
-        injected, conversation = await server.inject(turn, messages)
-        forwarded = {**body, "messages": injected} if injected is not None else body
+        injection, conversation = await server.context(turn, messages)
+        forwarded = protocol.inject(body, injection) if injection else body
         response = await send(request, name, path, json.dumps(forwarded).encode(), conversation)
-        if response.status_code >= 400 or injected is None:
+        if response.status_code >= 400 or injection is None:
             return streamed(response)
+
+        async def archive(reply: dict[str, Any] | None, response_id: str) -> None:
+            if reply is not None:
+                await server.archive(turn, messages, reply, response_id)
+
         if body.get("stream"):
 
             async def archive_stream(lines: list[str]) -> None:
-                reply = _reply_from_stream(lines)
-                if reply is not None:
-                    await server.archive(turn, messages, reply)
+                parsed = _protocols.events(lines)
+                await archive(protocol.stream_reply(parsed), protocol.response_id(parsed))
 
             return streamed(response, archive_stream)
         content = await response.aread()
         await response.aclose()
-        reply = None
-        with contextlib.suppress(Exception):
-            reply = json.loads(content)["choices"][0]["message"]
+        data = None
+        with contextlib.suppress(ValueError):
+            data = json.loads(content)
         return Response(
             content=content,
             status_code=response.status_code,
             media_type=_media_type(response),
-            background=BackgroundTask(server.archive, turn, messages, reply) if reply else None,
+            background=BackgroundTask(archive, protocol.reply(data), protocol.response_id(data)),
         )
 
     @app.api_route("/{name}/{path:path}", methods=_METHODS)
     async def forward(name: str, path: str, request: Request) -> Response:
         if name not in cfg.upstreams:
             raise HTTPException(status_code=404, detail=f"no upstream named {name!r}")
-        if request.method == "POST" and path.rstrip("/").endswith("chat/completions"):
-            return await chat(request, name, path)
+        protocol = _protocols.protocol_for(request.method, path)
+        if protocol is not None:
+            return await model(request, name, path, protocol)
         conversation_id = request.headers.get("x-conversation-id", "")
         return streamed(await send(request, name, path, await request.body(), conversation_id))
 

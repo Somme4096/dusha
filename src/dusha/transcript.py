@@ -55,6 +55,15 @@ class TranscriptTree:
             ).fetchone()
         return (int(row["message_id"]), str(row["external_id"])) if row else None
 
+    def conversation(self, message_id: int) -> str | None:
+        with self.database.connect() as db:
+            row = db.execute(
+                """SELECT c.external_id FROM transcript_nodes n
+                   JOIN conversations c ON c.id=n.conversation_id WHERE n.message_id=?""",
+                (message_id,),
+            ).fetchone()
+        return str(row["external_id"]) if row else None
+
     def child(self, parent: int, key: str) -> int | None:
         with self.database.connect() as db:
             row = db.execute(

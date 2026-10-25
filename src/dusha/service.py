@@ -130,12 +130,15 @@ class CompanionService:
         messages: list[Any],
         conversation_id: str = "",
         route: str = "",
+        after: int | None = None,
     ) -> dict[str, Any]:
         turns = [item for item in messages if isinstance(item, dict) and item.get("role") in ROLES]
         conversation = conversation_id
         parent: int | None = None
         user: int | None = None
         with self._transcript_lock:
+            if after is not None and (known := self.transcripts.conversation(after)):
+                parent, conversation = after, known
             for message in turns:
                 key = transcript_key(message)
                 found = None
@@ -163,6 +166,7 @@ class CompanionService:
         return {
             "conversation_id": conversation,
             "message_id": user,
+            "last_message_id": parent,
             "query": stored["text"] if stored else "",
         }
 

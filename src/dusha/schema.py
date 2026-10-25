@@ -47,6 +47,7 @@ class IngestResponse(ExtraAllow):
 class TranscriptResponse(ExtraAllow):
     conversation_id: str
     message_id: int | None
+    last_message_id: int | None
     query: str
 
 

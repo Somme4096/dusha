@@ -10,7 +10,7 @@ FastAPI serves the field reference at `/docs` and `/openapi.json`. This page cov
 | --- | --- | --- | --- |
 | GET | `/health` | Process and database status, the `companion` name, and the names of the active plugins | 200 |
 | POST | `/state/v1/messages` | Store one message, update affect for a new user message | 200, 401, 422 |
-| POST | `/state/v1/transcript` | Store the new messages of an OpenAI-style transcript, see [conversation matching](#conversation-matching) | 200, 401, 422 |
+| POST | `/state/v1/transcript` | Store the new messages of a Chat Completions transcript, optionally `after` a stored message id, see [conversation matching](#conversation-matching) | 200, 401, 422 |
 | GET | `/state/v1/messages/{message_id}` | Read one stored message | 200, 401, 404 |
 | POST | `/state/v1/memory/search` | Search the archive with adjacent context | 200, 401, 503 |
 | GET | `/state/v1/memory/{message_id}` | Read a message plus neighbors | 200, 401, 404, 503 |
@@ -337,17 +337,27 @@ In your harness, replace the provider base URL with `http://127.0.0.1:8766/<prof
 | `http://127.0.0.1:8766/openai/chat/completions` | `https://api.openai.com/v1/chat/completions` |
 | `http://127.0.0.1:8766/llama/models` | `http://127.0.0.1:8080/v1/models` |
 | `http://127.0.0.1:8766/anthropic/v1/messages` | `https://api.anthropic.com/v1/messages` |
+| `http://127.0.0.1:8766/openai/responses` | `https://api.openai.com/v1/responses` |
+
+The proxy reads three protocols, picked by the end of the path of a `POST`:
+
+| Path ends in | Protocol | Context goes to | Without a user message |
+| --- | --- | --- | --- |
+| `chat/completions` | OpenAI Chat Completions | The latest `user` message | A system message after any leading system messages |
+| `messages` | Anthropic Messages | The latest `user` message with text, after its `tool_result` blocks | The end of `system` |
+| `responses` | OpenAI Responses | The latest `user` message in `input`, or `input` itself when it is a string | The end of `instructions` |
 
 The proxy:
 
-- Sends the transcript of each `POST` that ends in `chat/completions` to `/state/v1/transcript`, then puts the context at the start of the latest user message. A transcript without a user message gets it as a system message after any leading system messages.
+- Sends each transcript to `/state/v1/transcript` as Chat Completions messages, then puts the context at the start of the latest user turn as the table shows.
 - Builds the context once per user message and reuses it for the tool calls that follow, so the provider's prompt cache keeps everything up to that message.
 - Archives the reply, streamed or not, including streamed tool calls, and forwards the response byte for byte, including upstream errors.
-- Forwards every other path untouched. Nothing is stored for them.
+- Follows `previous_response_id` on the Responses protocol, so a request that sends only new items continues its conversation. The proxy remembers recent response ids in memory, and after a restart such a request starts a new conversation.
+- Forwards every other path untouched, such as `models` or `messages/count_tokens`, and so does a body without the protocol's shape. Nothing is stored for them.
 - Forwards the caller's headers and query string, including `Authorization`, then sets the profile's `headers` on top. It drops the routing headers, `X-Companion-Token`, and hop-by-hop headers.
 - Sends `X-Companion-Token` to the server itself. Harnesses never need the server token.
 - Forwards without context when the server is down or rejects the token, and logs a warning. That turn is not stored.
-- Returns `404` for an unknown profile, `422` for a chat body without a `messages` list, and `502` when the provider cannot be reached.
+- Returns `404` for an unknown profile and `502` when the provider cannot be reached.
 
 Routing headers are optional:
 
