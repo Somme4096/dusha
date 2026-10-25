@@ -1,16 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import json
-import socket
 import threading
 import time
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import httpx
 import pytest
-import uvicorn
 
 from dusha import api
 from dusha.config import load_config
@@ -26,29 +25,6 @@ STREAM_CHUNKS = [
 def _sse(*deltas: dict) -> list[bytes]:
     events = [b"data: " + json.dumps({"choices": [{"delta": delta}]}).encode() + b"\n\n" for delta in deltas]
     return [*events, b"data: [DONE]\n\n"]
-
-
-def _free_port() -> int:
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
-
-
-@contextmanager
-def _running(app):
-    port = _free_port()
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
-    thread = threading.Thread(target=server.run, daemon=True)
-    thread.start()
-    deadline = time.monotonic() + 10
-    while not server.started:
-        assert time.monotonic() < deadline, "server did not start"
-        time.sleep(0.05)
-    try:
-        yield f"http://127.0.0.1:{port}"
-    finally:
-        server.should_exit = True
-        thread.join(10)
 
 
 class Provider:
@@ -113,8 +89,8 @@ def provider():
 
 
 @pytest.fixture
-def server(config):
-    with _running(api.create_app(config)) as url:
+def server(config, run_app):
+    with run_app(api.create_app(config)) as url:
         yield url
 
 
@@ -420,9 +396,9 @@ async def test_proxy_reports_unknown_profiles_and_passes_upstream_errors(tmp_pat
 
 
 @pytest.mark.parametrize("stream", [False, True])
-async def test_proxy_maps_an_unreachable_upstream_to_502(tmp_path, server, stream):
+async def test_proxy_maps_an_unreachable_upstream_to_502(tmp_path, server, stream, free_port):
     dead = Provider()
-    dead.host = f"127.0.0.1:{_free_port()}"
+    dead.host = f"127.0.0.1:{free_port()}"
     async with _proxy(tmp_path, server, dead) as client:
         responses = [
             await client.get("/stub/models"),
@@ -432,19 +408,28 @@ async def test_proxy_maps_an_unreachable_upstream_to_502(tmp_path, server, strea
     assert all(response.json()["detail"].startswith("upstream request failed: ") for response in responses)
 
 
-async def test_proxy_forwards_without_context_while_the_server_is_down(tmp_path, provider):
-    async with _proxy(tmp_path, f"http://127.0.0.1:{_free_port()}", provider) as client:
+async def test_proxy_queues_turns_while_the_server_is_down_and_sends_them_later(
+    tmp_path, config, provider, free_port, run_app
+):
+    port = free_port()
+    async with _proxy(tmp_path, f"http://127.0.0.1:{port}", provider) as client:
         health = await client.get("/health")
         response = await _chat(client, [{"role": "user", "content": "Still there?"}])
-    assert health.json()["server"]["status"] == "unreachable"
-    assert health.json()["upstreams"] == ["stub"]
-    assert response.status_code == 200
-    assert provider.seen[0]["body"]["messages"] == [{"role": "user", "content": "Still there?"}]
+        assert health.json()["server"]["status"] == "unreachable"
+        assert health.json()["upstreams"] == ["stub"]
+        assert response.status_code == 200
+        assert provider.seen[0]["body"]["messages"] == [{"role": "user", "content": "Still there?"}]
+        with run_app(api.create_app(config), port=port) as url:
+            deadline = time.monotonic() + 15
+            while len(_stored(url)) < 2:
+                assert time.monotonic() < deadline, "queued turn never arrived"
+                await asyncio.sleep(0.2)
+            assert _texts(url) == [("user", "Still there?"), ("assistant", "stub reply")]
 
 
-async def test_proxy_sends_the_server_token_itself(tmp_path, config, provider):
+async def test_proxy_sends_the_server_token_itself(tmp_path, config, provider, run_app):
     config.api_token = "server-secret"
-    with _running(api.create_app(config)) as url:
+    with run_app(api.create_app(config)) as url:
         async with _proxy(tmp_path, url, provider, token="server-secret") as client:
             health = await client.get("/health")
             await _chat(client, [{"role": "user", "content": "Authorized."}])

@@ -356,7 +356,7 @@ The proxy:
 - Forwards every other path untouched, such as `models` or `messages/count_tokens`, and so does a body without the protocol's shape. Nothing is stored for them.
 - Forwards the caller's headers and query string, including `Authorization`, then sets the profile's `headers` on top. It drops the routing headers, `X-Companion-Token`, and hop-by-hop headers.
 - Sends `X-Companion-Token` to the server itself. Harnesses never need the server token.
-- Forwards without context when the server is down or rejects the token, and logs a warning. That turn is not stored.
+- Forwards without context when the server is down or rejects the token, and logs a warning. The turn and its reply wait in the [outbox](#outbox) until the server is back.
 - Returns `404` for an unknown profile and `502` when the provider cannot be reached.
 
 Routing headers are optional:
@@ -378,6 +378,29 @@ The server keeps each transcript as a tree of messages. A message matches when i
 - History rewritten from its first message, such as a compacted session, starts a new conversation.
 
 `GET /health` on the proxy reports `server.status` as `ok`, `unauthorized`, `unreachable`, or `http <status>`, and lists the profile names.
+
+## MCP
+
+`dusha mcp <name>` serves the companion's tools to a harness over stdio MCP. It reads the same `proxy.server` settings as the proxy and sends the server token itself. Register it in your harness as a stdio server with the command `dusha mcp <name>`.
+
+| Tool | Does | While the server is down |
+| --- | --- | --- |
+| `memory_search` | Search the archive | Fails |
+| `memory_get` | Read one message with its neighbors | Fails |
+| `evergreen_list` | List evergreen facts | Fails |
+| `evergreen_remember` | Store a new fact | Waits in the outbox |
+| `evergreen_revise` | Replace a fact at `expected_revision` | Fails |
+| `evergreen_forget` | Forget a fact at `expected_revision` | Fails |
+| `memo_add` | Add a memo | Waits in the outbox |
+| `memo_list` | List memos | Fails |
+| `memo_done` | Archive a memo | Fails |
+| `affect_status` | Read the affect state | Fails |
+
+A tool that fails returns `isError` with the server's `detail`. Revisions and forgets never wait, because a later replay could overwrite a newer revision.
+
+## Outbox
+
+The proxy and `dusha mcp` share an outbox, `outbox.sqlite3` in the companion's `data_dir`. Writes wait there while the server is unreachable, answers `401`, `408`, `429`, `502`, or `504`, and are sent in order once it answers again. The proxy retries every two seconds, and `dusha mcp` retries before each tool call. A write the server rejects for another reason is logged and dropped.
 
 ## Versions
 

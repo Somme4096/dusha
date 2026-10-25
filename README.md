@@ -31,7 +31,7 @@ Want it running in the background? Use [deploy/dusha@.service](https://github.co
 
 `user message → dusha → injects context → your model → reply → (harness, dusha)`
 
-`dusha serve` is the server that holds the soul, and it can live on another machine. `dusha proxy` runs next to your harness. Point the harness's provider base URL at `http://127.0.0.1:8766/<profile>` and the proxy stores each message, adds the context to the latest user message, and forwards the request to your provider, see [proxy](https://github.com/Somme4096/dusha/blob/main/docs/api.md#proxy). Integrations (e.g. opencode-dusha) can call the server directly instead.
+`dusha serve` is the server that holds the soul, and it can live on another machine. `dusha proxy` runs next to your harness. Point the harness's provider base URL at `http://127.0.0.1:8766/<profile>` and the proxy stores each message, adds the context to the latest user message, and forwards the request to your provider, see [proxy](https://github.com/Somme4096/dusha/blob/main/docs/api.md#proxy). `dusha mcp` gives the harness the memory, evergreen, and memo tools, see [MCP](https://github.com/Somme4096/dusha/blob/main/docs/api.md#mcp). While the server is away, both keep what they can in an outbox and send it later. Integrations (e.g. opencode-dusha) can call the server directly instead.
 
 <details>
 <summary>How does memory/affect/identity work in Dusha?</summary>

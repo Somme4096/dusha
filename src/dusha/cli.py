@@ -18,10 +18,11 @@ from .config import (
     load_config,
 )
 from .interfaces import CommandError, Commands
+from .mcp import McpServer
 from .proxy import create_proxy_app
 from .service import CompanionService
 
-_STANDALONE = frozenset({"list", "serve", "proxy"})
+_STANDALONE = frozenset({"list", "serve", "proxy", "mcp"})
 
 
 def _print(value: Any) -> None:
@@ -43,6 +44,8 @@ def parser() -> tuple[argparse.ArgumentParser, Commands]:
     serve.add_argument("serve_companion", nargs="?", default=None, metavar="companion")
     proxy = commands.command("proxy", "Run the local proxy for a dusha server")
     proxy.add_argument("serve_companion", nargs="?", default=None, metavar="companion")
+    mcp = commands.command("mcp", "Serve the companion's tools over stdio MCP")
+    mcp.add_argument("serve_companion", nargs="?", default=None, metavar="companion")
     commands.command("health", "Check the database")
     commands.command("backup", "Create a consistent SQLite backup").add_argument("destination")
     commands.command("plugins", "Show plugin states")
@@ -86,6 +89,13 @@ def main(argv: list[str] | None = None) -> None:
         args = root.parse_args(argv)
         if args.command == "list":
             _print({"root": str(config_root()), "companions": list_companions()})
+            return
+        if args.command == "mcp":
+            server = McpServer(_config(args, args.companion or args.serve_companion, serve=False))
+            try:
+                server.serve(sys.stdin, sys.stdout)
+            finally:
+                server.close()
             return
         cfg = _config(args, args.companion or args.serve_companion, serve=True)
         if args.command == "proxy":

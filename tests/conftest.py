@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import json
+import socket
+import threading
+import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+import uvicorn
 
 from dusha.config import (
     AffectConfig,
@@ -126,3 +131,35 @@ def embedding_stub():
     yield stub
     server.shutdown()
     server.server_close()
+
+
+def _free_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+@pytest.fixture
+def free_port():
+    return _free_port
+
+
+@pytest.fixture
+def run_app():
+    @contextmanager
+    def running(app, port: int | None = None):
+        port = port or _free_port()
+        server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+        thread = threading.Thread(target=server.run, daemon=True)
+        thread.start()
+        deadline = time.monotonic() + 10
+        while not server.started:
+            assert time.monotonic() < deadline, "server did not start"
+            time.sleep(0.05)
+        try:
+            yield f"http://127.0.0.1:{port}"
+        finally:
+            server.should_exit = True
+            thread.join(10)
+
+    return running

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import logging
@@ -18,6 +19,7 @@ from starlette.background import BackgroundTask
 
 from . import protocols as _protocols
 from .config import PLACEHOLDER, AppConfig, ProxyConfig, UpstreamProfile
+from .outbox import Outbox, retryable
 
 logger = logging.getLogger("dusha.proxy")
 
@@ -38,6 +40,7 @@ _DROPPED_HEADERS = _ROUTING_HEADERS | {
 }
 _METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
 _KEPT = 256
+_FLUSH_SECONDS = 2.0
 
 
 @dataclass(slots=True, frozen=True)
@@ -65,14 +68,17 @@ def _remember(cache: OrderedDict, key: Any, value: Any) -> None:
 
 
 class Server:
-    def __init__(self, cfg: ProxyConfig):
+    def __init__(self, cfg: ProxyConfig, outbox: Outbox):
         token = cfg.server.token
+        options = {
+            "base_url": cfg.server.url,
+            "timeout": cfg.server.timeout_seconds,
+            "headers": {"x-companion-token": token} if token else {},
+        }
         self.url = cfg.server.url
-        self.client = httpx.AsyncClient(
-            base_url=cfg.server.url,
-            timeout=cfg.server.timeout_seconds,
-            headers={"x-companion-token": token} if token else {},
-        )
+        self.client = httpx.AsyncClient(**options)
+        self.flusher = httpx.Client(**options)
+        self.outbox = outbox
         self.turns: OrderedDict[int, str] = OrderedDict()
         self.responses: OrderedDict[str, int] = OrderedDict()
 
@@ -89,6 +95,22 @@ class Server:
         if response.status_code == 401:
             return "unauthorized"
         return "ok" if response.status_code < 400 else f"http {response.status_code}"
+
+    def queue(self, turn: Turn, messages: list[Any], error: Exception) -> None:
+        if isinstance(error, httpx.HTTPError) and retryable(error):
+            self.outbox.put("/state/v1/transcript", turn.transcript(messages))
+            logger.warning("server %s unavailable, queued the transcript: %s", self.url, error)
+        else:
+            logger.warning("server %s failed: %s", self.url, error)
+
+    async def flush(self) -> None:
+        while True:
+            await asyncio.sleep(_FLUSH_SECONDS)
+            try:
+                if self.outbox.size():
+                    await asyncio.to_thread(self.outbox.flush, self.flusher)
+            except Exception:
+                logger.exception("outbox flush failed")
 
     async def context(self, turn: Turn, messages: list[Any]) -> tuple[str | None, str]:
         try:
@@ -110,7 +132,7 @@ class Server:
             if user is not None:
                 _remember(self.turns, user, injection)
         except (httpx.HTTPError, ValueError, KeyError) as error:
-            logger.warning("server %s failed, forwarding without context: %s", self.url, error)
+            self.queue(turn, messages, error)
             return None, turn.conversation_id
         return injection, ingested["conversation_id"]
 
@@ -118,7 +140,7 @@ class Server:
         try:
             stored = await self.post("/state/v1/transcript", turn.transcript([*messages, reply]))
         except (httpx.HTTPError, ValueError) as error:
-            logger.warning("server %s failed, reply not archived: %s", self.url, error)
+            self.queue(turn, [*messages, reply], error)
             return
         if response_id and stored.get("last_message_id") is not None:
             _remember(self.responses, response_id, stored["last_message_id"])
@@ -157,16 +179,21 @@ def _media_type(response: httpx.Response) -> str | None:
 
 def create_proxy_app(config: AppConfig) -> FastAPI:
     cfg = config.proxy
-    server = Server(cfg)
+    server = Server(cfg, Outbox(config.data_dir))
     upstreams = {
         name: httpx.AsyncClient(timeout=profile.timeout_seconds) for name, profile in cfg.upstreams.items()
     }
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
+        flushing = asyncio.create_task(server.flush(), name="outbox-flush")
         try:
             yield
         finally:
+            flushing.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await flushing
+            server.flusher.close()
             await server.client.aclose()
             for client in upstreams.values():
                 await client.aclose()
@@ -241,7 +268,7 @@ def create_proxy_app(config: AppConfig) -> FastAPI:
         injection, conversation = await server.context(turn, messages)
         forwarded = protocol.inject(body, injection) if injection else body
         response = await send(request, name, path, json.dumps(forwarded).encode(), conversation)
-        if response.status_code >= 400 or injection is None:
+        if response.status_code >= 400:
             return streamed(response)
 
         async def archive(reply: dict[str, Any] | None, response_id: str) -> None:
