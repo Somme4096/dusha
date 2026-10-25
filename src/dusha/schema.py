@@ -29,7 +29,6 @@ class MessageResponse(ExtraAllow):
     external_id: str
     occurred_at: str
     ingested_at: str
-    sha256: str
     harness: str
     external_conversation_id: str
     route: str
@@ -43,7 +42,6 @@ class IngestResponse(ExtraAllow):
     id: int
     duplicate: bool
     conversation_id: int
-    sha256: str
 
 
 class TranscriptResponse(ExtraAllow):

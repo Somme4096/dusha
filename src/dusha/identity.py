@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -11,10 +10,10 @@ class IdentityError(ValueError):
     pass
 
 
-def load_identity(identity_config: Any) -> tuple[str, str]:
+def load_identity(identity_config: Any) -> str:
     path = str(getattr(identity_config, "path", "") or "")
     if not path:
-        return "", ""
+        return ""
     source = Path(path)
     if not source.exists():
         raise IdentityError(f"identity prompt file not found: {source}")
@@ -24,8 +23,7 @@ def load_identity(identity_config: Any) -> tuple[str, str]:
         raise IdentityError(f"identity prompt file is not valid UTF-8: {source}") from error
     except OSError as error:
         raise IdentityError(f"cannot read identity prompt file {source}: {error}") from error
-    revision = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    return text, revision
+    return text
 
 
 name = "identity"
@@ -33,8 +31,8 @@ inject = ()
 
 
 def apply(ctx: Any, config: Any) -> None:
-    text, revision = load_identity(config)
+    text = load_identity(config)
     if not text:
         return
-    block = Block(name, text, {"text": text, "revision": revision})
+    block = Block(name, text, {"text": text})
     ctx.on("context", lambda request: block)

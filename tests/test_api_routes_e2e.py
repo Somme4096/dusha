@@ -179,7 +179,7 @@ DOC_FILES = [
     Path(__file__).parents[1] / "docs" / "api.md",
 ]
 MESSAGE_KEYS = {"id", "conversation_id", "role", "text", "content", "external_id", "occurred_at",
-                "ingested_at", "sha256", "harness", "external_conversation_id", "route"}
+                "ingested_at", "harness", "external_conversation_id", "route"}
 
 
 def test_all_doc_json_fences_are_valid_json():

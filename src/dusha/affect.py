@@ -12,7 +12,6 @@ from typing import Any
 from fastapi import APIRouter
 
 from . import emotions as _emotions
-from . import prompts as _prompts
 from . import schema as _schema
 from .affect_semantic import SemanticAppraisal
 from .config import AffectConfig, EmbeddingConfig
@@ -69,7 +68,6 @@ class AffectEngine:
         database.migrate(SCHEMA)
         self.config = config
         self.prompts = prompts
-        self.prompts_fingerprint = _prompts.fingerprint(prompts)
         self.proposals = proposals or (lambda request: [])
         self.appraisal = (
             SemanticAppraisal(OpenAIEmbeddingClient(embedding))
@@ -79,7 +77,6 @@ class AffectEngine:
         self._lock = threading.RLock()
         self.emotions = _emotions.resolve_emotions(config, None, config.increment)
         self.emotions_version = str(self.emotions["emotion_version"])
-        self.emotions_fingerprint = _emotions.fingerprint(self.emotions)
         self.spec = {name: values.copy() for name, values in self.emotions["dimensions"].items()}
         value_range = self.emotions["value_range"]
         self.value_min = float(value_range["min"])
@@ -321,7 +318,7 @@ class AffectEngine:
             "values": {"base": snapshot["base"], "mood": snapshot["mood"]},
             "description": description,
             "preface": slot["instruction"],
-            "fingerprints": {"emotions": self.emotions_fingerprint, "prompts": self.prompts_fingerprint},
+            "versions": {"emotions": self.emotions_version, "prompts": str(self.prompts["prompts_version"])},
         }
         text = slot["open_delimiter"] + slot["instruction"] + "\n" + description + slot["close_delimiter"]
         return Block(self.name, text, data)

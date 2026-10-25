@@ -121,7 +121,6 @@ class CompanionService:
             "id": message.id,
             "duplicate": message.duplicate,
             "conversation_id": message.conversation_id,
-            "sha256": message.sha256,
         }
 
     def ingest_transcript(

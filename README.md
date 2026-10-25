@@ -60,7 +60,7 @@ The module defines `apply(ctx, config)`, which runs at startup. `config` is the 
 
 | Call | Effect |
 | --- | --- |
-| `ctx.on("message", fn)` | `fn(message)` runs for every stored message, in id order, with the stored row: `id`, `conversation_id`, `role`, `text`, `content`, `external_id`, `occurred_at`, `ingested_at`, `sha256`, `harness`, `external_conversation_id`, `route`. An exception is logged and the message is not redelivered. |
+| `ctx.on("message", fn)` | `fn(message)` runs for every stored message, in id order, with the stored row: `id`, `conversation_id`, `role`, `text`, `content`, `external_id`, `occurred_at`, `ingested_at`, `harness`, `external_conversation_id`, `route`. An exception is logged and the message is not redelivered. |
 | `ctx.on("context", fn)` | `fn(request)` runs for every context build with `query`, `harness`, `conversation_id`, `exclude_message_ids`, and `include_recent`. Return a `Block` from `dusha.hooks` or `None`. A block carries the prompt text, block data, and session records. |
 | `ctx.on("decide", fn)` | `fn(request)` runs for every new user message while affect is on, with `message`, `emotions` (the resolved dimensions), `state` (the affect snapshot), and `instruction`. Return `{"emotion": "<dimension>"}`, `{"deltas": {"<dimension>": <number>}}`, both, or `None`. |
 | `ctx.on("<event>", fn)` | `fn(*args)` runs when another plugin emits `<event>`. Custom events stay in the gateway process, so `emit` and `collect` reach every active plugin. |

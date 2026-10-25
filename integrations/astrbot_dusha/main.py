@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import hashlib
 import json
 from collections.abc import Awaitable, Callable, Collection, Mapping
 from pathlib import Path
@@ -122,8 +121,7 @@ class DushaPlugin(star.Star):
         platform_id = getattr(event.message_obj, "message_id", "")
         if platform_id:
             return f"{prefix}:{platform_id}"
-        raw = f"{event.unified_msg_origin}:{event.created_at}:{event.get_message_str()}"
-        return f"{prefix}:{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:24]}"
+        return f"{prefix}:{event.unified_msg_origin}:{event.created_at}:{event.get_message_str()}"
 
     @staticmethod
     def _json(value: Any) -> str:
@@ -620,11 +618,7 @@ class DushaPlugin(star.Star):
                     "route": event.unified_msg_origin,
                     "role": "assistant",
                     "content": text,
-                    "external_id": (
-                        self._message_key(event, "assistant")
-                        + ":"
-                        + hashlib.sha256(text.encode()).hexdigest()[:12]
-                    ),
+                    "external_id": f"{self._message_key(event, 'assistant')}:{text}",
                 },
             )
         except Exception as error:

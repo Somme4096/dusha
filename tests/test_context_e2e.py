@@ -120,10 +120,9 @@ async def test_http_context_fields_mirror_the_injection_and_building_it_stores_n
     assert context["blocks"]["identity"]["text"] == IDENTITY
     assert context["session"] == result["records"] == payload["session"]
     assert set(context["blocks"]["affect"]["values"]) == {"base", "mood"}
-    assert set(context["blocks"]["affect"]["fingerprints"]) == {"emotions", "prompts"}
+    assert set(context["blocks"]["affect"]["versions"]) == {"emotions", "prompts"}
     affect_text = result["injection"].split("<affect>", 1)[1].split("</affect>", 1)[0]
     assert affect_text == AFFECT_INSTRUCTION + "\n" + context["blocks"]["affect"]["description"]
-    assert "sha256" not in result["injection"]
     assert payload["instructions"] == {"memory": MEMORY_INSTRUCTION}
     assert context["instructions"]["memory"] == MEMORY_INSTRUCTION
     assert again["records"] == result["records"]

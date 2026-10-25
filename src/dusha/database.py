@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -26,8 +26,7 @@ CREATE TABLE IF NOT EXISTS messages (
     content_json TEXT NOT NULL,
     external_id TEXT,
     occurred_at TEXT NOT NULL,
-    ingested_at TEXT NOT NULL,
-    sha256 TEXT NOT NULL
+    ingested_at TEXT NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS messages_external_id
 ON messages(conversation_id, external_id)
@@ -66,7 +65,7 @@ CREATE TABLE IF NOT EXISTS transcript_nodes (
 CREATE INDEX IF NOT EXISTS transcript_children ON transcript_nodes(parent_id);
 CREATE INDEX IF NOT EXISTS transcript_roots ON transcript_nodes(conversation_id) WHERE parent_id IS NULL;
 
-PRAGMA user_version = 5;
+PRAGMA user_version = 6;
 """
 
 class _ClosingConnection:
@@ -104,6 +103,11 @@ class Database:
             initialized = db.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages'"
             ).fetchone()
+        if initialized and version == 5:
+            with _ClosingConnection(sqlite3.connect(self.path)) as db:
+                db.execute("ALTER TABLE messages DROP COLUMN sha256")
+                db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            return
         if initialized and version != SCHEMA_VERSION:
             raise RuntimeError(
                 f"database schema version {version} is incompatible. "

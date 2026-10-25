@@ -7,7 +7,6 @@ from typing import Any
 
 from .resources import load_packaged, loads_strict
 from .serialization import canonical as _serialization_canonical
-from .serialization import fingerprint as _serialization_fingerprint
 
 SCHEMA_VERSION = 3
 
@@ -303,13 +302,6 @@ def default_emotions() -> dict:
 def canonical(snapshot: dict[str, Any]) -> str:
     return _serialization_canonical(snapshot)
 
-
-def fingerprint(snapshot: dict[str, Any]) -> str:
-    return _serialization_fingerprint(snapshot)
-
-
-def default_fingerprint() -> str:
-    return fingerprint(_DEFAULT)
 
 
 def load_emotions(path: str | Path) -> dict:

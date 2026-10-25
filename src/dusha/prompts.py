@@ -6,7 +6,6 @@ from typing import Any
 
 from .resources import loads_strict, read_packaged
 from .serialization import canonical as _serialization_canonical
-from .serialization import fingerprint as _serialization_fingerprint
 
 SCHEMA_VERSION = 3
 
@@ -205,10 +204,3 @@ def resolve_prompts(prompts_config: Any) -> dict:
 def canonical(snapshot: dict[str, Any]) -> str:
     return _serialization_canonical(snapshot)
 
-
-def fingerprint(snapshot: dict[str, Any]) -> str:
-    return _serialization_fingerprint(snapshot)
-
-
-def default_fingerprint() -> str:
-    return fingerprint(_DEFAULT)

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 from dataclasses import dataclass
@@ -43,7 +42,6 @@ class StoredMessage:
     id: int
     duplicate: bool
     conversation_id: int
-    sha256: str
 
 
 class MemoryStore:
@@ -96,23 +94,20 @@ class MemoryStore:
         when_text = isoformat(when)
         ingested = isoformat(utc_now())
         raw_json = _content_json(content if source_payload is None else source_payload)
-        digest = hashlib.sha256(raw_json.encode("utf-8")).hexdigest()
         internal_conversation = self.ensure_conversation(harness, conversation_id, route, when)
         with self.database.connect() as db:
             if external_id:
                 existing = db.execute(
-                    "SELECT id, sha256 FROM messages WHERE conversation_id=? AND external_id=?",
+                    "SELECT id FROM messages WHERE conversation_id=? AND external_id=?",
                     (internal_conversation, external_id),
                 ).fetchone()
                 if existing:
-                    return StoredMessage(
-                        int(existing["id"]), True, internal_conversation, str(existing["sha256"])
-                    )
+                    return StoredMessage(int(existing["id"]), True, internal_conversation)
             cursor = db.execute(
                 """INSERT INTO messages
                    (conversation_id, role, text, content_json, external_id,
-                    occurred_at, ingested_at, sha256)
-                   VALUES(?,?,?,?,?,?,?,?)""",
+                    occurred_at, ingested_at)
+                   VALUES(?,?,?,?,?,?,?)""",
                 (
                     internal_conversation,
                     role,
@@ -121,10 +116,9 @@ class MemoryStore:
                     external_id or None,
                     when_text,
                     ingested,
-                    digest,
                 ),
             )
-            return StoredMessage(int(cursor.lastrowid), False, internal_conversation, digest)
+            return StoredMessage(int(cursor.lastrowid), False, internal_conversation)
 
     def get(self, message_id: int) -> dict[str, Any] | None:
         with self.database.connect() as db:

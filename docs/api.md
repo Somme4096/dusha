@@ -90,7 +90,7 @@ The response carries `injection`, `records`, `search_hits`, and `context`. Prepe
 5. The blocks returned by external plugins, each with the delimiters that plugin renders
 6. `<companion_state>`, a JSON object with the instructions and the session records from `memory`
 
-`context.blocks` holds each part as data, keyed by plugin name. `identity` carries `text` and `revision`, and `memory` carries the `search_hits`. A plugin that is off contributes no part and no key, and so does a part with nothing to say.
+`context.blocks` holds each part as data, keyed by plugin name. `identity` carries `text`, and `memory` carries the `search_hits`. A plugin that is off contributes no part and no key, and so does a part with nothing to say.
 
 You can rename the delimiters in [prompts.json](configuration.md#promptsjson). The serializer escapes `&`, `<`, and `>` in stored text.
 

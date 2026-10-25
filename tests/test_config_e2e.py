@@ -241,7 +241,7 @@ async def test_http_config_override_beats_the_custom_emotions_file(tmp_path):
     assert overridden["base"]["fear"] == 0.05
 
 
-@pytest.mark.parametrize("version", [4, 6])
+@pytest.mark.parametrize("version", [4, 7])
 async def test_startup_rejects_a_database_from_another_schema_version(tmp_path, version):
     import sqlite3
 
@@ -251,3 +251,24 @@ async def test_startup_rejects_a_database_from_another_schema_version(tmp_path, 
         db.execute(f"PRAGMA user_version={version}")
     with pytest.raises(RuntimeError, match=f"schema version {version} is incompatible"):
         _start(tmp_path, {})
+
+
+async def test_startup_moves_a_schema_5_database_off_its_sha256_column(tmp_path):
+    import sqlite3
+
+    message = {"harness": "e2e", "conversation_id": "old", "role": "user", "content": "Kept across upgrade."}
+    async with _client(_start(tmp_path, {})) as client:
+        first = (await client.post("/state/v1/messages", json=message)).json()["id"]
+    path = tmp_path / "home" / "data" / "state.sqlite3"
+    with sqlite3.connect(path) as db:
+        db.execute("ALTER TABLE messages ADD COLUMN sha256 TEXT NOT NULL DEFAULT ''")
+        db.execute("PRAGMA user_version=5")
+    async with _client(_start(tmp_path, {})) as client:
+        kept = await client.get(f"/state/v1/messages/{first}")
+        added = await client.post("/state/v1/messages", json={**message, "content": "Stored after."})
+    with sqlite3.connect(path) as db:
+        columns = {row[1] for row in db.execute("PRAGMA table_info(messages)")}
+        version = db.execute("PRAGMA user_version").fetchone()[0]
+    assert kept.json()["text"] == "Kept across upgrade."
+    assert added.status_code == 200
+    assert "sha256" not in columns and version == 6

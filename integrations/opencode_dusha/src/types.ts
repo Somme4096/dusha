@@ -44,7 +44,6 @@ export interface IngestMessageResponse {
   id: number;
   duplicate: boolean;
   conversation_id: number;
-  sha256: string;
   affect?: unknown;
 }
 
