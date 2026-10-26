@@ -2,7 +2,7 @@
 
 This external plugin mirrors conversations into an [EverOS](https://github.com/EverMind-AI/EverOS)
 sidecar and injects the episodes it recalls. Install it as `everos_memory`.
-The external plugin contract is in the project [README](https://github.com/Somme4096/dusha#plugin-api).
+The external plugin contract is in the [Plugin API](https://github.com/Somme4096/dusha/blob/main/docs/guide.md#plugin-api).
 
 ## Install
 
@@ -61,7 +61,7 @@ Each `(harness, external conversation id)` pair maps to one EverOS session.
 Only `user` and `assistant` messages with positive millisecond timestamps are
 queued, two messages sharing a timestamp get a bumped one, and insertion is
 idempotent on the message id. A sidecar outage never fails the listener. The
-gateway advances its delivery cursor once the `message` listener returns, and
+`message` listener runs synchronously when the gateway stores a message, and
 the interval retries undelivered rows, fewest attempts first, so a permanently
 rejected row never blocks later ones.
 

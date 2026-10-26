@@ -2,9 +2,9 @@
 
 An external plugin lives in a directory under the plugins directory with
 `pyproject.toml` and a `[tool.dusha]` table. The gateway imports it into its own
-process, so it gets the same `ctx` as a built-in plugin, including `ctx.api` and
-`ctx.cli`. The contract is in the
-[project README](https://github.com/Somme4096/dusha#plugin-api).
+process, so it gets the same `ctx` as a built-in plugin. `ctx.api`, `ctx.cli`, and
+`ctx.mcp` need `api`, `cli`, or `mcp` in `inject`. The contract is in the
+[Plugin API](https://github.com/Somme4096/dusha/blob/main/docs/guide.md#plugin-api).
 
 External plugins run with the gateway's permissions and environment. Install only
 plugins you wrote or reviewed. They use the gateway's Python environment, so extra

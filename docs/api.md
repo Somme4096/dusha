@@ -2,7 +2,7 @@
 
 Base URL: `http://127.0.0.1:8765`. The server serves the state API under `/state/v1/*`, the [MCP](#mcp) tools at `/mcp`, and the [commands](#commands) under `/cli/v1/*`. Model requests go through the [proxy](#proxy), which runs next to your harness.
 
-FastAPI serves the field reference at `/docs` and `/openapi.json`. This page covers the integration flow.
+FastAPI serves the field reference at `/docs`, `/redoc`, and `/openapi.json` while [auth](guide.md#auth) is off. This page covers the integration flow.
 
 ## Endpoints
 
@@ -12,13 +12,13 @@ FastAPI serves the field reference at `/docs` and `/openapi.json`. This page cov
 | POST | `/state/v1/messages` | Store one message, update affect for a new user message | 200, 401, 422 |
 | POST | `/state/v1/transcript` | Store the new messages of a Chat Completions transcript, optionally `after` a stored message id, see [conversation matching](#conversation-matching) | 200, 401, 422 |
 | GET | `/state/v1/messages/{message_id}` | Read one stored message | 200, 401, 404 |
-| POST | `/state/v1/memory/search` | Search the archive with adjacent context | 200, 401, 503 |
-| GET | `/state/v1/memory/{message_id}` | Read a message plus neighbors | 200, 401, 404, 503 |
+| POST | `/state/v1/memory/search` | Search the archive with adjacent context | 200, 401, 422, 503 |
+| GET | `/state/v1/memory/{message_id}` | Read a message plus neighbors | 200, 401, 404, 422, 503 |
 | GET | `/state/v1/plugins` | Report each plugin's state | 200, 401 |
 | POST | `/state/v1/context` | Build the injection | 200, 401, 422 |
 | GET | `/state/v1/affect` | Read affect state and advance decay | 200, 401, 503 |
 | POST | `/state/v1/evergreen/facts` | Remember a fact | 200, 401, 409, 422, 503 |
-| GET | `/state/v1/evergreen/facts` | List current facts | 200, 401, 503 |
+| GET | `/state/v1/evergreen/facts` | List current facts | 200, 401, 422, 503 |
 | GET | `/state/v1/evergreen/facts/{fact_id}/history` | List every revision | 200, 401, 404, 503 |
 | POST | `/state/v1/evergreen/facts/{fact_id}/revisions` | Revise with `expected_revision` | 200, 401, 404, 409, 422, 503 |
 | POST | `/state/v1/evergreen/facts/{fact_id}/forget` | Forget with `expected_revision` | 200, 401, 404, 409, 422, 503 |
@@ -26,8 +26,8 @@ FastAPI serves the field reference at `/docs` and `/openapi.json`. This page cov
 | GET | `/state/v1/memo/list` | List active or archived memos | 200, 401, 422, 503 |
 | POST | `/state/v1/memo/{note_id}/done` | Archive a memo with a reason | 200, 401, 404, 422, 503 |
 | POST | `/state/v1/proactive/evaluate` | Run one evaluation pass | 200, 401, 503 |
-| GET | `/state/v1/proactive/events` | Poll and lease pending events | 200, 401, 503 |
-| POST | `/state/v1/proactive/events/{event_id}/ack` | Acknowledge a leased event | 200, 401, 404, 409, 503 |
+| GET | `/state/v1/proactive/events` | Poll and lease pending events | 200, 401, 422, 503 |
+| POST | `/state/v1/proactive/events/{event_id}/ack` | Acknowledge a leased event | 200, 401, 404, 409, 422, 503 |
 | POST | `/mcp` | MCP tools over streamable HTTP | 200, 202, 400, 401, 403 |
 | GET | `/cli/v1/commands` | The command list `dusha` builds its commands from | 200, 401 |
 | POST | `/cli/v1/run/{command}` | Run one command | 200, 400, 401, 404, 422 |
@@ -67,7 +67,7 @@ that returned a result for the message. The affect plugin returns `affect`.
 
 ### 2. Build context
 
-`POST /state/v1/context` returns the injection string plus the same data as fields. It stores nothing and calls no provider.
+`POST /state/v1/context` returns the injection string plus the same data as fields. It stores no messages and calls no provider, but it advances affect decay.
 
 ```json
 {
@@ -230,7 +230,7 @@ Acknowledge with `POST /state/v1/proactive/events/{event_id}/ack`:
 | `failed` | Returns the event to pending after `plugins.proactive.retry_delay_minutes`. |
 | `release` | Returns the event to pending at once. |
 
-A consumer that does not hold the lease gets `409`. A user reply cancels unsent events and resets the unanswered count.
+A consumer that does not hold the lease, or an unknown `outcome`, gets `409`. A user reply cancels unsent events and resets the unanswered count.
 
 ## AstrBot plugin
 
@@ -342,7 +342,7 @@ In your harness, replace the provider base URL with `http://127.0.0.1:8766/<prof
 
 ### Provider login
 
-`dusha proxy <name> auth login` adds a profile from the [models.dev](https://models.dev) catalog, so the proxy holds the provider's key, endpoints, and required headers. In a terminal it opens a menu you can filter by typing. Otherwise name the provider, such as `dusha proxy nova auth login deepseek`. It asks for the key, and Enter stores `{env:NAME}` with the provider's variable instead. The profile is named after the provider unless you pass `--profile`, and the file keeps mode `600`. Restart the proxy to use it.
+`dusha proxy <name> auth login` adds a profile from the [models.dev](https://models.dev) catalog, so the proxy holds the provider's key, endpoints, and required headers. In a terminal it opens a menu you can filter by typing. Otherwise name the provider, such as `dusha proxy <name> auth login deepseek`. It asks for any values the provider's URL needs, then for the key, and Enter stores `{env:NAME}` with the provider's variable instead. The profile is named after the provider unless you pass `--profile`, and the file keeps mode `600`. Replacing an existing profile asks first. Restart the proxy to use it.
 
 ```json
 {
@@ -382,7 +382,7 @@ The proxy:
 - Archives the reply, streamed or not, including streamed tool calls, and forwards the response byte for byte, including upstream errors.
 - Follows `previous_response_id` on the Responses protocol, so a request that sends only new items continues its conversation. The proxy remembers recent response ids in memory, and after a restart such a request starts a new conversation.
 - Forwards every other path untouched, such as `models` or `messages/count_tokens`, and so does a body without the protocol's shape. Nothing is stored for them.
-- Forwards the caller's headers and query string, including `Authorization`, then sets the profile's `headers` on top. It drops the routing headers, `X-Companion-Token`, and hop-by-hop headers.
+- Forwards the caller's headers and query string, including `Authorization` unless the profile has a `key`, then sets the profile's `headers` on top. It drops the routing headers, `X-Companion-Token`, and hop-by-hop headers.
 - Sends `X-Companion-Token` to the server itself. Harnesses never need the server token.
 - Forwards without context when the server is down or rejects the token, and logs a warning. The turn and its reply wait in the [outbox](#outbox) until the server is back.
 - Returns `404` for an unknown profile and `502` when the provider cannot be reached.
@@ -402,7 +402,7 @@ The server keeps each transcript as a tree of messages. A message matches when i
 - A transcript that extends a stored one continues that conversation. Only the new messages are stored.
 - An edited or regenerated turn becomes a branch of the same conversation. The shared messages are not stored again.
 - A transcript whose first message matches nothing starts a new conversation named `auto-<id>`.
-- Two sessions that open with the same message share a conversation. Send `X-Conversation-Id` to keep them apart.
+- Two sessions of one harness that open with the same message share a conversation. Send `X-Conversation-Id` to keep them apart.
 - History rewritten from its first message, such as a compacted session, starts a new conversation.
 
 `GET /health` on the proxy reports `server.status` as `ok`, `unauthorized`, `unreachable`, or `http <status>`, and lists the profile names.
@@ -423,7 +423,7 @@ The server keeps each transcript as a tree of messages. A message matches when i
 }
 ```
 
-The server lists the tools of active plugins only. The built-in plugins add these, and an external plugin adds its own, see [Tools](https://github.com/Somme4096/dusha#tools):
+The server lists the tools of active plugins only. The built-in plugins add these, and an external plugin adds its own, see [Tools](https://github.com/Somme4096/dusha#tools--mcp):
 
 | Tool | Plugin | Does |
 | --- | --- | --- |
@@ -449,7 +449,7 @@ A tool that fails returns `isError` with the reason in `detail`. The harness rea
 `dusha` builds every command other than `serve`, `proxy`, `list`, and `plugins` from the server, see [Commands](https://github.com/Somme4096/dusha#commands). Both routes need the token when auth is on.
 
 - `GET /cli/v1/commands` returns `groups` (name to help), `commands`, and `plugins` (each plugin's state). Each command holds `group`, empty for a top-level command such as `health`, plus `name`, `help`, and `args`.
-- `POST /cli/v1/run/<group>/<name>`, or `/cli/v1/run/<name>` for a top-level command, takes the arguments as a JSON object and returns the handler's result.
+- `POST /cli/v1/run/<group>/<command>`, or `/cli/v1/run/<command>` for a top-level command, takes the arguments as a JSON object and returns the handler's result.
 
 An unknown command returns `404`. An argument the command does not take, a missing one, or a value of the wrong type returns `422`. A command that fails returns `400` with the reason in `detail`.
 
@@ -461,7 +461,7 @@ The proxy keeps an outbox, `outbox.sqlite3` in the `data_dir` of the companion's
 
 - The OpenAPI `version` follows the installed package version.
 - `/state/v1` is the state API major version.
-- `context.version` is the injection schema version, now `1`.
+- `context.version` is the injection schema version, now `3`.
 - An evergreen fact `revision` counts that fact's stored changes.
 
 ## See also

@@ -2,8 +2,8 @@
 
 This external plugin listens for `decide`. It calls a running [llama.cpp server](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md)
 with decision-model support (`POST /v1/systemone`) and returns the emotion the
-server picks. The external plugin contract is in the project
-[README](https://github.com/Somme4096/dusha#plugin-api).
+server picks. The external plugin contract is in the
+[Plugin API](https://github.com/Somme4096/dusha/blob/main/docs/guide.md#plugin-api).
 
 ## Install
 

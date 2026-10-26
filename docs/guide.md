@@ -1,22 +1,20 @@
-# Operator guide
-
-Run one `dusha` process per companion and keep its data directory on a persistent disk. A second companion needs its own home and `port`. Serverless workers and ephemeral container disks lose the database on restart.
+# Dusha guide
 
 ## Run as a systemd service
 
-These steps name the companion `dusha`. Swap in your own name.
+Replace `<name>` with your companion's name.
 
 1. Install the CLI. The unit expects the binary at `~/.local/bin/dusha`.
 
 ```sh
 uv tool install dusha
-command -v dusha
+dusha --help
 ```
 
 2. Install the unit. The first start creates the companion home and its `config.json`.
 
 ```sh
-mkdir -p ~/.config/dusha/dusha ~/.config/systemd/user
+mkdir -p ~/.config/dusha/<name> ~/.config/systemd/user
 curl -o ~/.config/systemd/user/dusha@.service \
   https://raw.githubusercontent.com/Somme4096/dusha/main/deploy/dusha@.service
 ```
@@ -24,13 +22,13 @@ curl -o ~/.config/systemd/user/dusha@.service \
 3. Add secrets, if you use an embedding key. The config stores variable names and this file stores the values.
 
 ```sh
-touch ~/.config/dusha/dusha/.env
-chmod 600 ~/.config/dusha/dusha/.env
-${EDITOR:-vi} ~/.config/dusha/dusha/.env
+touch ~/.config/dusha/<name>/.env
+chmod 600 ~/.config/dusha/<name>/.env
+${EDITOR:-vi} ~/.config/dusha/<name>/.env
 ```
 
 ```ini
-UPSTREAM_API_KEY=replace-me
+EMBEDDING_API_KEY=replace-me
 ```
 
 The unit sets `PATH` to `~/.local/bin:/usr/local/bin:/usr/bin:/bin`. Add a `PATH=` line to this file when `uv` lives elsewhere.
@@ -39,17 +37,14 @@ The unit sets `PATH` to `~/.local/bin:/usr/local/bin:/usr/bin:/bin`. Add a `PATH
 
 ```sh
 systemctl --user daemon-reload
-systemctl --user enable --now dusha@dusha
-systemctl --user is-active dusha@dusha
-curl http://127.0.0.1:8765/health
+systemctl --user enable --now dusha@<name>
 ```
 
-`is-active` prints `active` and `/health` returns `"status":"ok"`.
-
-Read the logs:
+Give it a little healthcheck~
 
 ```sh
-journalctl --user -u dusha@dusha --no-pager -n20
+systemctl --user status dusha@<name>
+curl http://127.0.0.1:8765/health # `/health` should return ok.
 ```
 
 The unit is a template. `dusha@<name>` serves the home `~/.config/dusha/<name>/`.
@@ -64,7 +59,7 @@ Auth is off by default, and the service binds to localhost. To turn auth on, put
 }
 ```
 
-`openssl rand -hex 32` makes a good one. The config now holds a secret. `dusha serve` writes it with mode `600`, so keep that mode and keep the file out of version control.
+`openssl rand -hex 32` makes a good one (I hope you already know it). The config now holds a secret. `dusha serve` writes it with mode `600`, so keep that mode and keep the file out of version control.
 
 Send the same value in the `X-Companion-Token` header:
 
@@ -84,7 +79,7 @@ With auth on:
 - `/docs`, `/redoc`, and `/openapi.json` are off.
 - A new token needs a restart.
 
-To reach the service from another device, put a TLS reverse proxy in front of it or stay on a private network. Do not expose the plain HTTP port.
+To reach the service from another device, put it behind a TLS reverse proxy, use Tailscale or stay on a private network. Do not expose the plain HTTP port. (I know it's common sense, just consider yourself warned)
 
 ## Backup and restore
 
@@ -92,7 +87,7 @@ To reach the service from another device, put a TLS reverse proxy in front of it
 dusha backup /path/to/backups/state-$(date +%F).sqlite3
 ```
 
-The command runs on the server and writes the backup to that path on the server's machine. It is safe while the service runs. Do not copy `state.sqlite3` by hand during writes.
+The command runs on the server and writes the backup to that path on the server's machine. It is safe while the service runs. Do not copy `state.sqlite3` by hand during writes. (Again, common sense.)
 
 Back up your own files too: `config.json`, the identity, emotions, and prompts files, and the plugins directory.
 
@@ -110,6 +105,34 @@ dusha memory reindex
 ```
 
 `plugins` prints each plugin's `state`, `error`, `inject`, `provides`, and `events`. Each plugin adds its own commands, such as `memory`, `evergreen`, `memo`, `affect`, and `proactive`. `memory reindex` rebuilds the built-in search index. Plugin commands run on the server, so it must be up. `dusha --help` lists them, from the last list it saw while the server is down.
+
+### Plugin API
+> [!NOTE]
+> This adds detail to the [Plugin](https://github.com/Somme4096/dusha#plugin) table in the README.
+
+`inject` also takes `api`, `cli`, and `mcp` when the plugin registers routes, commands, or tools. 
+
+| Hook | Receives |
+| --- | --- |
+| `message` | The stored row: `id`, `conversation_id`, `role`, `text`, `content`, `external_id`, `occurred_at`, `ingested_at`, `harness`, `external_conversation_id`, `route`. An exception is logged and the message is not redelivered. |
+| `context` | `query`, `harness`, `conversation_id`, `exclude_message_ids`, and `include_recent`. A returned `Block` carries `name`, `text`, `data`, and `session` records. |
+| `decide` | `message`, `emotions` (the resolved dimensions), `state` (the affect snapshot), and `instruction`. |
+| `<event>` | The arguments passed to `emit` or `collect`. Custom events stay in the gateway process, so they reach every active plugin, including the emitter's own listeners. |
+
+`ctx.data_dir` is `plugins/<plugin>` under `data_dir`. `ctx.collect` keeps each plugin's first non-null result.
+
+| Service | Methods |
+| --- | --- |
+| `messages` | `get`, `recent`, `search`, `context`, `after` |
+| `companion` | `ingest_message`, `ingest_transcript`, `build_context`, `latest_route` |
+| `affect` | `status` |
+| `evergreen` | `remember`, `revise`, `forget`, `list_current`, `history` |
+| `memo` | `add`, `list`, `done` |
+| `proactive` | `evaluate`, `poll`, `acknowledge` |
+
+Services from `ctx.provide` are plain Python objects. `deltas` apply after the increment, and dimension names come from your `emotions.json`.
+One thing to pay attention to is that a dependency conflict in plugin(whether internal or external) makes dusha unable to start gateway, since they share one Python environment.
+
 
 ## Troubleshooting
 
@@ -132,7 +155,7 @@ dusha memory reindex
 | The proxy forwards but nothing is stored | `GET /health` on the proxy shows `server.status`. Check `proxy.server.url` and `proxy.server.token`. |
 | Memory, fact, memo, affect, or proactive routes return `503` | The `detail` names the plugin. Remove its `"disabled": true`, or turn on the plugin it needs, and restart. Your stored rows are intact. |
 | Startup fails on an external plugin import or `apply` error | The traceback names the plugin directory and the failing module. Check that directory, its `[tool.dusha]` table in `pyproject.toml`, and the traceback. |
-| An external plugin stopped working after an upgrade | External plugins define `apply(ctx, config)` and name it in `[tool.dusha]`. See the [Plugin API](https://github.com/Somme4096/dusha#plugin-api). |
+| An external plugin stopped working after an upgrade | External plugins define `apply(ctx, config)` and name it in `[tool.dusha]`. See the [Plugin API](#plugin-api). |
 | Duplicate proactive events or write errors | Two processes share one `state.sqlite3`. Stop one. |
 
 ## See also
