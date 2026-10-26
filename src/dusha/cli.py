@@ -133,7 +133,7 @@ def main(companion: str | None, home: str | None, config: str | None) -> None:
     pass
 
 
-@main.command("serve", help="Run the server for one companion, the state API plus /mcp")
+@main.command("serve", help="Run the server for one companion")
 @click.argument("name", required=False)
 @click.pass_context
 def serve(ctx: click.Context, name: str | None) -> None:
@@ -188,7 +188,7 @@ def _connect(path: Path) -> None:
     url = settings.SERVER_URL
     click.echo(f"{path.parent.name} isn't connected to a server yet.", err=True)
     while True:
-        here = local is not None and questionary.select("Connect to", choices=[
+        here = local is not None and questionary.select("Connect to:", choices=[
             questionary.Choice(f"The server on this machine ({local.url})", value=True),
             questionary.Choice("Another server", value=False),
         ]).unsafe_ask()
@@ -207,9 +207,9 @@ def _connect(path: Path) -> None:
             if choice == "Try again":
                 continue
         else:
-            click.echo(f"connected to {url}", err=True)
+            click.echo(f"Connected!\nProxy now listening to {url}.", err=True)
         break
-    click.echo(f"saved {settings.save_server(path, url, token)}", err=True)
+    click.echo(f"Saved {settings.save_server(path, url, token)}.", err=True)
 
 
 class Proxy(click.Group):
@@ -240,7 +240,7 @@ def _proxy_file(ctx: click.Context, *, setup: bool) -> Path:
 
 @main.group(
     "proxy", cls=Proxy, invoke_without_command=True, subcommand_metavar="[NAME] [COMMAND] [ARGS]...",
-    help="Run the client proxy next to your harness",
+    help="Run or configure the client proxy.",
 )
 @click.pass_context
 def proxy(ctx: click.Context) -> None:
@@ -286,10 +286,10 @@ def login(ctx: click.Context, provider: str | None, profile: str | None, refresh
     interactive = sys.stdin.isatty()
     if provider is None:
         if not interactive:
-            raise ConfigError("name a provider, such as dusha proxy auth login deepseek")
+            raise ConfigError("Name a provider, such as dusha proxy auth login deepseek")
         provider = _pick(found)
     if provider not in found:
-        raise ConfigError(f"unknown provider {provider!r}, see https://models.dev for the ids")
+        raise ConfigError(f"Unknown provider {provider!r}, see https://models.dev for the ids")
     preset, name = found[provider], profile or provider
     current = _config(lambda: settings.load(path, environ=False))
     if name in current.upstreams:
@@ -304,8 +304,8 @@ def login(ctx: click.Context, provider: str | None, profile: str | None, refresh
     _config(lambda: settings.save_upstream(path, name, raw))
     companion, host = path.parent.name, f"[{current.host}]" if ":" in current.host else current.host
     harness = f"http://{host}:{current.port}/{name}"
-    click.echo(f"added {name} to {companion}: {harness} -> {raw['base_url']}", err=True)
-    click.echo(f"restart dusha proxy {companion} to use it", err=True)
+    click.echo(f"Success!\nNew provider {name} added to {companion} at {harness}.", err=True)
+    click.echo(f"Restart dusha proxy {companion} to use it.", err=True)
 
 
 @auth.command("logout", help="Remove a provider profile")
@@ -314,9 +314,9 @@ def login(ctx: click.Context, provider: str | None, profile: str | None, refresh
 def logout(ctx: click.Context, profile: str) -> None:
     path = _proxy_file(ctx, setup=False)
     if profile not in _config(lambda: settings.load(path, environ=False)).upstreams:
-        raise click.ClickException(f"no profile named {profile!r}")
+        raise click.ClickException(f"No profile named {profile!r}")
     _config(lambda: settings.save_upstream(path, profile, None))
-    click.echo(f"removed {profile} from {path.parent.name}", err=True)
+    click.echo(f"Removed {profile} from {path.parent.name}", err=True)
 
 
 def _masked(key: str) -> str:
