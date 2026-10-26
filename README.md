@@ -1,14 +1,11 @@
 # Dusha
 
-> [!WARNING]
-> THIS SOFTWARE IS UNDER RAPID DEVELOPMENT. BREAKING CHANGES ARE HAPPENING BEFORE NOVEMBER.
-
 > [!NOTE]
 > *This README.md is proudly written by a human (and a little bit by Claude (˶>⩊<˶)❤️)*
 
-*Dusha* (Russian: душа, [dʊˈʂa], "soul") is a small HTTP API and a proxy that stores messages, identity, memories, affect state, and anything you build outside your harness. Any client that can add a custom provider are able to use it, so you can hop between harnesses (or even use multiple at once!) and still get the same soul on the other side.
+*Dusha* (Russian: душа, [dʊˈʂa], "soul") is a small HTTP API and a proxy that stores messages, identity, memories, affect state—anything makes your agent yours— outside your harness. Any client that can add a custom provider are able to use it, so you can hop between harnesses (or even use multiple at once!) and still get the same soul on the other side.
 
-Almost everything is configurable through JSON. For things that can't, dusha is also built on [everything-is-a-plugin](https://github.com/deepseek-ai/deepseek-harness) architecture, so you can easily wire an external memory provider, or do crazy things like writing your own emotion system!
+Almost everything is configurable through JSON. For things that aren't, dusha is also built on [everything-is-a-plugin](https://github.com/deepseek-ai/deepseek-harnes) architecture, so you can easily wire an external memory provider, or do crazy things like writing your own emotion system!
 
 ## Quickstart
 
@@ -21,50 +18,50 @@ dusha serve <name>
 This starts a companion named `<name>`. On the first run it makes the folder `~/.config/dusha/<name>/` and writes a `config.json`.
 Then on the same or another device, run:
 
-```sh
+```console
 $ dusha proxy <name>
 
-> Connect to:
-> ? The server on this machine: http://192.168.0.100:8765/
-> ? Another server...←
+<name> isn't connected to a server yet.
+? Connect to: (Use arrow keys)
+   The server on this machine (http://127.0.0.1:8765)
+ » Another server
 
-> ? Server URL http://100.145.95.87:8765
-> ? Server token, empty for none **********
+? Server URL http://100.145.95.87:8765
+? Server token, empty for none **********
 
-> Connected!
-> Proxy now listening to http://100.145.95.87:8765.
-> Saved ~/.config/dusha/<name>/config.json.
+Connected to http://100.145.95.87:8765.
+Saved ~/.config/dusha/<name>/config.json.
 ```
 
 Add a custom provider:
 
-```sh
+```console
 $ dusha proxy <name> auth login # Add a provider profile from the models.dev catalog
 
-> ? Provider (Use arrow keys, type to filter)
->  » 302.AI (302ai)
->    Abacus (abacus)
->    abliteration.ai (abliteration-ai)
->    above.dev (above)
->    AgentRouter (agentrouter)
->    Agnes AI (agnes)
->    ...
+? Provider (Use arrow keys, type to filter)
+ » 302.AI (302ai)
+   Abacus (abacus)
+   abliteration.ai (abliteration-ai)
+   above.dev (above)
+   AgentRouter (agentrouter)
+   Agnes AI (agnes)
+   ...
 
-> Success!
-> New provider 302ai added to <name> at http://127.0.0.1:8766/302ai.
-> Restart dusha proxy <name> to use it.
+Success!
+New provider 302ai added to <name> at http://127.0.0.1:8766/302ai.
+Restart dusha proxy <name> to use it.
 
 $ dusha proxy <name>
 
-> INFO:     Started server process [3970524]
-> INFO:     Waiting for application startup.
-> INFO:     Application startup complete.
-> INFO:     Uvicorn running on http://127.0.0.1:8766 (Press CTRL+C to quit)
+INFO:     Started server process [3970524]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8766 (Press CTRL+C to quit)
 ```
 
-Congratulations! Now in your harness or app, point your endpoint at the URL `auth login` gave you: in this case, `http://127.0.0.1:8766/302ai`. And you're good to go. 
+Now in your harness or app, point your endpoint at the URL `auth login` gave you: in this case, `http://127.0.0.1:8766/302ai` and you're good to go.
 
-Optionally (but highly recommended), add [MCP](https://github.com/Somme4096/dusha/blob/main/docs/api.md#mcp).
+Optionally (but recommended), add [MCP](https://github.com/Somme4096/dusha/blob/main/docs/api.md#mcp).
 
 ## How it works
 
@@ -72,18 +69,15 @@ Optionally (but highly recommended), add [MCP](https://github.com/Somme4096/dush
 
 Dusha adds context "after" each message so cache can hit.
 
-> [!NOTE]
-> <details>
-> <summary>How do messages, memory, affect, and identity work in Dusha by default?</summary>
->
-> - **Messages:** Basic SQLite FTS5 plus optional embedding search. An plugin can do everything you can imagine if that' not enough.
-> - **Evergreen:** Long-term facts that you edit from the CLI and your companion edits through integration tools. No automatic extraction yet.
->   - Think of it as a `USER.md` but with proper lifecycle management and duplication prevention.
-> - **Affect:** A deterministic emotion engine that uses values like `{"anger": 0.35}` and shifts over time, including when the user goes unresponsive. Of course, you can make your own!
->   - Message intent analysis can also be an external plugin. drop system_one plugin in examples/ or any other classifier plugin into the plugins directory, and its `decide` listener picks which emotion each user message moves.
-> - **Identity:** `identity.md`, or name your own.
->
-> </details>
+<details>
+<summary>How do messages, memory, affect, and identity work in Dusha by default?</summary>
+- **Messages:** Basic SQLite FTS5 plus optional embedding search. An plugin can do everything you can imagine if that's not enough.
+- **Evergreen:** Long-term facts that you edit from the CLI and your companion edits through integration tools. No automatic extraction.
+  - Think of it as a `USER.md` but with proper lifecycle management and duplication prevention.
+- **Affect:** A deterministic emotion engine that uses values like `{"anger": 0.35}` and shifts over time, including when the user goes unresponsive. Of course, you can make your own!
+  - Side note is that Message intent analysis can also be an external plugin. drop system_one plugin in examples/ or any other classifier plugin into the plugins directory, and its `decide` listener picks which emotion each user message moves.
+- **Identity:** `identity.md`, or name your own.
+</details>
 
 ## Plugin
 
@@ -92,33 +86,31 @@ Everything is a plugin in dusha. Identity, memory, evergreen, memo, affect, and 
 ```toml
 [tool.dusha]
 entry = "my_plugin"
-inject = ["messages"]
+inject = ["messages", "cli", "mcp"]
 ```
 
-The module defines `apply(ctx, config)`, which runs at startup. `config` is the plugin's `options` from `config.json`. `inject` lists the services the plugin calls, including `api`, `cli`, and `mcp` when it registers routes, commands, or tools, and a plugin whose service is missing stays inactive. External plugins use the gateway's Python environment, so extra dependencies must be installed there and a version conflict affects the gateway.
+The module defines `apply(ctx, config)`, which runs at startup with the plugin's `options` from `config.json`. `inject` lists the services the plugin calls, and a plugin whose service is missing stays inactive. External plugins share the gateway's Python environment, so install their dependencies there.
 
 | Call | Effect |
 | --- | --- |
-| `ctx.on("message", fn)` | `fn(message)` runs for every stored message, in id order, with the stored row: `id`, `conversation_id`, `role`, `text`, `content`, `external_id`, `occurred_at`, `ingested_at`, `harness`, `external_conversation_id`, `route`. An exception is logged and the message is not redelivered. |
-| `ctx.on("context", fn)` | `fn(request)` runs for every context build with `query`, `harness`, `conversation_id`, `exclude_message_ids`, and `include_recent`. Return a `Block` from `dusha.hooks` or `None`. A block carries the prompt text, block data, and session records. |
-| `ctx.on("decide", fn)` | `fn(request)` runs for every new user message while affect is on, with `message`, `emotions` (the resolved dimensions), `state` (the affect snapshot), and `instruction`. Return `{"emotion": "<dimension>"}`, `{"deltas": {"<dimension>": <number>}}`, both, or `None`. |
-| `ctx.on("<event>", fn)` | `fn(*args)` runs when another plugin emits `<event>`. Custom events stay in the gateway process, so `emit` and `collect` reach every active plugin. |
-| `ctx.interval(seconds, fn)` | `fn()` runs on that interval while the gateway serves. |
+| `ctx.on("message", fn)` | `fn(message)` runs for every stored message, in id order. |
+| `ctx.on("context", fn)` | `fn(request)` runs for every context build. Return a `Block` from `dusha.hooks` or `None`. |
+| `ctx.on("decide", fn)` | `fn(request)` runs for every new user message while affect is on. Return `{"emotion": "<dimension>"}`, `{"deltas": {"<dimension>": <number>}}`, both, or `None`. |
+| `ctx.on("<event>", fn)` | `fn(*args)` runs when a plugin emits `<event>`. |
+| `ctx.interval(seconds, fn)` | `fn()` runs on that interval. |
 | `ctx.on_dispose(fn)` | `fn()` runs on shutdown. |
-| `ctx.data_dir` | A private directory, `plugins/<name>` under `data_dir`. |
+| `ctx.data_dir` | The plugin's private directory. |
 | `ctx.name` | The plugin's name. |
-| `ctx.error` | Setting a non-empty string marks the plugin failed and shows the text in `/state/v1/plugins`. |
-| `ctx.provide(name, value)` | Publishes a service object under `name`. Another plugin consumes it by listing `name` in `inject` and calling `ctx.<name>.<method>(...)`. |
-| `ctx.emit(event, ...)` | Calls every active plugin listening for `event`, including this plugin's own listeners. |
-| `ctx.collect(event, ...)` | Calls every listener and returns `{"<plugin>": <first non-null result>}` under each plugin's name. |
-| `ctx.api` | The gateway's FastAPI router. Mount routes on it exactly as a built-in plugin does. |
-| `ctx.cli` | The gateway's command registry. `ctx.cli.group(name, help)` returns a group, and `group.command(name, handler, help=..., args=[...])` adds `dusha <group> <name>`, see [Commands](#commands). |
-| `ctx.mcp` | The gateway's MCP tool registry. `ctx.mcp.tool(name, handler, help=..., args=[...])` adds a tool to `/mcp`, see [Tools](#tools). |
-| `ctx.<service>.<method>(...)` | Calls a method of an injected service and returns its result: `messages` (`get`, `recent`, `search`, `context`, `after`), `companion` (`ingest_message`, `build_context`, `latest_route`), `affect` (`status`), `evergreen` (`remember`, `revise`, `forget`, `list_current`, `history`), `memo` (`add`, `list`, `done`), `proactive` (`evaluate`, `poll`, `acknowledge`). |
+| `ctx.error` | A non-empty string marks the plugin failed in `/state/v1/plugins`. |
+| `ctx.provide(name, value)` | Publishes a service other plugins can `inject`. |
+| `ctx.emit(event, ...)` | Calls every listener of `event`. |
+| `ctx.collect(event, ...)` | Calls every listener and returns `{"<plugin>": <result>}`. |
+| `ctx.api` | The gateway's FastAPI router. |
+| `ctx.cli` | The command registry, see [Commands](#commands). |
+| `ctx.mcp` | The MCP tool registry, see [Tools](#tools--mcp). |
+| `ctx.<service>.<method>(...)` | Calls an injected service: `messages`, `companion`, `affect`, `evergreen`, `memo`, `proactive`. |
 
-Services provided by an external plugin are consumed by other plugins through `inject`, and they are direct Python objects.
-
-The first `emotion` in `plugins` order wins. `deltas` from every plugin merge and apply after the increment. Dimension names come from your `emotions.json`.
+The first `emotion` in `plugins` order wins, and `deltas` from every plugin merge. See the [Plugin API](https://github.com/Somme4096/dusha/blob/main/docs/guide.md#plugin-api) for hook fields and service methods.
 
 ### Commands
 
@@ -174,12 +166,14 @@ For clients that you'd like to receive proactive messages from, use integration 
 
 ## Verisioning
 
-Dusha's version always ends in `.21`. Every release bumps only the numbers in front of it (0.0.21 → 0.1.21 → 1.0.21).
+With version `1.0.21`, dusha entered `5:Stable/Production` on PyPI. I will avoid breaking changes in minor and patch releases and deprecate features before removing them.
+
+Note that dusha's version always ends in `.21`. Every release bumps only the numbers in front of it (0.0.21 → 0.1.21 → 1.0.21).
 
 <details>
 <summary>Why?</summary>
 
-[The weigh of soul is 21 grams](https://en.wikipedia.org/wiki/21_grams_experiment). Dusha is a software with a soul, just like how your companion should be.
+[The weight of soul is said to be 21 grams](https://en.wikipedia.org/wiki/21_grams_experiment). Dusha is a software with a soul, and I hope it stays that way forever.
 </details>
 
 ## Acknowledgement
