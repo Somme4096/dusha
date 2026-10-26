@@ -6,49 +6,88 @@
 > [!NOTE]
 > *This README.md is proudly written by a human (and a little bit by Claude (˶>⩊<˶)❤️)*
 
-*Dusha* (Russian: душа, [dʊˈʂa], "soul") is a small HTTP API that stores messages, identity, facts, and affect state outside your harness. Any client that can POST a message and read back an injection string can use it, so you can hop between harnesses (or even use multiple at once!) and still get the same soul on the other side.
+*Dusha* (Russian: душа, [dʊˈʂa], "soul") is a small HTTP API and a proxy that stores messages, identity, memories, affect state, and anything you build outside your harness. Any client that can add a custom provider are able to use it, so you can hop between harnesses (or even use multiple at once!) and still get the same soul on the other side.
 
-Every prompt, emotional vector, and threshold is configurable through JSON. Dusha also has an *extensible plugin system* that lets you wire any external memory provider or classifier easily!
+Almost everything is configurable through JSON. For things that can't, dusha is also built on [everything-is-a-plugin](https://github.com/deepseek-ai/deepseek-harness) architecture, so you can easily wire an external memory provider, or do crazy things like writing your own emotion system!
 
 ## Quickstart
 
-You need Python 3.11 or newer and [uv](https://docs.astral.sh/uv/).
 
 ```sh
 uv tool install dusha
 dusha serve <name>
 ```
 
-The second line starts a companion named `<name>`. On the first run it makes the folder `~/.config/dusha/<name>/` and writes a `config.json` with every setting in it. It respects `XDG_CONFIG_HOME` too!
+This starts a companion named `<name>`. On the first run it makes the folder `~/.config/dusha/<name>/` and writes a `config.json`.
+Then on the same or another device, run:
 
-### Advanced setup
+```sh
+$ dusha proxy <name>
 
-Want a second companion? Make a second folder and give it a different `port`. `dusha list` shows all of them, and `dusha -c <name> <command>` talks to one.
+> Connect to:
+> ? The server on this machine: http://192.168.0.100:8765/
+> ? Another server...←
 
-Want it running in the background? Use [deploy/dusha@.service](https://github.com/Somme4096/dusha/blob/main/deploy/dusha@.service) with the [service setup steps](https://github.com/Somme4096/dusha/blob/main/docs/guide.md#run-as-a-systemd-service).  *(Linux only. Tell your agents to make PR for it if you use something else!)*
+> ? Server URL http://100.145.95.87:8765
+> ? Server token, empty for none **********
+
+> Connected!
+> Proxy now listening to http://100.145.95.87:8765.
+> Saved ~/.config/dusha/<name>/config.json.
+```
+
+Add a custom provider:
+
+```sh
+$ dusha proxy <name> auth login # Add a provider profile from the models.dev catalog
+
+> ? Provider (Use arrow keys, type to filter)
+>  » 302.AI (302ai)
+>    Abacus (abacus)
+>    abliteration.ai (abliteration-ai)
+>    above.dev (above)
+>    AgentRouter (agentrouter)
+>    Agnes AI (agnes)
+>    ...
+
+> Success!
+> New provider 302ai added to <name> at http://127.0.0.1:8766/302ai.
+> Restart dusha proxy <name> to use it.
+
+$ dusha proxy <name>
+
+> INFO:     Started server process [3970524]
+> INFO:     Waiting for application startup.
+> INFO:     Application startup complete.
+> INFO:     Uvicorn running on http://127.0.0.1:8766 (Press CTRL+C to quit)
+```
+
+Congratulations! Now in your harness or app, point your endpoint at the URL `auth login` gave you: in this case, `http://127.0.0.1:8766/302ai`. And you're good to go. 
+
+Optionally (but highly recommended), add [MCP](https://github.com/Somme4096/dusha/blob/main/docs/api.md#mcp).
 
 ## How it works
 
-`user message → dusha → injects context → your model → reply → (harness, dusha)`
+`user message → dusha proxy → injects context → routed to upstream model → reply → (harness, dusha)`.
 
-`dusha serve` is the server that holds the soul, and it can live on another machine. `dusha proxy <name>` is the client and runs next to your harness. Its first run offers a menu to pick the server, checks the token, and saves them. `dusha proxy <name> auth login` adds a provider from [models.dev](https://models.dev) with its key, see [provider login](https://github.com/Somme4096/dusha/blob/main/docs/api.md#provider-login). Point the harness's provider base URL at `http://127.0.0.1:8766/<profile>` and the proxy stores each message, adds the context to the latest user message, and forwards the request to your provider, see [proxy](https://github.com/Somme4096/dusha/blob/main/docs/api.md#proxy). The server also gives the harness the memory, evergreen, and memo tools over MCP at `/mcp`, see [MCP](https://github.com/Somme4096/dusha/blob/main/docs/api.md#mcp). While the server is away, the proxy keeps the conversation in an outbox and sends it later. Chat platforms that need proactive messages, such as AstrBot, use a plugin that calls the server directly.
+Dusha adds context "after" each message so cache can hit.
 
-<details>
-<summary>How does memory/affect/identity work in Dusha?</summary>
+> [!NOTE]
+> <details>
+> <summary>How do messages, memory, affect, and identity work in Dusha by default?</summary>
+>
+> - **Messages:** Basic SQLite FTS5 plus optional embedding search. An plugin can do everything you can imagine if that' not enough.
+> - **Evergreen:** Long-term facts that you edit from the CLI and your companion edits through integration tools. No automatic extraction yet.
+>   - Think of it as a `USER.md` but with proper lifecycle management and duplication prevention.
+> - **Affect:** A deterministic emotion engine that uses values like `{"anger": 0.35}` and shifts over time, including when the user goes unresponsive. Of course, you can make your own!
+>   - Message intent analysis can also be an external plugin. drop system_one plugin in examples/ or any other classifier plugin into the plugins directory, and its `decide` listener picks which emotion each user message moves.
+> - **Identity:** `identity.md`, or name your own.
+>
+> </details>
 
+## Plugin
 
-- Messages: Basic SQLite FTS5 + optional embedding search. An external plugin in `~/.config/dusha/<name>/plugins/` can add its own block, such as an external memory provider.
-- Evergreen: Long-term facts that you edit from the CLI and your companion edits through integration tools. No automatic extraction 
-	* think of it as a USER.md that actually has good lifecycle management and duplication prevention
-- Affect: A deterministic emotion engine with decay and silence drift. Proactive messages fire on thresholds. 
-	* And yeah, message intent analysis can be an external plugin too: drop Jev or any other classifier into the plugins directory and its `decide` listener picks which emotion each user message moves.
-- Identity: `identity.md`, or name one your own.
-
-</details>
-
-## Plugin API
-
-Every part of Dusha is a plugin. Identity, memory, evergreen, memo, affect, and proactive are built in, and a plugin you add is an external plugin: a directory under the plugins directory holding `pyproject.toml` with a `[tool.dusha]` table. The gateway imports the module into its own process, so the plugin gets the same `ctx` as a built-in plugin, including `ctx.api`, `ctx.cli`, and `ctx.mcp`:
+Everything is a plugin in dusha. Identity, memory, evergreen, memo, affect, and proactive are built in that you can alter/disable. You can also create a plugin under the plugins directory holding `pyproject.toml` with a `[tool.dusha]` table. 
 
 ```toml
 [tool.dusha]
@@ -83,7 +122,7 @@ The first `emotion` in `plugins` order wins. `deltas` from every plugin merge an
 
 ### Commands
 
-A command runs on the server. `dusha` on any machine fetches the server's command list and builds the command from it, so a plugin's commands work wherever you run `dusha -c <name>`. Describe the arguments with `arg` and `option` from `dusha.commands`:
+You can add CLI commands to your plugin. The dusha CLI is just another client to access dusha, so for example you can do things like:
 
 ```python
 from dusha.commands import arg, option
@@ -100,23 +139,17 @@ def apply(ctx, config):
 ```
 
 `dusha notes add "Buy tea" --pinned --tags home --tags errand` sends the values to the server as JSON and prints the handler's return value as JSON.
+As you can see, dusha builds `--help` list dynamically from registered commands. But it also caches the last command list, so `--help` works while the server is down.
 
 | Helper | Makes |
 | --- | --- |
 | `arg(name, type=str, help="", choices=(), optional=False, repeated=False)` | A positional argument. |
 | `option(name, type=str, help="", default=None, choices=(), required=False, repeated=False)` | `--name`, with each underscore as a dash. A `bool` option is a flag. |
 
-- `type` is `str`, `int`, `float`, or `bool`. `choices` limits a value to a list of strings.
-- The handler receives every argument by name. A value the caller leaves out arrives as its `default`.
-- The server checks names and types before the handler runs. Check rules that span arguments, such as two flags that exclude each other, in the handler.
-- Raise `CommandError` from `dusha.commands`, `ValueError`, or `KeyError` to fail the command. `dusha` prints the message and exits with `1`.
-- `ctx.cli.command(name, handler, ...)` adds a top-level command, as core does for `health` and `backup`. `serve`, `proxy`, `list`, and `plugins` are taken.
-- A disabled plugin registers nothing, so `dusha --help` leaves its commands out and running one ends in `No such command`.
-- `dusha` keeps the last command list per server, so `--help` works while the server is down.
 
-### Tools
+### Tools & MCP
 
-A tool is served to the harness over [MCP](https://github.com/Somme4096/dusha/blob/main/docs/api.md#mcp). It takes the same `arg` and `option` specs as a command, and `help` becomes the tool description:
+Dusha exposes a HTTP [MCP](https://github.com/Somme4096/dusha/blob/main/docs/api.md#mcp) per each companion. It takes the same `arg` and `option` specs as a CLI command, so it's pretty easy to add tools for dusha MCP in your own plugin:
 
 ```python
 from dusha.commands import arg
@@ -131,16 +164,23 @@ def apply(ctx, config):
     )
 ```
 
-- A name holds letters, digits, dash, dot, or underscore, at most 128 characters, and is unique across plugins. A taken name stops the server at startup.
-- The handler receives every argument by name, as a command handler does. Its return value reaches the harness as JSON text.
-- Raise `CommandError`, `ValueError`, or `KeyError` to fail the call with `isError`. A `KeyError` reports `not_found`, `"not found"` unless you pass `not_found=...`.
-- A disabled plugin registers nothing, so its tools are not listed.
+For clients that you'd like to receive proactive messages from, use integration for each platform under integrations/, or build your own there.
 
 ## Documentation
 
 - [docs/configuration.md](https://github.com/Somme4096/dusha/blob/main/docs/configuration.md): JSON settings, identity and prompt files.
 - [docs/guide.md](https://github.com/Somme4096/dusha/blob/main/docs/guide.md): service setup, auth and network, backup, and troubleshooting.
 - [docs/api.md](https://github.com/Somme4096/dusha/blob/main/docs/api.md): HTTP endpoints and harness integration, including AstrBot.
+
+## Verisioning
+
+Dusha's version always ends in `.21`. Every release bumps only the numbers in front of it (0.0.21 → 0.1.21 → 1.0.21).
+
+<details>
+<summary>Why?</summary>
+
+[The weigh of soul is 21 grams](https://en.wikipedia.org/wiki/21_grams_experiment). Dusha is a software with a soul, just like how your companion should be.
+</details>
 
 ## Acknowledgement
 
