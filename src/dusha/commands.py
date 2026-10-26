@@ -141,6 +141,15 @@ def validate(args: Iterable[Arg], values: Any) -> dict[str, Any]:
     return result
 
 
+def check_args(label: str, args: Iterable[Arg]) -> None:
+    names = [item.name for item in args]
+    if len(set(names)) != len(names):
+        raise ValueError(f"{label} repeats an argument name")
+    for item in args:
+        if not item.name.isidentifier() or item.name == "help":
+            raise ValueError(f"{label} has an invalid argument name {item.name!r}")
+
+
 def message(error: Exception) -> str:
     if isinstance(error, KeyError):
         return f"not found: {error.args[0]}" if error.args else "not found"
@@ -211,12 +220,7 @@ class Commands:
             raise ValueError(f"command name must be letters, digits, dash, or underscore, got {path[-1]!r}")
         if path in self.entries:
             raise ValueError(f"command {label!r} is already registered")
-        names = [item.name for item in args]
-        if len(set(names)) != len(names):
-            raise ValueError(f"command {label!r} repeats an argument name")
-        for item in args:
-            if not item.name.isidentifier() or item.name == "help":
-                raise ValueError(f"command {label!r} has an invalid argument name {item.name!r}")
+        check_args(f"command {label!r}", args)
         positional = [item for item in args if not item.option]
         for before, after in zip(positional, positional[1:], strict=False):
             if before.repeated or (after.required and not before.required):

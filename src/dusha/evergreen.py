@@ -444,7 +444,7 @@ class EvergreenStore:
 
 
 name = "evergreen"
-inject = ("database", "prompts", "api", "cli")
+inject = ("database", "prompts", "api", "cli", "mcp")
 
 
 class RememberFactInput(GatewayInput):
@@ -479,6 +479,7 @@ def apply(ctx: Any, config: EvergreenConfig) -> None:
     ctx.on("context", store.on_context)
     _routes(ctx.api, store)
     _commands(ctx.cli, store)
+    _tools(ctx.mcp, store)
 
 
 def _routes(router: APIRouter, store: EvergreenStore) -> None:
@@ -654,4 +655,48 @@ def _commands(cli: Any, store: EvergreenStore) -> None:
             option("source_message_id", int),
             option("reason", required=True),
         ],
+    )
+
+
+def _tools(mcp: Any, store: EvergreenStore) -> None:
+    mcp.tool(
+        "evergreen_list",
+        lambda **values: {"facts": store.list_current(**values)},
+        help="List the evergreen facts the companion always remembers.",
+        args=[
+            option("include_inactive", bool, help="Include forgotten and expired facts."),
+            option("due_only", bool, help="Only facts due for review."),
+            option("limit", int, default=100, help="Maximum number of facts."),
+        ],
+    )
+    mcp.tool(
+        "evergreen_remember",
+        lambda **values: {"fact": store.remember(**values, created_by="agent")},
+        help="Store a new evergreen fact the companion should always remember.",
+        args=[
+            arg("key", help="Stable fact key such as user.name."),
+            arg("text", help="Complete fact text."),
+            option("priority", int, default=50, help="Priority from 0 to 100."),
+            option("reason", default="", help="Why the fact changes."),
+            option("review_after", help="ISO timestamp to review the fact after."),
+            option("expires_at", help="ISO timestamp the fact expires at."),
+        ],
+    )
+    mcp.tool(
+        "evergreen_revise",
+        lambda **values: {"fact": store.revise(**revision(values), created_by="agent")},
+        help="Replace an evergreen fact at the revision you last read.",
+        args=REVISE_ARGS,
+        not_found="evergreen fact not found",
+    )
+    mcp.tool(
+        "evergreen_forget",
+        lambda **values: {"fact": store.forget(**values, created_by="agent")},
+        help="Forget an evergreen fact at the revision you last read.",
+        args=[
+            arg("fact_id", help="Fact id."),
+            arg("expected_revision", int, help="Revision you last read."),
+            arg("reason", help="Why the fact is forgotten."),
+        ],
+        not_found="evergreen fact not found",
     )

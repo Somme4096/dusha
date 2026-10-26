@@ -286,7 +286,7 @@ class MemoryStore:
 
 
 name = "memory"
-inject = ("messages", "api", "cli")
+inject = ("messages", "api", "cli", "mcp")
 
 
 class SearchInput(GatewayInput):
@@ -340,6 +340,7 @@ def apply(ctx: Any, config: MemoryConfig) -> None:
     ctx.on("context", lambda request: recall(store, config, request))
     _routes(ctx.api, store)
     _commands(ctx.cli, store)
+    _tools(ctx.mcp, store)
 
 
 def _routes(router: APIRouter, store: MemoryStore) -> None:
@@ -395,6 +396,38 @@ def _commands(cli: Any, store: MemoryStore) -> None:
         args=[option("limit", int, default=20)],
     )
     memory.command("reindex", lambda: _reindex(store), help="Rebuild the search index")
+
+
+def _tools(mcp: Any, store: MemoryStore) -> None:
+    mcp.tool(
+        "memory_search",
+        lambda query, limit, context_messages: {
+            "results": store.search(query, max(1, min(limit, 50)), max(0, min(context_messages, 10)))
+        },
+        help="Search the companion's conversation archive for past exchanges.",
+        args=[
+            arg("query", help="Search text."),
+            option("limit", int, default=8, help="Maximum number of hits."),
+            option("context_messages", int, default=1, help="Neighbor messages to include with each hit."),
+        ],
+    )
+    mcp.tool(
+        "memory_get",
+        lambda message_id, context_messages: _context(store, message_id, context_messages),
+        help="Read one archived message with its neighbors.",
+        args=[
+            arg("message_id", int, help="Message id from a search hit."),
+            option("context_messages", int, default=1, help="Neighbor messages on each side."),
+        ],
+        not_found="memory record not found",
+    )
+
+
+def _context(store: MemoryStore, message_id: int, context_messages: int) -> dict[str, Any]:
+    messages = store.context(message_id, max(0, min(context_messages, 10)))
+    if not messages:
+        raise KeyError(message_id)
+    return {"messages": messages}
 
 
 def _show(store: MemoryStore, message_id: int) -> dict[str, Any]:

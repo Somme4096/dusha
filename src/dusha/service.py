@@ -16,6 +16,7 @@ from .config import AppConfig
 from .context import ContextComposer
 from .database import Database
 from .hooks import ContextRequest, Registry
+from .mcp import Tools
 from .memory import MemoryStore, text_from_content
 from .transcript import ROLES, TranscriptTree, transcript_key
 
@@ -52,6 +53,7 @@ class CompanionService:
             help="Create a consistent SQLite backup at a path on the server",
             args=[arg("destination")],
         )
+        self.tools = Tools()
         self.registry = Registry(
             {
                 "settings": config,
@@ -61,6 +63,7 @@ class CompanionService:
                 "companion": self,
                 "api": self.router,
                 "cli": self.commands,
+                "mcp": self.tools,
             },
             config.data_dir / "plugins",
         )

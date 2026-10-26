@@ -48,7 +48,7 @@ Want it running in the background? Use [deploy/dusha@.service](https://github.co
 
 ## Plugin API
 
-Every part of Dusha is a plugin. Identity, memory, evergreen, memo, affect, and proactive are built in, and a plugin you add is an external plugin: a directory under the plugins directory holding `pyproject.toml` with a `[tool.dusha]` table. The gateway imports the module into its own process, so the plugin gets the same `ctx` as a built-in plugin, including `ctx.api` and `ctx.cli`:
+Every part of Dusha is a plugin. Identity, memory, evergreen, memo, affect, and proactive are built in, and a plugin you add is an external plugin: a directory under the plugins directory holding `pyproject.toml` with a `[tool.dusha]` table. The gateway imports the module into its own process, so the plugin gets the same `ctx` as a built-in plugin, including `ctx.api`, `ctx.cli`, and `ctx.mcp`:
 
 ```toml
 [tool.dusha]
@@ -56,7 +56,7 @@ entry = "my_plugin"
 inject = ["messages"]
 ```
 
-The module defines `apply(ctx, config)`, which runs at startup. `config` is the plugin's `options` from `config.json`. `inject` lists the services the plugin calls, including `api` and `cli` when it registers routes or commands, and a plugin whose service is missing stays inactive. External plugins use the gateway's Python environment, so extra dependencies must be installed there and a version conflict affects the gateway.
+The module defines `apply(ctx, config)`, which runs at startup. `config` is the plugin's `options` from `config.json`. `inject` lists the services the plugin calls, including `api`, `cli`, and `mcp` when it registers routes, commands, or tools, and a plugin whose service is missing stays inactive. External plugins use the gateway's Python environment, so extra dependencies must be installed there and a version conflict affects the gateway.
 
 | Call | Effect |
 | --- | --- |
@@ -74,6 +74,7 @@ The module defines `apply(ctx, config)`, which runs at startup. `config` is the 
 | `ctx.collect(event, ...)` | Calls every listener and returns `{"<plugin>": <first non-null result>}` under each plugin's name. |
 | `ctx.api` | The gateway's FastAPI router. Mount routes on it exactly as a built-in plugin does. |
 | `ctx.cli` | The gateway's command registry. `ctx.cli.group(name, help)` returns a group, and `group.command(name, handler, help=..., args=[...])` adds `dusha <group> <name>`, see [Commands](#commands). |
+| `ctx.mcp` | The gateway's MCP tool registry. `ctx.mcp.tool(name, handler, help=..., args=[...])` adds a tool to `/mcp`, see [Tools](#tools). |
 | `ctx.<service>.<method>(...)` | Calls a method of an injected service and returns its result: `messages` (`get`, `recent`, `search`, `context`, `after`), `companion` (`ingest_message`, `build_context`, `latest_route`), `affect` (`status`), `evergreen` (`remember`, `revise`, `forget`, `list_current`, `history`), `memo` (`add`, `list`, `done`), `proactive` (`evaluate`, `poll`, `acknowledge`). |
 
 Services provided by an external plugin are consumed by other plugins through `inject`, and they are direct Python objects.
@@ -112,6 +113,28 @@ def apply(ctx, config):
 - `ctx.cli.command(name, handler, ...)` adds a top-level command, as core does for `health` and `backup`. `serve`, `proxy`, `list`, and `plugins` are taken.
 - A disabled plugin registers nothing, so `dusha --help` leaves its commands out and running one ends in `No such command`.
 - `dusha` keeps the last command list per server, so `--help` works while the server is down.
+
+### Tools
+
+A tool is served to the harness over [MCP](https://github.com/Somme4096/dusha/blob/main/docs/api.md#mcp). It takes the same `arg` and `option` specs as a command, and `help` becomes the tool description:
+
+```python
+from dusha.commands import arg
+
+
+def apply(ctx, config):
+    ctx.mcp.tool(
+        "notes_add",
+        lambda text: {"note": save(text)},
+        help="Add a note the companion keeps.",
+        args=[arg("text", help="Note text.")],
+    )
+```
+
+- A name holds letters, digits, dash, dot, or underscore, at most 128 characters, and is unique across plugins. A taken name stops the server at startup.
+- The handler receives every argument by name, as a command handler does. Its return value reaches the harness as JSON text.
+- Raise `CommandError`, `ValueError`, or `KeyError` to fail the call with `isError`. A `KeyError` reports `not_found`, `"not found"` unless you pass `not_found=...`.
+- A disabled plugin registers nothing, so its tools are not listed.
 
 ## Documentation
 

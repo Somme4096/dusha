@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Callable
+import re
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from importlib import metadata as _metadata
 from typing import Any
@@ -12,21 +13,20 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, Response
 
-from .commands import Arg, CommandError, arg, message, option, validate
-from .evergreen import REVISE_ARGS, revision
+from .commands import Arg, CommandError, check_args, message, validate
 
 logger = logging.getLogger("dusha.mcp")
 
 PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26")
 LOOPBACK = frozenset({"localhost", "127.0.0.1", "::1"})
+NAME = re.compile(r"[A-Za-z0-9_.-]{1,128}")
 
 
 @dataclass(frozen=True, slots=True)
 class Tool:
     name: str
-    plugin: str
     description: str
-    run: Callable[..., Any]
+    handler: Callable[..., Any]
     args: tuple[Arg, ...] = ()
     not_found: str = "not found"
 
@@ -42,138 +42,26 @@ class Tool:
         }
 
 
-def _search(service: Any, query: str, limit: int, context_messages: int) -> dict[str, Any]:
-    hits = service.messages.search(query, max(1, min(limit, 50)), max(0, min(context_messages, 10)))
-    return {"results": hits}
+class Tools:
+    def __init__(self) -> None:
+        self.entries: dict[str, Tool] = {}
 
-
-def _record(service: Any, message_id: int, context_messages: int) -> dict[str, Any]:
-    messages = service.messages.context(message_id, max(0, min(context_messages, 10)))
-    if not messages:
-        raise KeyError(message_id)
-    return {"messages": messages}
-
-
-def _facts(service: Any, **values: Any) -> dict[str, Any]:
-    return {"facts": service.get("evergreen").list_current(**values)}
-
-
-def _remember(service: Any, **values: Any) -> dict[str, Any]:
-    return {"fact": service.get("evergreen").remember(**values, created_by="agent")}
-
-
-def _revise(service: Any, **values: Any) -> dict[str, Any]:
-    return {"fact": service.get("evergreen").revise(**revision(values), created_by="agent")}
-
-
-def _forget(service: Any, **values: Any) -> dict[str, Any]:
-    return {"fact": service.get("evergreen").forget(**values, created_by="agent")}
-
-
-_FACT = (
-    option("priority", int, default=50, help="Priority from 0 to 100."),
-    option("reason", default="", help="Why the fact changes."),
-    option("review_after", help="ISO timestamp to review the fact after."),
-    option("expires_at", help="ISO timestamp the fact expires at."),
-)
-
-TOOLS = (
-    Tool(
-        "memory_search",
-        "memory",
-        "Search the companion's conversation archive for past exchanges.",
-        _search,
-        (
-            arg("query", help="Search text."),
-            option("limit", int, default=8, help="Maximum number of hits."),
-            option("context_messages", int, default=1, help="Neighbor messages to include with each hit."),
-        ),
-    ),
-    Tool(
-        "memory_get",
-        "memory",
-        "Read one archived message with its neighbors.",
-        _record,
-        (
-            arg("message_id", int, help="Message id from a search hit."),
-            option("context_messages", int, default=1, help="Neighbor messages on each side."),
-        ),
-        "memory record not found",
-    ),
-    Tool(
-        "evergreen_list",
-        "evergreen",
-        "List the evergreen facts the companion always remembers.",
-        _facts,
-        (
-            option("include_inactive", bool, help="Include forgotten and expired facts."),
-            option("due_only", bool, help="Only facts due for review."),
-            option("limit", int, default=100, help="Maximum number of facts."),
-        ),
-    ),
-    Tool(
-        "evergreen_remember",
-        "evergreen",
-        "Store a new evergreen fact the companion should always remember.",
-        _remember,
-        (
-            arg("key", help="Stable fact key such as user.name."),
-            arg("text", help="Complete fact text."),
-            *_FACT,
-        ),
-    ),
-    Tool(
-        "evergreen_revise",
-        "evergreen",
-        "Replace an evergreen fact at the revision you last read.",
-        _revise,
-        REVISE_ARGS,
-        "evergreen fact not found",
-    ),
-    Tool(
-        "evergreen_forget",
-        "evergreen",
-        "Forget an evergreen fact at the revision you last read.",
-        _forget,
-        (
-            arg("fact_id", help="Fact id."),
-            arg("expected_revision", int, help="Revision you last read."),
-            arg("reason", help="Why the fact is forgotten."),
-        ),
-        "evergreen fact not found",
-    ),
-    Tool(
-        "memo_add",
-        "memo",
-        "Add a short memo the companion keeps in view until it is done.",
-        lambda service, text: {"memo": service.get("memo").add(text)},
-        (arg("text", help="Memo text."),),
-    ),
-    Tool(
-        "memo_list",
-        "memo",
-        "List memos, oldest first.",
-        lambda service, status, limit: {"memos": service.get("memo").list(status, limit)},
-        (
-            option("status", choices=("active", "archived"), default="active", help="Which memos to list."),
-            option("limit", int, default=20, help="Maximum number of memos."),
-        ),
-    ),
-    Tool(
-        "memo_done",
-        "memo",
-        "Archive a memo with the reason it is done.",
-        lambda service, note_id, reason: {"memo": service.get("memo").done(note_id, reason)},
-        (arg("note_id", int, help="Memo id."), arg("reason", help="Why the memo is done.")),
-        "memo not found",
-    ),
-    Tool(
-        "affect_status",
-        "affect",
-        "Read the companion's current affect state.",
-        lambda service: service.get("affect").status(),
-    ),
-)
+    def tool(
+        self,
+        name: str,
+        handler: Callable[..., Any],
+        *,
+        help: str = "",
+        args: Iterable[Arg] = (),
+        not_found: str = "not found",
+    ) -> None:
+        if not NAME.fullmatch(name):
+            raise ValueError(f"tool name must be letters, digits, dash, dot, or underscore, got {name!r}")
+        if name in self.entries:
+            raise ValueError(f"tool {name!r} is already registered")
+        args = tuple(args)
+        check_args(f"tool {name!r}", args)
+        self.entries[name] = Tool(name, help, handler, args, not_found)
 
 
 def _content(data: Any, *, error: bool = False) -> dict[str, Any]:
@@ -202,16 +90,12 @@ def _refused(request: Request) -> Response | None:
 def create_mcp_router(service: Any, authorized: Callable[..., Any]) -> APIRouter:
     router = APIRouter(dependencies=[Depends(authorized)])
 
-    def tools() -> dict[str, Tool]:
-        active = {runtime.name for runtime in service.registry.runtimes if runtime.state == "active"}
-        return {tool.name: tool for tool in TOOLS if tool.plugin in active}
-
     async def call(tool: Tool, arguments: Any) -> dict[str, Any]:
         known = {item.name for item in tool.args}
         try:
             given = {key: value for key, value in arguments.items() if key in known}
             values = validate(tool.args, given)
-            data = await asyncio.to_thread(tool.run, service, **values)
+            data = await asyncio.to_thread(tool.handler, **values)
         except KeyError:
             return _content({"detail": tool.not_found}, error=True)
         except (CommandError, ValueError) as error:
@@ -241,10 +125,10 @@ def create_mcp_router(service: Any, authorized: Callable[..., Any]) -> APIRouter
         if method == "ping":
             return _result(ident, {})
         if method == "tools/list":
-            return _result(ident, {"tools": [tool.schema() for tool in tools().values()]})
+            return _result(ident, {"tools": [tool.schema() for tool in service.tools.entries.values()]})
         if method == "tools/call":
             name = params.get("name")
-            tool = tools().get(name) if isinstance(name, str) else None
+            tool = service.tools.entries.get(name) if isinstance(name, str) else None
             if tool is None:
                 return _error(ident, -32602, f"unknown tool {name!r}")
             arguments = params.get("arguments") if isinstance(params.get("arguments"), dict) else {}

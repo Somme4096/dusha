@@ -65,6 +65,13 @@ def apply(ctx, config):
                 option("tags", repeated=True),
             ],
         )
+    if config.get("tool"):
+        ctx.mcp.tool(
+            config["tool"],
+            lambda word, times: {"name": ctx.name, "echo": word * times},
+            help="Echo a word.",
+            args=[arg("word", help="Word to echo."), option("times", int, default=1)],
+        )
     ctx.on("message", lambda message: on_message(ctx, message, config))
     ctx.on("context", lambda request: on_context(ctx, request, config))
     ctx.on("decide", lambda request: decide(request, config))
@@ -145,8 +152,8 @@ MANIFEST = (
 def plugins_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     root = tmp_path_factory.mktemp("plugins")
     for name, inject in [
-        ("probe", '["messages", "api", "cli"]'),
-        ("probe_two", '["messages", "api", "cli"]'),
+        ("probe", '["messages", "api", "cli", "mcp"]'),
+        ("probe_two", '["messages", "api", "cli", "mcp"]'),
         ("needs_affect", '["affect"]'),
         ("vault_provider", "[]"),
         ("vault_consumer", '["vault"]'),
@@ -258,7 +265,7 @@ async def test_http_external_plugin_sees_every_event_with_the_documented_argumen
     assert status.json()["probe"] == {
         "state": "active",
         "error": "",
-        "inject": ["messages", "api", "cli"],
+        "inject": ["messages", "api", "cli", "mcp"],
         "provides": [],
         "events": ["context", "decide", "message"],
     }
@@ -400,6 +407,33 @@ async def test_http_external_plugin_reports_its_name_and_error(tmp_path, plugins
     assert start["name"] == "probe"
     report = status.json()["probe"]
     assert report["state"] == "failed" and report["error"] == "configured failure"
+
+
+async def test_http_external_plugin_registers_mcp_tools(tmp_path, plugins_dir):
+    async with _client(_config(tmp_path, plugins_dir, tool="probe_echo")) as client:
+        def rpc(ident, method, params=None):
+            body = {"jsonrpc": "2.0", "id": ident, "method": method, "params": params or {}}
+            return client.post("/mcp", json=body)
+
+        listed = await rpc(1, "tools/list")
+        echoed = await rpc(2, "tools/call", {"name": "probe_echo", "arguments": {"word": "hi", "times": 2}})
+        typed = await rpc(3, "tools/call", {"name": "probe_echo", "arguments": {"word": "hi", "times": "2"}})
+    tools = {tool["name"]: tool for tool in listed.json()["result"]["tools"]}
+    assert {"probe_echo", "affect_status", "memo_add"} <= set(tools)
+    assert tools["probe_echo"]["description"] == "Echo a word."
+    assert tools["probe_echo"]["inputSchema"]["required"] == ["word"]
+    assert tools["probe_echo"]["inputSchema"]["properties"]["times"] == {"type": "integer", "default": 1}
+    result = echoed.json()["result"]
+    assert not result["isError"]
+    assert json.loads(result["content"][0]["text"]) == {"name": "probe", "echo": "hihi"}
+    assert typed.json()["result"]["isError"]
+    assert json.loads(typed.json()["result"]["content"][0]["text"]) == {"detail": "times must be int"}
+
+
+@pytest.mark.parametrize("name", ["affect_status", "bad name"])
+def test_create_app_fails_when_an_external_plugin_tool_name_is_taken_or_invalid(tmp_path, plugins_dir, name):
+    with pytest.raises(ValueError):
+        api.create_app(_config(tmp_path, plugins_dir, tool=name))
 
 
 def test_create_app_fails_when_an_external_plugin_apply_raises(tmp_path, plugins_dir):

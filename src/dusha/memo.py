@@ -15,7 +15,7 @@ from .serialization import safe_json
 from .timeutil import isoformat, utc_now
 
 name = "memo"
-inject = ("database", "prompts", "api", "cli")
+inject = ("database", "prompts", "api", "cli", "mcp")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS memo_notes (
@@ -131,6 +131,7 @@ def apply(ctx: Any, config: MemoConfig) -> None:
     ctx.on("context", store.on_context)
     _routes(ctx.api, store)
     _commands(ctx.cli, store)
+    _tools(ctx.mcp, store)
 
 
 def _routes(router: APIRouter, store: MemoStore) -> None:
@@ -184,4 +185,29 @@ def _commands(cli: Any, store: MemoStore) -> None:
         lambda note_id, reason: {"memo": store.done(note_id, reason)},
         help="Archive a memo with the reason it is done",
         args=[arg("note_id", int), arg("reason")],
+    )
+
+
+def _tools(mcp: Any, store: MemoStore) -> None:
+    mcp.tool(
+        "memo_add",
+        lambda text: {"memo": store.add(text)},
+        help="Add a short memo the companion keeps in view until it is done.",
+        args=[arg("text", help="Memo text.")],
+    )
+    mcp.tool(
+        "memo_list",
+        lambda status, limit: {"memos": store.list(status, limit)},
+        help="List memos, oldest first.",
+        args=[
+            option("status", choices=("active", "archived"), default="active", help="Which memos to list."),
+            option("limit", int, default=20, help="Maximum number of memos."),
+        ],
+    )
+    mcp.tool(
+        "memo_done",
+        lambda note_id, reason: {"memo": store.done(note_id, reason)},
+        help="Archive a memo with the reason it is done.",
+        args=[arg("note_id", int, help="Memo id."), arg("reason", help="Why the memo is done.")],
+        not_found="memo not found",
     )

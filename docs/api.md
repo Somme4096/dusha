@@ -423,7 +423,7 @@ The server keeps each transcript as a tree of messages. A message matches when i
 }
 ```
 
-The server lists the tools of active plugins only:
+The server lists the tools of active plugins only. The built-in plugins add these, and an external plugin adds its own, see [Tools](https://github.com/Somme4096/dusha#tools):
 
 | Tool | Plugin | Does |
 | --- | --- | --- |

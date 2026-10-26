@@ -27,7 +27,7 @@ logger = logging.getLogger("dusha")
 Decide = Callable[[DecisionRequest], list[dict[str, Any]]]
 
 name = "affect"
-inject = ("database", "settings", "prompts", "api", "cli")
+inject = ("database", "settings", "prompts", "api", "cli", "mcp")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS affect_state (
@@ -414,6 +414,7 @@ def apply(ctx: Any, config: AffectConfig) -> None:
     ctx.cli.group("affect", "Inspect affect").command(
         "show", engine.status, help="Show the affect state and advance decay"
     )
+    ctx.mcp.tool("affect_status", engine.status, help="Read the companion's current affect state.")
 
 
 def _routes(router: APIRouter, engine: AffectEngine) -> None:
