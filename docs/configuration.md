@@ -44,13 +44,13 @@ Rules for the file:
 
 ## Proxy
 
-`dusha proxy <name>` reads the `proxy` section of the same `config.json`, and `dusha serve` ignores it. When `<name>` has no `config.json` on the machine, the first run asks for the server's URL and token and writes a file that holds only this section, with mode `600`. Add your profiles under `proxy.upstreams` afterwards. On the server's own machine, add the section to the existing file by hand.
+`dusha proxy <name>` reads the `proxy` section of the same `config.json`, and `dusha serve` ignores it. When no server is saved for `<name>`, the first run in a terminal asks which server to use and saves it here, with mode `600`. A new file holds only this section. Add your profiles under `proxy.upstreams` afterwards. On the server's own machine, add the section to the existing file by hand.
 
 | Key | Default | Notes |
 | --- | --- | --- |
 | `proxy.host` | `127.0.0.1` | Must be a loopback address. The proxy has no auth of its own. |
 | `proxy.port` | `8766` | |
-| `proxy.server.url` | `""` | The server's base URL. Empty uses the server in the same file, with its `host`, `port`, and `api_token`. The other `dusha` commands use it too. |
+| `proxy.server.url` | `""` | The server's base URL. Empty, or the URL of the server in the same file, uses that server's `host`, `port`, and `api_token`. The other `dusha` commands use it too. |
 | `proxy.server.token` | `""` | The server's `api_token`. The file then holds a secret. The first run writes it with mode `600`, and a file you edit by hand needs `chmod 600`. |
 | `proxy.server.timeout_seconds` | `10` | |
 | `proxy.upstreams.<name>.base_url` | | Provider base URL, exactly as the harness would use it. |

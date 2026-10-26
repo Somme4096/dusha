@@ -173,6 +173,45 @@ def _setup(path: Path) -> None:
     click.echo(f"created {settings.create(path, url, token)}", err=True)
 
 
+def _checked(value: str) -> bool | str:
+    try:
+        settings.http_url(value.strip(), "the server URL")
+    except ValueError as error:
+        return str(error)
+    return True
+
+
+def _connect(path: Path) -> None:
+    import questionary
+
+    local = settings.local_server(path)
+    url = settings.SERVER_URL
+    click.echo(f"{path.parent.name} isn't connected to a server yet.", err=True)
+    while True:
+        here = local is not None and questionary.select("Connect to", choices=[
+            questionary.Choice(f"The server on this machine ({local.url})", value=True),
+            questionary.Choice("Another server", value=False),
+        ]).unsafe_ask()
+        if here:
+            url, token, probe = local.url, "", local
+        else:
+            typed = questionary.text("Server URL", default=url, validate=_checked).unsafe_ask()
+            url = settings.http_url(typed.strip(), "the server URL")
+            token = questionary.password("Server token, empty for none").unsafe_ask()
+            probe = settings.Connection(url, token)
+        try:
+            remote.plugins(probe)
+        except remote.RemoteError as error:
+            click.echo(str(error), err=True)
+            choice = questionary.select("What now?", choices=["Try again", "Save anyway"]).unsafe_ask()
+            if choice == "Try again":
+                continue
+        else:
+            click.echo(f"connected to {url}", err=True)
+        break
+    click.echo(f"saved {settings.save_server(path, url, token)}", err=True)
+
+
 class Proxy(click.Group):
     def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
         if args and not args[0].startswith("-") and args[0] not in self.commands:
@@ -185,12 +224,15 @@ def _proxy_file(ctx: click.Context, *, setup: bool) -> Path:
     companion = params.get("companion") or ctx.meta.get(_PROXY_NAME)
 
     def resolve() -> Path:
+        interactive = setup and sys.stdin.isatty()
         if params.get("config") is None and (home := homes.named_home(params.get("home"), companion)):
             if setup and not (home / homes.CONFIG_FILE).exists():
-                _setup(home / homes.CONFIG_FILE)
+                (_connect if interactive else _setup)(home / homes.CONFIG_FILE)
         path = homes.locate(params.get("config"), home=params.get("home"), companion=companion)
         if path is None:
             raise ValueError("name a companion, such as dusha proxy <name>")
+        if interactive and not settings.server_saved(path):
+            _connect(path)
         return path
 
     return _config(resolve)

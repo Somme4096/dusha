@@ -8,14 +8,17 @@ import subprocess
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import httpx
 import pytest
 
+from dusha import api
 from dusha.client import settings
 from dusha.client.proxy import create_proxy_app
+from dusha.config import load_config
 
 SRC = str(Path(__file__).parents[1] / "src")
 DEAD_SERVER = "http://127.0.0.1:9"
@@ -162,42 +165,134 @@ def test_auth_login_without_a_terminal_needs_a_known_provider(tmp_path, stub):
     assert luna["proxy"]["upstreams"]["stubai"]["key"] == "sk-luna"
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="needs a pseudo-terminal")
-def test_auth_login_offers_a_searchable_menu_in_a_terminal(tmp_path, stub):
-    import pty
+class Terminal:
+    def __init__(self, root: Path, *args: str):
+        import pty
 
-    _catalog(tmp_path, stub[0])
-    path = _home(tmp_path, "nova", proxy={"server": {"url": DEAD_SERVER}})
-    fd, terminal = pty.openpty()
-    child = subprocess.Popen(
-        [sys.executable, "-m", "dusha.cli", "proxy", "auth", "login"], stdin=terminal, stdout=terminal,
-        stderr=terminal, env=_env(tmp_path), start_new_session=True,
-    )
-    os.close(terminal)
+        self.fd, terminal = pty.openpty()
+        self.child = subprocess.Popen(
+            [sys.executable, "-m", "dusha.cli", *args], stdin=terminal, stdout=terminal, stderr=terminal,
+            env=_env(root), start_new_session=True,
+        )
+        os.close(terminal)
+        self.seen = self.output = b""
 
-    def read_until(text: bytes, timeout: float = 20) -> bytes:
-        seen, deadline = b"", time.monotonic() + timeout
-        while text not in seen:
-            assert time.monotonic() < deadline, seen.decode(errors="replace")
-            if select.select([fd], [], [], 0.1)[0]:
+    def expect(self, text: str, timeout: float = 20) -> None:
+        deadline = time.monotonic() + timeout
+        while text.encode() not in self.seen:
+            assert time.monotonic() < deadline, self.seen.decode(errors="replace")
+            if select.select([self.fd], [], [], 0.1)[0]:
                 try:
-                    seen += os.read(fd, 65536)
+                    chunk = os.read(self.fd, 65536)
                 except OSError:
                     break
-        return seen
+                self.seen += chunk
+                self.output += chunk
+        self.seen = self.seen.split(text.encode(), 1)[1]
 
-    read_until(b"Stub AI")
-    os.write(fd, b"vault")
-    read_until(b"vault")
-    os.write(fd, b"\r")
-    read_until(b"VAULT_ACCOUNT")
-    os.write(fd, b"team\r")
-    read_until(b"API key")
-    os.write(fd, b"sk-typed\r")
-    output = read_until(b"restart dusha proxy nova")
-    code = child.wait(timeout=20)
-    os.close(fd)
+    def send(self, text: str) -> None:
+        os.write(self.fd, text.encode())
+
+    def close(self, *, wait: bool = False) -> int:
+        if not wait:
+            self.child.terminate()
+        code = self.child.wait(timeout=20)
+        os.close(self.fd)
+        return code
+
+
+needs_terminal = pytest.mark.skipif(sys.platform == "win32", reason="needs a pseudo-terminal")
+
+
+@needs_terminal
+def test_auth_login_offers_a_searchable_menu_in_a_terminal(tmp_path, stub):
+    _catalog(tmp_path, stub[0])
+    path = _home(tmp_path, "nova", proxy={"server": {"url": DEAD_SERVER}})
+    terminal = Terminal(tmp_path, "proxy", "auth", "login")
+    terminal.expect("Stub AI")
+    terminal.send("vault")
+    terminal.expect("vault")
+    terminal.send("\r")
+    terminal.expect("VAULT_ACCOUNT")
+    terminal.send("team\r")
+    terminal.expect("API key")
+    terminal.send("sk-typed\r")
+    terminal.expect("restart dusha proxy nova")
+    hidden = b"sk-typed" not in terminal.output
+    code = terminal.close(wait=True)
     profile = json.loads(path.read_text(encoding="utf-8"))["proxy"]["upstreams"]["vaultai"]
-    assert code == 0
-    assert b"sk-typed" not in output
+    assert code == 0 and hidden
     assert profile == {"base_url": "https://team.vault.invalid/v1", "key": "sk-typed", "auth": "bearer"}
+
+
+@pytest.fixture
+def serving(run_app):
+    @contextmanager
+    def start(path: Path):
+        cfg = load_config(path)
+        with run_app(api.create_app(cfg), port=cfg.port) as url:
+            yield url
+
+    return start
+
+
+def _health(port: int) -> dict:
+    deadline = time.monotonic() + 20
+    while True:
+        try:
+            return httpx.get(f"http://127.0.0.1:{port}/health", timeout=2).json()
+        except httpx.HTTPError:
+            assert time.monotonic() < deadline, "the proxy never answered"
+            time.sleep(0.2)
+
+
+@needs_terminal
+def test_proxy_offers_the_server_on_this_machine_when_none_is_saved(tmp_path, free_port, serving):
+    server_port, proxy_port = free_port(), free_port()
+    path = _home(tmp_path, "nova", port=server_port, api_token="local-secret", proxy={"port": proxy_port})
+    with serving(path) as url:
+        terminal = Terminal(tmp_path, "proxy", "nova")
+        terminal.expect("nova isn't connected to a server yet")
+        terminal.expect(f"The server on this machine ({url})")
+        terminal.send("\r")
+        terminal.expect(f"connected to {url}")
+        health = _health(proxy_port)
+        terminal.close()
+        again = Terminal(tmp_path, "proxy", "nova")
+        again.expect("Application startup complete")
+        rerun = _health(proxy_port)
+        quiet = b"isn't connected" not in again.output
+        again.close()
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert health["server"] == {"url": url, "status": "ok"}
+    assert rerun["server"]["status"] == "ok" and quiet
+    assert saved["proxy"]["server"] == {"url": url, "token": ""}
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+@needs_terminal
+def test_proxy_asks_for_another_server_until_it_answers(tmp_path, free_port, serving):
+    server_port, proxy_port = free_port(), free_port()
+    server = _home(tmp_path, "home", port=server_port, api_token="server-secret")
+    path = _home(tmp_path, "edge", proxy={"port": proxy_port})
+    with serving(server) as url:
+        terminal = Terminal(tmp_path, "proxy", "edge")
+        terminal.expect("edge isn't connected to a server yet")
+        terminal.expect("Server URL")
+        terminal.send("\x15" + url + "\r")
+        terminal.expect("Server token")
+        terminal.send("wrong\r")
+        terminal.expect("What now?")
+        terminal.send("\r")
+        terminal.expect("Server URL")
+        terminal.send("\r")
+        terminal.expect("Server token")
+        terminal.send("server-secret\r")
+        terminal.expect(f"connected to {url}")
+        health = _health(proxy_port)
+        hidden = b"server-secret" not in terminal.output
+        terminal.close()
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert health["server"] == {"url": url, "status": "ok"}
+    assert hidden
+    assert saved["proxy"]["server"] == {"url": url, "token": "server-secret"}

@@ -19,6 +19,7 @@ SERVER_URL = "http://127.0.0.1:8765"
 PROXY_PORT = 8766
 TIMEOUT_SECONDS = 10.0
 MANIFEST_CACHE = "cli-manifest.json"
+CLIENT_KEYS = frozenset({"proxy"})
 PROTOCOLS = frozenset({"chat", "messages", "responses"})
 AUTH_STYLES = frozenset({"bearer", "x-api-key"})
 
@@ -106,13 +107,18 @@ def _connection(raw: dict[str, Any]) -> Connection:
     url = _typed(server, "url", str, "proxy.server.url", "")
     token = _typed(server, "token", str, "proxy.server.token", "")
     timeout = _timeout(server, "proxy.server", TIMEOUT_SECONDS)
-    if url:
-        return Connection(http_url(url, "proxy.server.url"), token, timeout)
+    local = _local_url(raw)
+    url = http_url(url, "proxy.server.url") if url else local
+    if url == local and not token:
+        token = _typed(raw, "api_token", str, "api_token", "")
+    return Connection(url, token, timeout)
+
+
+def _local_url(raw: dict[str, Any]) -> str:
     host = _typed(raw, "host", str, "host", "127.0.0.1")
     port = _port(raw, "port", 8765)
     host = "127.0.0.1" if host in {"", "0.0.0.0", "::"} else host
-    local = f"http://{f'[{host}]' if ':' in host else host}:{port}"
-    return Connection(local, token or _typed(raw, "api_token", str, "api_token", ""), timeout)
+    return f"http://{f'[{host}]' if ':' in host else host}:{port}"
 
 
 def _data_dir(raw: dict[str, Any], home: Path) -> Path:
@@ -204,18 +210,7 @@ def create(path: Path, url: str, token: str) -> Path:
     return path
 
 
-def save_upstream(path: Path, name: str, profile: dict[str, Any] | None) -> Path:
-    raw = _read(path)
-    proxy = dict(_object(raw.get("proxy"), "proxy", {"host", "port", "server", "upstreams"}))
-    upstreams = proxy.get("upstreams") or {}
-    if not isinstance(upstreams, dict):
-        raise ValueError("proxy.upstreams must be an object")
-    upstreams = dict(upstreams)
-    if profile is None:
-        upstreams.pop(name, None)
-    else:
-        upstreams[name] = profile
-    raw["proxy"] = {**proxy, "upstreams": upstreams}
+def _write(path: Path, raw: dict[str, Any]) -> Path:
     temp = path.with_name(f".{path.name}.tmp")
     temp.unlink(missing_ok=True)
     with os.fdopen(os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w", encoding="utf-8") as file:
@@ -226,3 +221,48 @@ def save_upstream(path: Path, name: str, profile: dict[str, Any] | None) -> Path
     finally:
         temp.unlink(missing_ok=True)
     return path
+
+
+def _proxy_section(raw: dict[str, Any]) -> dict[str, Any]:
+    return dict(_object(raw.get("proxy"), "proxy", {"host", "port", "server", "upstreams"}))
+
+
+def save_upstream(path: Path, name: str, profile: dict[str, Any] | None) -> Path:
+    raw = _read(path)
+    proxy = _proxy_section(raw)
+    upstreams = proxy.get("upstreams") or {}
+    if not isinstance(upstreams, dict):
+        raise ValueError("proxy.upstreams must be an object")
+    upstreams = dict(upstreams)
+    if profile is None:
+        upstreams.pop(name, None)
+    else:
+        upstreams[name] = profile
+    raw["proxy"] = {**proxy, "upstreams": upstreams}
+    return _write(path, raw)
+
+
+def server_saved(path: Path) -> bool:
+    proxy = _read(path).get("proxy")
+    server = proxy.get("server") if isinstance(proxy, dict) else None
+    return isinstance(server, dict) and bool(server.get("url"))
+
+
+def local_server(path: Path) -> Connection | None:
+    if not path.exists():
+        return None
+    raw = _read(path)
+    if set(raw) <= CLIENT_KEYS:
+        return None
+    return _connection({key: value for key, value in raw.items() if key != "proxy"})
+
+
+def save_server(path: Path, url: str, token: str) -> Path:
+    if not path.exists():
+        return create(path, url, token)
+    raw = _read(path)
+    proxy = _proxy_section(raw)
+    server = dict(_object(proxy.get("server"), "proxy.server", {"url", "token", "timeout_seconds"}))
+    server.update(url=url, token=token)
+    raw["proxy"] = {**proxy, "server": server}
+    return _write(path, raw)

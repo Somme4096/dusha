@@ -314,7 +314,7 @@ curl http://127.0.0.1:8765/health
 
 ## Proxy
 
-`dusha proxy <name>` runs on the machine with your harness and reads the `proxy` section of the companion's `config.json`. When `<name>` has no `config.json` on that machine, the first run asks for the server's URL and token, saves them in a new file readable only by you, and starts. Later runs just start. On the server's own machine the file exists, and the proxy uses the server in it. The proxy forwards model requests to your provider and makes the server calls from the [client flow](#client-flow) itself, so a harness only needs a base URL. Keys are in [configuration.md](configuration.md#proxy).
+`dusha proxy <name>` runs on the machine with your harness and reads the `proxy` section of the companion's `config.json`. When no server is saved for `<name>`, a run in a terminal shows a menu: the server on this machine, when the file has one, or another server by URL and token. It checks the connection, offers to try again, saves the choice with mode `600`, and starts. Later runs just start. Outside a terminal, a missing file is asked for line by line, and a server's own `config.json` without a saved server uses that server. The proxy forwards model requests to your provider and makes the server calls from the [client flow](#client-flow) itself, so a harness only needs a base URL. Keys are in [configuration.md](configuration.md#proxy).
 
 Each entry under `proxy.upstreams` is a profile:
 
