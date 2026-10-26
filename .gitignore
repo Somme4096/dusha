@@ -6,7 +6,5 @@ __pycache__/
 config.yaml
 config.json
 data/
-.slim/deepwork/
 integrations/*.zip
-.serena/
-.claude.json
+.claude/settings.local.json
