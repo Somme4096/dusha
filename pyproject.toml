@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dusha"
-version = "0.1.21"
-description = "Harness-neutral OpenAI gateway with durable memory and affect state"
+version = "1.0.21"
+description = "Dusha is a harness-agnostic, lightweight and extensible personality layer for LLM companions."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
@@ -13,7 +13,7 @@ license-files = ["LICENSE"]
 authors = [{ name = "Somme4096" }]
 keywords = ["llm", "companion", "memory", "affect", "emotion", "agent", "fastapi", "sqlite"]
 classifiers = [
-  "Development Status :: 3 - Alpha",
+  "Development Status :: 5 - Production/Stable",
   "Framework :: FastAPI",
   "Intended Audience :: Developers",
   "Operating System :: POSIX :: Linux",

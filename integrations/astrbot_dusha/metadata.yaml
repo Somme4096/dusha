@@ -1,7 +1,7 @@
 name: astrbot_dusha
 display_name: Dusha
 author: local
-version: 0.3.0
+version: 1.0.21
 desc: Stores conversation memory and affect, injects context, and delivers proactive events.
 repo: ""
 astrbot_version: ">=4.8.0"
