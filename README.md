@@ -71,12 +71,14 @@ Dusha adds context "after" each message so cache can hit.
 
 <details>
 <summary>How do messages, memory, affect, and identity work in Dusha by default?</summary>
+
 - **Messages:** Basic SQLite FTS5 plus optional embedding search. An plugin can do everything you can imagine if that's not enough.
 - **Evergreen:** Long-term facts that you edit from the CLI and your companion edits through integration tools. No automatic extraction.
   - Think of it as a `USER.md` but with proper lifecycle management and duplication prevention.
 - **Affect:** A deterministic emotion engine that uses values like `{"anger": 0.35}` and shifts over time, including when the user goes unresponsive. Of course, you can make your own!
   - Side note is that Message intent analysis can also be an external plugin. drop system_one plugin in examples/ or any other classifier plugin into the plugins directory, and its `decide` listener picks which emotion each user message moves.
 - **Identity:** `identity.md`, or name your own.
+
 </details>
 
 ## Plugin
