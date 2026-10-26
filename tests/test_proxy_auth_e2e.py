@@ -112,8 +112,8 @@ async def test_auth_login_saves_a_preset_the_proxy_then_uses(tmp_path, stub):
     absent = _cli(tmp_path, "proxy", "nova", "auth", "logout", "vault")
     saved = json.loads(path.read_text(encoding="utf-8"))
     assert added.returncode == 0, added.stderr
-    assert "added stubai to nova: http://127.0.0.1:8766/stubai" in added.stderr
-    assert "restart dusha proxy nova" in added.stderr
+    assert "New provider stubai added to nova at http://127.0.0.1:8766/stubai." in added.stderr
+    assert "Restart dusha proxy nova" in added.stderr
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert vault.returncode == 0, vault.stderr
     assert json.loads(kept)["proxy"]["upstreams"]["vault"] == {
@@ -125,7 +125,7 @@ async def test_auth_login_saves_a_preset_the_proxy_then_uses(tmp_path, stub):
         "key": "...5678",
     }
     assert json.loads(status.stdout)["vault"]["key"] == "{env:VAULT_KEY}"
-    assert removed.returncode == 0 and absent.returncode == 1 and "no profile named 'vault'" in absent.stderr
+    assert removed.returncode == 0 and absent.returncode == 1 and "No profile named 'vault'" in absent.stderr
     assert (saved["port"], saved["api_token"]) == (8765, "local")
     assert list(saved["proxy"]["upstreams"]) == ["stubai"]
 
@@ -156,8 +156,8 @@ def test_auth_login_without_a_terminal_needs_a_known_provider(tmp_path, stub):
     blocked = _cli(tmp_path, "proxy", "auth", "login", "bedrocky")
     first = _cli(tmp_path, "proxy", "luna", "auth", "login", "stubai", stdin=f"{DEAD_SERVER}\n\nsk-luna\n")
     luna = json.loads((tmp_path / "config" / "dusha" / "luna" / "config.json").read_text(encoding="utf-8"))
-    assert unnamed.returncode == 2 and "name a provider" in unnamed.stderr
-    assert unknown.returncode == 2 and "unknown provider 'nope'" in unknown.stderr
+    assert unnamed.returncode == 2 and "Name a provider" in unnamed.stderr
+    assert unknown.returncode == 2 and "Unknown provider 'nope'" in unknown.stderr
     assert blocked.returncode == 2
     assert first.returncode == 0, first.stderr
     assert "Server URL" in first.stderr
@@ -217,7 +217,7 @@ def test_auth_login_offers_a_searchable_menu_in_a_terminal(tmp_path, stub):
     terminal.send("team\r")
     terminal.expect("API key")
     terminal.send("sk-typed\r")
-    terminal.expect("restart dusha proxy nova")
+    terminal.expect("Restart dusha proxy nova")
     hidden = b"sk-typed" not in terminal.output
     code = terminal.close(wait=True)
     profile = json.loads(path.read_text(encoding="utf-8"))["proxy"]["upstreams"]["vaultai"]
@@ -255,7 +255,7 @@ def test_proxy_offers_the_server_on_this_machine_when_none_is_saved(tmp_path, fr
         terminal.expect("nova isn't connected to a server yet")
         terminal.expect(f"The server on this machine ({url})")
         terminal.send("\r")
-        terminal.expect(f"connected to {url}")
+        terminal.expect(f"Connected to {url}.")
         health = _health(proxy_port)
         terminal.close()
         again = Terminal(tmp_path, "proxy", "nova")
@@ -288,7 +288,7 @@ def test_proxy_asks_for_another_server_until_it_answers(tmp_path, free_port, ser
         terminal.send("\r")
         terminal.expect("Server token")
         terminal.send("server-secret\r")
-        terminal.expect(f"connected to {url}")
+        terminal.expect(f"Connected to {url}.")
         health = _health(proxy_port)
         hidden = b"server-secret" not in terminal.output
         terminal.close()

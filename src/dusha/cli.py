@@ -207,7 +207,7 @@ def _connect(path: Path) -> None:
             if choice == "Try again":
                 continue
         else:
-            click.echo(f"Connected!\nProxy now listening to {url}.", err=True)
+            click.echo(f"Connected to {url}.", err=True)
         break
     click.echo(f"Saved {settings.save_server(path, url, token)}.", err=True)
 
