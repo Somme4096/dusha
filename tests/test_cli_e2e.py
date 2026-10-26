@@ -211,7 +211,9 @@ def _start(root: Path, *args: str, stdin: str = "", **env: str) -> subprocess.Po
 
 def _stop(process: subprocess.Popen[str]) -> str:
     process.terminate()
-    return process.communicate(timeout=10)[1]
+    process.wait(timeout=10)
+    with process.stderr:
+        return process.stderr.read()
 
 
 def _wait_for(check, seconds: float = 15.0):
