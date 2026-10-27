@@ -33,7 +33,7 @@
         "close_delimiter": "</affect>",
         "instruction": "Read the Affect line as your present feeling. You set tone, length, and warmth from the strongest deviation on that line. A cold, irritable, or dejected deviation overrules your default warmth for this reply. You write from the top feeling and leave the others out."
       },
-      "decision_instruction": "Choose the companion's own emotional response to the latest user message. Select the single emotion dimension, from the provided dimensions, that best describes how the companion itself now feels in reaction to the message. Judge the companion's internal reaction, not the speaker's emotion or the topic alone. Consider the companion's current emotional state and let the message move it in a believable direction. Prefer the one dimension with the strongest appropriate pull. When no dimension is a good fit, select nothing."
+      "decision_instruction": "Choose the companion's own emotional response to the latest user message. Select the single emotion dimension, from the provided dimensions, that best describes how the companion itself now feels in reaction to the message. Judge the companion's internal reaction, not the speaker's emotion or the topic alone. Prefer the one dimension with the strongest appropriate pull. When no dimension is a good fit, select nothing."
     },
     "proactive": {
       "framing": {
