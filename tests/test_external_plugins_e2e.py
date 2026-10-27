@@ -539,6 +539,22 @@ async def test_http_deltas_apply_after_the_decision_sees_the_earlier_state(tmp_p
     assert _marker(marker)["decide"][-1]["state"]["elation"] == pytest.approx(before["elation"], abs=1e-3)
 
 
+async def test_http_appraisal_lowers_dimensions_the_decision_did_not_choose(tmp_path, plugins_dir, embedding_stub):
+    embedding_stub.says["You can trust me."] = "reassuring"
+    async with _client(_config(tmp_path, plugins_dir, mode="deltas", deltas={"anxiety": 0.3})) as client:
+        await _post(client, "Something feels off")
+        anxious = await _base(client)
+    config = _config(tmp_path, plugins_dir)
+    config.embedding.base_url = embedding_stub.url
+    config.embedding.model = "stub"
+    async with _client(config) as client:
+        stored = await _post(client, "You can trust me.")
+    assert stored["affect"]["emotion"] == "fear"
+    assert stored["affect"]["state"]["base"]["fear"] == pytest.approx(anxious["fear"] + 0.25, abs=1e-3)
+    assert stored["affect"]["state"]["base"]["anxiety"] < anxious["anxiety"] - 0.2
+    assert stored["affect"]["state"]["base"]["jealousy"] < anxious["jealousy"]
+
+
 async def test_http_two_external_plugins_run_in_order_first_emotion_wins_and_deltas_merge(
     tmp_path, plugins_dir
 ):

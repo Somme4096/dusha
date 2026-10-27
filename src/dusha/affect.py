@@ -155,24 +155,24 @@ class AffectEngine:
             current + self.increment_for(emotion), spec["floor"]
         )
 
-    def _semantic_emotion(self, message: str) -> str | None:
+    def _appraise(self, message: str) -> dict[str, float]:
+        if self.appraisal is None:
+            return {}
         try:
             weights = self.appraisal.weights(message)
         except Exception:
-            return None
-        if not isinstance(weights, dict) or not weights:
-            return None
+            return {}
+        if not isinstance(weights, dict):
+            return {}
         prototypes = self.emotions["appraisal"]["prototypes"]
         blended: dict[str, float] = {}
         for label, weight in weights.items():
             if isinstance(weight, bool) or not isinstance(weight, (int, float)):
                 continue
             for dimension, delta in prototypes.get(label, {}).get("deltas", {}).items():
-                blended[dimension] = blended.get(dimension, 0.0) + float(weight) * delta
-        positive = {name: value for name, value in blended.items() if value > 0 and name in self.spec}
-        if not positive:
-            return None
-        return max(positive, key=positive.get)
+                if dimension in self.spec:
+                    blended[dimension] = blended.get(dimension, 0.0) + float(weight) * delta
+        return blended
 
     def _advance_values(self, state: dict[str, Any], hours: float) -> None:
         if hours <= 0:
@@ -266,8 +266,13 @@ class AffectEngine:
             if isinstance(proposal.get("deltas"), dict):
                 deltas.update(proposal["deltas"])
 
-        if emotion is None and self.appraisal is not None:
-            emotion = self._semantic_emotion(message)
+        appraised = self._appraise(message)
+        positive = {name: value for name, value in appraised.items() if value > 0}
+        if emotion is None and positive:
+            emotion = max(positive, key=positive.get)
+        # The decision only raises one dimension, so appraisal supplies the decreases.
+        relief = {name: value for name, value in appraised.items() if value < 0 and name != emotion}
+        deltas = {**relief, **deltas}
 
         decision_id = None
         public = snapshot
