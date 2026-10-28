@@ -126,10 +126,12 @@ def test_cli_hides_the_commands_of_disabled_plugins(tmp_path, free_port, serving
         plugins = _json(_cli(tmp_path, "plugins"))
         memos = _json(_cli(tmp_path, "memo", "list"))
         refused = [_cli(tmp_path, *args) for args in (("memory", "recent"), ("evergreen", "list"))]
-    commands = re.findall(r"^  (\S+)", listed.stdout.split("Commands:")[1], re.MULTILINE)
+    static, plugin = listed.stdout.split("Core commands:")[1].split("Plugin commands:")
+    commands = re.findall(r"^  (\S+)", static, re.MULTILINE)
+    plugin_commands = re.findall(r"^  (\S+)", plugin, re.MULTILINE)
     assert listed.returncode == 0
-    assert "memo" in commands and "memory" not in commands and "evergreen" not in commands
-    assert {"serve", "proxy", "list", "plugins", "health", "backup"} <= set(commands)
+    assert set(commands) == {"init", "serve", "proxy", "provider", "list", "plugins", "health", "backup"}
+    assert "memo" in plugin_commands and "memory" not in plugin_commands and "evergreen" not in plugin_commands
     assert plugins["memory"]["state"] == plugins["evergreen"]["state"] == "disabled"
     assert memos == {"memos": []}
     for result, name in zip(refused, ("memory", "evergreen"), strict=True):

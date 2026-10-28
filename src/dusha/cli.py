@@ -15,6 +15,7 @@ from .providers import PLACEHOLDER, http_url
 STATIC = frozenset({"init", "serve", "proxy", "provider", "list", "plugins"})
 _TYPES = {"str": click.STRING, "int": click.INT, "float": click.FLOAT}
 _BUILT = "dusha.commands"
+_CORE = "dusha.core"
 _PROXY_NAME = "dusha.proxy.name"
 
 
@@ -108,6 +109,7 @@ class Root(click.Group):
                 if warning:
                     click.echo(warning, err=True)
                 root.meta[_BUILT] = _build(manifest, connection)
+                root.meta[_CORE] = frozenset(manifest.get("core", []))
             except click.ClickException as error:
                 root.meta[_BUILT] = error
         built = root.meta[_BUILT]
@@ -124,6 +126,21 @@ class Root(click.Group):
 
     def get_command(self, ctx: click.Context, name: str) -> click.Command | None:
         return super().get_command(ctx, name) or self._dynamic(ctx).get(name)
+
+    def format_commands(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
+        sections: dict[str, list[tuple[str, str]]] = {"Core commands": [], "Plugin commands": []}
+        names = self.list_commands(ctx)
+        core = {*self.commands, *ctx.find_root().meta.get(_CORE, ())}
+        limit = formatter.width - 6 - max(map(len, names), default=0)
+        for name in names:
+            command = self.get_command(ctx, name)
+            if command and not command.hidden:
+                section = "Core commands" if name in core else "Plugin commands"
+                sections[section].append((name, command.get_short_help_str(limit)))
+        for title, rows in sections.items():
+            if rows:
+                with formatter.section(title):
+                    formatter.write_dl(rows)
 
 
 @click.group(cls=Root, help=homes.DOCS, context_settings={"help_option_names": ["-h", "--help"]})
@@ -192,7 +209,7 @@ def _upgrade(path: Path) -> bool:
     return changed
 
 
-@main.command("init", help="Create or update a companion home")
+@main.command("init", help="Create or update configuration")
 @click.argument("name", required=False)
 @click.option("--serve", "serve_part", is_flag=True, help="Set up only the server keys.")
 @click.option("--proxy", "proxy_part", is_flag=True, help="Set up only the proxy keys.")
@@ -309,7 +326,7 @@ def _proxy_file(ctx: click.Context, *, setup: bool) -> Path:
 
 @main.group(
     "proxy", cls=Proxy, invoke_without_command=True, subcommand_metavar="[NAME] [COMMAND] [ARGS]...",
-    help="Run or configure the client proxy.",
+    help="Run or configure the client proxy",
 )
 @click.pass_context
 def proxy(ctx: click.Context) -> None:
@@ -402,7 +419,7 @@ def _list(path: Path) -> None:
     })
 
 
-@main.group("provider", help="Manage the model providers of a companion")
+@main.group("provider", help="Configure model provider")
 def provider_group() -> None:
     pass
 
@@ -462,7 +479,7 @@ def list_companions() -> None:
     _print({"root": str(homes.config_root()), "companions": homes.list_companions()})
 
 
-@main.command("plugins", help="Show plugin states")
+@main.command("plugins", help="List plugin states")
 @click.pass_context
 def plugins(ctx: click.Context) -> None:
     connection, _ = _client(ctx)

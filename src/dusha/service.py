@@ -55,6 +55,7 @@ class CompanionService:
             help="Create a consistent SQLite backup at a path on the server",
             args=[arg("destination")],
         )
+        self.commands.core = frozenset(path[0] for path in self.commands.entries)
         self.tools = Tools()
         self.registry = Registry(
             {

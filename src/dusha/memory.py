@@ -380,7 +380,7 @@ def _routes(router: APIRouter, store: MemoryStore) -> None:
 
 
 def _commands(cli: Any, store: MemoryStore) -> None:
-    memory = cli.group("memory", "Inspect canonical memory")
+    memory = cli.group("memory", "Inspect default memory store")
     memory.command(
         "search",
         lambda query, limit: {"results": store.search(query, limit)},

@@ -422,7 +422,7 @@ def apply(ctx: Any, config: AffectConfig) -> None:
     ctx.on("context", engine.on_context)
     ctx.on_dispose(engine.close)
     _routes(ctx.api, engine)
-    ctx.cli.group("affect", "Inspect affect").command(
+    ctx.cli.group("affect", "List current affect status").command(
         "show", engine.status, help="Show the affect state and advance decay"
     )
     ctx.mcp.tool("affect_status", engine.status, help="Read the companion's current affect state.")

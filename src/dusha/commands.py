@@ -184,6 +184,7 @@ class Commands:
     def __init__(self) -> None:
         self.groups: dict[str, str] = {}
         self.entries: dict[tuple[str, ...], Command] = {}
+        self.core: frozenset[str] = frozenset()
 
     def group(self, name: str, help: str = "") -> Group:
         self._top(name)
@@ -204,6 +205,7 @@ class Commands:
         return {
             "groups": {name: help for name, help in self.groups.items() if name in used},
             "commands": [command.spec() for command in self.entries.values()],
+            "core": sorted(self.core),
         }
 
     def _top(self, name: str) -> None:
