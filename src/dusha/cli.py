@@ -8,10 +8,10 @@ from typing import Any
 
 import click
 
-from . import homes
+from . import homes, legacy
 from .client import catalog, presets, remote, settings
 
-STATIC = frozenset({"serve", "proxy", "list", "plugins"})
+STATIC = frozenset({"init", "serve", "proxy", "list", "plugins"})
 _TYPES = {"str": click.STRING, "int": click.INT, "float": click.FLOAT}
 _BUILT = "dusha.commands"
 _PROXY_NAME = "dusha.proxy.name"
@@ -137,15 +137,14 @@ def main(companion: str | None, home: str | None, config: str | None) -> None:
 @click.argument("name", required=False)
 @click.pass_context
 def serve(ctx: click.Context, name: str | None) -> None:
-    from .config import create_default_config, load_config
+    from .config import load_config
 
     params = _selection(ctx)
     companion = params.get("companion") or name
 
     def resolve() -> Any:
         if params.get("config") is None and (home := homes.named_home(params.get("home"), companion)):
-            if not (home / homes.CONFIG_FILE).exists():
-                click.echo(f"created {create_default_config(home)}", err=True)
+            _init_serve(home)
         return load_config(params.get("config"), home=params.get("home"), companion=companion)
 
     cfg = _config(resolve)
@@ -154,6 +153,71 @@ def serve(ctx: click.Context, name: str | None) -> None:
     from .api import create_app
 
     uvicorn.run(create_app(cfg), host=cfg.host, port=cfg.port, log_level="info")
+
+
+def _init_serve(home: Path) -> bool:
+    from .config import ensure_server_config
+
+    if done := ensure_server_config(home):
+        click.echo(done, err=True)
+    return bool(done)
+
+
+def _init_proxy(path: Path, *, interactive: bool, url: str = "", token: str = "") -> bool:
+    if url:
+        click.echo(f"Saved {settings.save_server(path, url, token)}.", err=True)
+    elif path.exists() and settings.server_saved(path):
+        return False
+    elif interactive:
+        _connect(path)
+    elif (local := settings.local_server(path)) is not None:
+        click.echo(f"Saved {settings.save_server(path, local.url, '')}.", err=True)
+    else:
+        _setup(path)
+    return True
+
+
+def _upgrade(path: Path) -> bool:
+    from .config import load_config
+
+    prompts = load_config(path).prompts.path
+    if not prompts or not (backup := legacy.upgrade_prompts_file(Path(prompts))):
+        return False
+    click.echo(f"upgraded {prompts} to prompts schema 4, the old file is {backup}", err=True)
+    return True
+
+
+@main.command("init", help="Create or update a companion home")
+@click.argument("name", required=False)
+@click.option("--serve", "serve_part", is_flag=True, help="Set up only the server keys.")
+@click.option("--proxy", "proxy_part", is_flag=True, help="Set up only the proxy keys.")
+@click.option("--server-url", default="", help="Server for the proxy, skips the prompt.")
+@click.option("--token", default="", help="Token for --server-url.")
+@click.pass_context
+def init(
+    ctx: click.Context, name: str | None, serve_part: bool, proxy_part: bool, server_url: str, token: str
+) -> None:
+    params = _selection(ctx)
+    companion = params.get("companion") or name
+    both = not serve_part and not proxy_part
+
+    def resolve() -> bool:
+        if params.get("config") is not None:
+            raise ValueError("dusha init takes a companion name or --home, not --config")
+        home = homes.named_home(params.get("home"), companion)
+        if home is None:
+            raise ValueError("name a companion, such as dusha init <name>")
+        path = home / homes.CONFIG_FILE
+        url = _url(server_url) if server_url else ""
+        changed = _init_serve(home) if serve_part or both else False
+        if proxy_part or both:
+            changed = _init_proxy(path, interactive=sys.stdin.isatty(), url=url, token=token) or changed
+        if path.exists() and settings.local_server(path) is not None:
+            changed = _upgrade(path) or changed
+        return changed
+
+    if not _config(resolve):
+        click.echo(f"{companion or params.get('home')} is up to date.", err=True)
 
 
 def _url(value: str) -> str:
@@ -227,7 +291,7 @@ def _proxy_file(ctx: click.Context, *, setup: bool) -> Path:
         interactive = setup and sys.stdin.isatty()
         if params.get("config") is None and (home := homes.named_home(params.get("home"), companion)):
             if setup and not (home / homes.CONFIG_FILE).exists():
-                (_connect if interactive else _setup)(home / homes.CONFIG_FILE)
+                _init_proxy(home / homes.CONFIG_FILE, interactive=interactive)
         path = homes.locate(params.get("config"), home=params.get("home"), companion=companion)
         if path is None:
             raise ValueError("name a companion, such as dusha proxy <name>")

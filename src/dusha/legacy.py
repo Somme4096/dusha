@@ -1,7 +1,13 @@
 from __future__ import annotations
 
 import copy
+import json
+import os
+import shutil
+from pathlib import Path
 from typing import Any
+
+from .resources import loads_strict
 
 # Old layouts that still load during their deprecation. Remove each entry in the version it names.
 
@@ -44,3 +50,15 @@ def upgrade_prompts(overlay: Any) -> tuple[Any, list[str]]:
         if upgraded.get(key) == {}:
             del upgraded[key]
     return upgraded, found
+
+
+def upgrade_prompts_file(path: Path) -> Path | None:
+    upgraded, found = upgrade_prompts(loads_strict(path.read_text(encoding="utf-8"), source=str(path)))
+    if not found:
+        return None
+    backup = path.with_name(f"{path.name}.bak")
+    shutil.copy2(path, backup)
+    temp = path.with_name(f".{path.name}.tmp")
+    temp.write_text(json.dumps(upgraded, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    os.replace(temp, path)
+    return backup

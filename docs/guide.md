@@ -137,7 +137,7 @@ One thing to pay attention to is that a dependency conflict in plugin(whether in
 
 ### prompts.json schema 3 to 4
 
-Since 1.1.21, prompt text lives under `plugins`, keyed by the plugin that reads it. A schema 3 overlay still loads with a startup warning until 2.0.21. Only an overlay set by `prompts.path` needs this, the packaged text moves on its own.
+Since 1.1.21, prompt text lives under `plugins`, keyed by the plugin that reads it. A schema 3 overlay still loads with a startup warning until 2.0.21. Only an overlay set by `prompts.path` needs this, the packaged text moves on its own. `dusha init <name>` rewrites the overlay and keeps the original as `prompts.json.bak`, or move the keys by hand:
 
 | Schema 3 | Schema 4 |
 | --- | --- |
@@ -157,7 +157,7 @@ Since 1.1.21, prompt text lives under `plugins`, keyed by the plugin that reads 
 
 | Symptom | Fix |
 | --- | --- |
-| Startup fails on a missing config file | The selected home needs a `config.json`. Run `dusha list` to see your companions. |
+| Startup fails on a missing config file | The selected home needs a `config.json`. Run `dusha list` to see your companions, or `dusha init <name>` to write one. |
 | Startup fails on a missing identity file | Fix `plugins.identity.path` or remove the key. The file must be UTF-8. |
 | Startup fails on an empty `plugins.identity.path` | Remove the key to use `identity.md`, or set `plugins.identity.disabled` to `true`. |
 | Startup fails on an unknown `features`, `memory`, `evergreen`, `memo`, `affect`, `proactive`, `emotions`, or `identity_prompt` field, or on a section from an earlier release | Move the section under [`plugins`](configuration.md#plugins). A `features` entry set to `false` becomes `"disabled": true`, entries of the earlier section become external plugins, its directory key becomes `plugins_dir`, `emotions` moves to `plugins.affect.emotions`, and `identity_prompt` becomes `plugins.identity`. |

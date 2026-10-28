@@ -135,7 +135,8 @@ def load_prompts(path: str | Path) -> dict:
     overlay, found = legacy.upgrade_prompts(loads_strict(text, source=str(source_path)))
     if found:
         logger.warning(
-            "%s uses the schema 3 prompts layout %s. It still loads, but support ends in 2.0.21. See %s",
+            "%s uses the schema 3 prompts layout %s. It still loads until 2.0.21. "
+            "Run dusha init to upgrade it, see %s",
             source_path, found, f"{DOCS}/blob/main/docs/guide.md#migrating",
         )
     return _validate(overlay, require_complete=False)

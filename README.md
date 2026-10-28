@@ -12,10 +12,11 @@ Almost everything is configurable through JSON. For things that aren't, dusha is
 
 ```sh
 uv tool install dusha
+dusha init <name>
 dusha serve <name>
 ```
 
-This starts a companion named `<name>`. On the first run it makes the folder `~/.config/dusha/<name>/` and writes a `config.json`.
+`init` makes the folder `~/.config/dusha/<name>/` and writes a `config.json`, then `serve` starts the companion. `serve` also writes the file when it is missing.
 Then on the same or another device, run:
 
 ```console

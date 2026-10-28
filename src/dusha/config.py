@@ -33,13 +33,26 @@ CLIENT_SECTIONS = frozenset({"proxy"})
 PLUGIN_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
-def create_default_config(home: Path) -> Path:
-    raw = {**all_defaults(), "data_dir": "data"}
-    home.mkdir(parents=True, exist_ok=True)
-    path = home / CONFIG_FILE
+def _write_new(path: Path, raw: dict[str, Any]) -> None:
     with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w", encoding="utf-8") as file:
         file.write(json.dumps(raw, indent=2, ensure_ascii=False) + "\n")
-    return path
+
+
+def ensure_server_config(home: Path) -> str:
+    path = home / CONFIG_FILE
+    defaults = {**all_defaults(), "data_dir": "data"}
+    if not path.exists():
+        home.mkdir(parents=True, exist_ok=True)
+        _write_new(path, defaults)
+        return f"created {path}"
+    raw = _read_config_file(path)
+    if set(raw) - CLIENT_SECTIONS:
+        return ""
+    temp = path.with_name(f".{path.name}.tmp")
+    temp.unlink(missing_ok=True)
+    _write_new(temp, {**defaults, **raw})
+    os.replace(temp, path)
+    return f"added the server keys to {path}"
 
 
 _UNSET: Any = _emotions.UNSET

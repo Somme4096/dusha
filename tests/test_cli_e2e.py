@@ -328,3 +328,82 @@ def test_cli_proxy_needs_a_companion_name(tmp_path):
     result = _cli(tmp_path, "proxy")
     assert result.returncode == 2 and "name a companion" in result.stderr
     assert not (tmp_path / "dusha").exists()
+
+
+def test_cli_init_sets_up_both_parts_once(tmp_path):
+    config = tmp_path / "dusha" / "nova" / "config.json"
+    first = _cli(tmp_path, "init", "nova")
+    created = config.read_text(encoding="utf-8")
+    again = _cli(tmp_path, "init", "nova")
+    saved = json.loads(created)
+    assert first.returncode == 0 and f"created {config}" in first.stderr
+    assert stat.S_IMODE(config.stat().st_mode) == 0o600
+    assert saved["port"] == 8765 and "plugins" in saved
+    assert saved["proxy"]["server"]["url"] == "http://127.0.0.1:8765"
+    assert again.returncode == 0 and "nova is up to date" in again.stderr
+    assert config.read_text(encoding="utf-8") == created
+
+
+def test_cli_init_adds_each_part_without_touching_the_other(tmp_path):
+    config = tmp_path / "dusha" / "edge" / "config.json"
+    proxy = _cli(tmp_path, "init", "edge", "--proxy", "--server-url", "http://10.0.0.2:8765", "--token", "t")
+    client_only = json.loads(config.read_text(encoding="utf-8"))
+    serve = _cli(tmp_path, "init", "edge", "--serve")
+    both = json.loads(config.read_text(encoding="utf-8"))
+    assert proxy.returncode == 0 and set(client_only) == {"proxy"}
+    server = client_only["proxy"]["server"]
+    assert server == {"url": "http://10.0.0.2:8765", "token": "t", "timeout_seconds": 10}
+    assert serve.returncode == 0 and f"added the server keys to {config}" in serve.stderr
+    assert both["proxy"] == client_only["proxy"] and both["port"] == 8765
+
+
+def test_cli_serve_adds_the_server_keys_to_a_proxy_only_home(tmp_path, free_port):
+    port = free_port()
+    config = _home(tmp_path, "edge", proxy={"server": {"url": "http://10.0.0.2:8765", "token": ""}})
+    original = json.loads(config.read_text(encoding="utf-8"))
+    server = _start(tmp_path, "serve", "edge")
+    try:
+        _wait_for(lambda: "plugins" in json.loads(config.read_text(encoding="utf-8")))
+    finally:
+        stderr = _stop(server)
+    saved = json.loads(config.read_text(encoding="utf-8"))
+    assert f"added the server keys to {config}" in stderr
+    assert saved["proxy"] == original["proxy"] and saved["port"] == 8765
+    config.write_text(json.dumps({**saved, "port": port}), encoding="utf-8")
+    again = _start(tmp_path, "serve", "edge")
+    try:
+        health = _wait_for(lambda: _get_json(f"http://127.0.0.1:{port}/health"))
+    finally:
+        stderr = _stop(again)
+    assert health["status"] == "ok" and "added" not in stderr
+
+
+def test_cli_init_upgrades_a_schema_3_prompts_file_and_keeps_a_backup(tmp_path):
+    state = {"open_delimiter": "<s>", "close_delimiter": "</s>"}
+    legacy = {"companion_state": {**state, "memory_instruction": "M"}}
+    config = _home(tmp_path, "nova", prompts={"path": "prompts.json"})
+    prompts = config.parent / "prompts.json"
+    prompts.write_text(json.dumps(legacy), encoding="utf-8")
+    first = _cli(tmp_path, "init", "nova", "--serve")
+    again = _cli(tmp_path, "init", "nova", "--serve")
+    assert first.returncode == 0 and f"upgraded {prompts}" in first.stderr
+    assert json.loads(prompts.read_text(encoding="utf-8")) == {
+        "companion_state": state,
+        "plugins": {"memory": {"instruction": "M"}},
+    }
+    assert json.loads((config.parent / "prompts.json.bak").read_text(encoding="utf-8")) == legacy
+    assert "upgraded" not in again.stderr and "nova is up to date" in again.stderr
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (("init",), "name a companion"),
+        (("--config", "x.json", "init"), "not --config"),
+        (("init", "nova", "--proxy", "--server-url", "ftp://nowhere"), "http or https URL"),
+    ],
+)
+def test_cli_init_rejects_a_bad_selection_without_creating_anything(tmp_path, args, message):
+    result = _cli(tmp_path, *args)
+    assert result.returncode == 2 and message in result.stderr
+    assert not (tmp_path / "dusha").exists()
