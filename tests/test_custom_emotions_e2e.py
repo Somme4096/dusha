@@ -247,17 +247,16 @@ async def test_http_config_overrides_patch_silence_and_thresholds(tmp_path, writ
 
 async def test_http_custom_framing_and_block_delimiters_render(tmp_path, config, write_json):
     overlay = {
-        "proactive_framing": {
-            "ruling": "FEEL {dimension}={value} from {neutral}.",
-            "ladder": ["ONLY STAGE"],
-            "approach": "DO {variant}",
-            "context_query": "sentinel query",
-        },
-        "context_blocks": {
-            "memo_open_delimiter": "[memo]",
-            "memo_close_delimiter": "[/memo]",
-            "plugin_open_delimiter": "[plugin]",
-            "plugin_close_delimiter": "[/plugin]",
+        "plugins": {
+            "proactive": {
+                "framing": {
+                    "ruling": "FEEL {dimension}={value} from {neutral}.",
+                    "ladder": ["ONLY STAGE"],
+                    "approach": "DO {variant}",
+                    "context_query": "sentinel query",
+                },
+            },
+            "memo": {"open_delimiter": "[memo]", "close_delimiter": "[/memo]"},
         },
     }
     config.prompts = PromptsConfig(path=str(write_json(tmp_path / "prompts.json", overlay)))
@@ -285,7 +284,7 @@ async def test_http_custom_framing_and_block_delimiters_render(tmp_path, config,
 )
 def test_startup_rejects_invalid_framing(tmp_path, config, write_json, slot, message):
     config.prompts = PromptsConfig(
-        path=str(write_json(tmp_path / "prompts.json", {"proactive_framing": slot}))
+        path=str(write_json(tmp_path / "prompts.json", {"plugins": {"proactive": {"framing": slot}}}))
     )
     with pytest.raises(ValueError, match=message):
         api.create_app(config)

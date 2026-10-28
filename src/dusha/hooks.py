@@ -34,6 +34,7 @@ class Block:
     text: str
     data: Any
     session: tuple[dict[str, Any], ...] = ()
+    instruction: str = ""
 
 
 def render(name: str, open_delimiter: str, data: Any, close_delimiter: str) -> Block:

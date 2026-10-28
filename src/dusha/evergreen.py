@@ -20,7 +20,6 @@ from .timeutil import isoformat, parse_time, utc_now
 
 _KEY_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,119}$")
 _KEEP = object()
-_DEFAULT_EVERGREEN = _prompts.default_prompts()["evergreen"]
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS evergreen_fact_revisions (
@@ -53,21 +52,16 @@ class EvergreenConflict(ValueError):
 class EvergreenStore:
     name = "evergreen"
 
-    def __init__(self, database: Database, config: Any = None, prompts: dict[str, Any] | None = None):
+    def __init__(self, database: Database, config: Any, prompts: dict[str, Any]):
         self.database = database
         database.migrate(SCHEMA)
         self.config = config
-        self.delimiters = (prompts or {}).get("evergreen") or _DEFAULT_EVERGREEN
+        self.delimiters = _prompts.section(prompts, name, {"open_delimiter": str, "close_delimiter": str})
 
     def on_context(self, request: ContextRequest) -> Block | None:
         if self.config is None:
             return None
-        text, facts = self.render(
-            self.config.max_items,
-            self.config.max_chars,
-            open_delimiter=self.delimiters["open_delimiter"],
-            close_delimiter=self.delimiters["close_delimiter"],
-        )
+        text, facts = self.render(self.config.max_items, self.config.max_chars)
         return Block(self.name, text, facts) if facts else None
 
     def remember(
@@ -281,18 +275,10 @@ class EvergreenStore:
             raise KeyError(fact_id)
         return [self._row(row, timestamp) for row in rows]
 
-    def render(
-        self,
-        max_items: int,
-        max_chars: int,
-        *,
-        open_delimiter: str | None = None,
-        close_delimiter: str | None = None,
-    ) -> tuple[str, list[dict[str, Any]]]:
+    def render(self, max_items: int, max_chars: int) -> tuple[str, list[dict[str, Any]]]:
         if max_items <= 0 or max_chars <= 0:
             return "", []
-        opening = open_delimiter or _DEFAULT_EVERGREEN["open_delimiter"]
-        closing = close_delimiter or _DEFAULT_EVERGREEN["close_delimiter"]
+        opening, closing = self.delimiters["open_delimiter"], self.delimiters["close_delimiter"]
         candidates = self.list_current(limit=500)
         selected: list[dict[str, Any]] = []
         for fact in candidates:

@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Query
 
+from . import prompts as _prompts
 from . import schema as _schema
 from .commands import arg, option
 from .config import ProactiveConfig
@@ -18,6 +19,14 @@ from .serialization import compact_json
 from .timeutil import isoformat, parse_time, utc_now
 
 name = "proactive"
+_PROMPTS = {
+    "framing": {"ruling": str, "ladder": list, "approach": str, "context_query": str},
+    "generation_instruction": {"base": str, "variants": list},
+}
+_TEMPLATES = {
+    "framing.ruling": {"dimension": "", "value": 0.0, "neutral": 0.0, "deviation": 0.0},
+    "framing.approach": {"variant": ""},
+}
 inject = ("affect", "companion", "database", "settings", "prompts", "api", "cli")
 
 SCHEMA = """
@@ -128,7 +137,7 @@ class ProactiveEngine:
         database.migrate(SCHEMA)
         self.rules = config
         self.timezone = ZoneInfo(timezone)
-        self.prompts = prompts
+        self.text = _prompts.section(prompts, name, _PROMPTS, _TEMPLATES)
         self.affect = affect
         self.companion = companion
         self.triggers = with_thresholds(affect.emotions, config.thresholds)["proactive"]["triggers"]
@@ -206,7 +215,7 @@ class ProactiveEngine:
         if reason is None:
             return None
 
-        framing = self.prompts["proactive_framing"]
+        framing = self.text["framing"]
         context = self.companion.build_context(
             query=str(framing["context_query"]),
             harness=route["harness"],
@@ -224,7 +233,7 @@ class ProactiveEngine:
         )
         event_id = str(uuid.uuid4())
         silence_text = format_silence(silence_minutes)
-        spec = self.prompts["proactive_generation_instruction"]
+        spec = self.text["generation_instruction"]
         base = str(spec["base"])
         variant_index, variant = select_proactive_variant(spec, sent_today)
         feeling = ruling_feeling(state["base"], self.affect.spec)

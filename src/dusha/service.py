@@ -37,7 +37,7 @@ class CompanionService:
     def __init__(self, config: AppConfig):
         self.config = config
         self.database = Database(config.database_path)
-        self.prompts = _prompts.resolve_prompts(config.prompts)
+        self.prompts = _prompts.resolve_prompts(config.prompts, {*BUILTINS, *config.plugins})
         self.messages = MemoryStore(self.database)
         self.transcripts = TranscriptTree(self.database)
         self._transcript_lock = threading.Lock()

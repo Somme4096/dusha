@@ -159,20 +159,34 @@ An override beats `plugins.affect.emotions.path`, and that file beats the packag
 
 ### prompts.json
 
-The overlay replaces whole slots. A slot you include must carry every key of that slot. Omitted slots keep the packaged text.
+`companion_state` holds the delimiters of the state block. Every other slot lives under `plugins`, keyed by plugin name:
+
+```json
+{
+  "companion_state": {"open_delimiter": "<companion_state>\n", "close_delimiter": "\n</companion_state>"},
+  "plugins": {
+    "affect": {"decision_instruction": "Pick the one feeling the message stirs."},
+    "memo": {"open_delimiter": "<memo_notes>", "close_delimiter": "</memo_notes>"}
+  }
+}
+```
+
+The overlay replaces `companion_state` whole, and each `plugins.<name>.<slot>` on its own. A slot you include must carry every key of that slot. Omitted slots keep the packaged text. A plugin name must be built-in or listed under [`plugins`](#plugins) in `config.json`.
 
 | Slot | Holds |
 | --- | --- |
-| `affect_presentation` | Wording of the Affect line. |
-| `companion_state` | Delimiters and the memory instruction for the state block. |
-| `affect` | Delimiters and the instruction for the affect block. |
-| `evergreen` | Delimiters for the fact block. |
-| `context_blocks` | Delimiters for the memo and plugin blocks. |
-| `proactive_framing` | `ruling`, `ladder`, `approach`, and `context_query` for proactive messages. |
-| `proactive_generation_instruction` | `base` plus `variants`. The gateway rotates one variant per send. |
-| `decision_instruction` | Selection criteria sent with every `decide` event. |
+| `memory.instruction` | Memory instruction in the state block. |
+| `evergreen.open_delimiter`, `evergreen.close_delimiter` | Delimiters for the fact block. |
+| `memo.open_delimiter`, `memo.close_delimiter` | Delimiters for the memo block. |
+| `affect.presentation` | Wording of the Affect line. |
+| `affect.block` | Delimiters and the instruction for the affect block. |
+| `affect.decision_instruction` | Selection criteria sent with every `decide` event. |
+| `proactive.framing` | `ruling`, `ladder`, `approach`, and `context_query` for proactive messages. |
+| `proactive.generation_instruction` | `base` plus `variants`. The gateway rotates one variant per send. |
 
-Placeholders in `proactive_framing`:
+An external plugin reads its slots with `dusha.prompts.section(ctx.prompts, name, spec)` after injecting `prompts`, and keeps its own defaults for slots the overlay leaves out. A schema 3 overlay still loads with a warning, see [Migrating](guide.md#migrating).
+
+Placeholders in `proactive.framing`:
 
 - `ruling` accepts `{dimension}`, `{value}`, `{neutral}`, and `{deviation}`.
 - `approach` accepts `{variant}`.

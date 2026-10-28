@@ -1,58 +1,23 @@
 from __future__ import annotations
 
 import copy
+import logging
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+from . import legacy
+from .homes import DOCS
 from .resources import loads_strict, read_packaged
 from .serialization import canonical as _serialization_canonical
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
-_TEXT_SLOTS = {
-    "affect_presentation",
-    "companion_state",
-    "affect",
-    "evergreen",
-    "context_blocks",
-    "proactive_framing",
-    "proactive_generation_instruction",
-    "decision_instruction",
-}
+logger = logging.getLogger("dusha")
 
-_STRING_SLOTS = {"decision_instruction"}
+_SLOTS = {"companion_state", "plugins"}
 
-_PROACTIVE_KEYS = {"base", "variants"}
-
-_SLOT_KEYS: dict[str, set[str]] = {
-    "affect_presentation": {
-        "prefix",
-        "separator",
-        "suffix",
-        "baseline",
-        "level_connector",
-        "level_high",
-        "level_elevated",
-        "level_noticeable",
-    },
-    "companion_state": {"open_delimiter", "close_delimiter", "memory_instruction"},
-    "affect": {"open_delimiter", "close_delimiter", "instruction"},
-    "evergreen": {"open_delimiter", "close_delimiter"},
-    "context_blocks": {
-        "memo_open_delimiter",
-        "memo_close_delimiter",
-        "plugin_open_delimiter",
-        "plugin_close_delimiter",
-    },
-    "proactive_framing": {"ruling", "ladder", "approach", "context_query"},
-}
-
-_LIST_KEYS = {("proactive_framing", "ladder")}
-
-_TEMPLATE_FIELDS: dict[tuple[str, str], dict[str, Any]] = {
-    ("proactive_framing", "ruling"): {"dimension": "", "value": 0.0, "neutral": 0.0, "deviation": 0.0},
-    ("proactive_framing", "approach"): {"variant": ""},
-}
+_COMPANION_STATE = {"open_delimiter": str, "close_delimiter": str}
 
 
 class PromptsValidationError(ValueError):
@@ -68,7 +33,10 @@ def _string(value: Any, path: str) -> str:
 def _string_list(value: Any, path: str) -> list[str]:
     if not isinstance(value, list) or not value:
         raise PromptsValidationError(f"{path} must be a non-empty list")
-    return [_string(item, f"{path}[{index}]") for index, item in enumerate(value)]
+    for index, item in enumerate(value):
+        if not isinstance(item, str) or not item.strip():
+            raise PromptsValidationError(f"{path}[{index}] must be a non-empty string")
+    return list(value)
 
 
 def _template(value: str, path: str, fields: dict[str, Any]) -> None:
@@ -80,83 +48,59 @@ def _template(value: str, path: str, fields: dict[str, Any]) -> None:
         ) from error
 
 
-def _validate_proactive_slot(value: Any, *, require_complete: bool) -> dict[str, Any]:
+def _value(value: Any, kind: Any, path: str, templates: dict[str, dict[str, Any]]) -> Any:
+    if isinstance(kind, dict):
+        return _object(value, kind, path, templates)
+    if kind is list:
+        return _string_list(value, path)
+    text = _string(value, path)
+    if path in templates:
+        _template(text, path, templates[path])
+    return text
+
+
+def _object(value: Any, spec: dict[str, Any], path: str, templates: dict[str, dict[str, Any]]) -> dict:
     if not isinstance(value, dict):
-        raise PromptsValidationError("proactive_generation_instruction must be an object")
-    unknown = sorted(set(value) - _PROACTIVE_KEYS)
+        raise PromptsValidationError(f"{path} must be an object")
+    unknown = sorted(set(value) - set(spec))
     if unknown:
-        raise PromptsValidationError(
-            f"unknown field(s) under proactive_generation_instruction: {unknown}"
-        )
-    missing = sorted(_PROACTIVE_KEYS - set(value))
+        raise PromptsValidationError(f"unknown field(s) under {path}: {unknown}")
+    missing = sorted(set(spec) - set(value))
     if missing:
-        raise PromptsValidationError(
-            f"proactive_generation_instruction is incomplete. Missing field(s): {missing}"
-        )
-    base = value["base"]
-    if not isinstance(base, str):
-        raise PromptsValidationError("proactive_generation_instruction.base must be a string")
-    variants = value["variants"]
-    if not isinstance(variants, list) or not variants:
-        raise PromptsValidationError(
-            "proactive_generation_instruction.variants must be a non-empty list"
-        )
-    for index, variant in enumerate(variants):
-        if not isinstance(variant, str) or not variant.strip():
-            raise PromptsValidationError(
-                f"proactive_generation_instruction.variants[{index}] must be a non-empty string"
-            )
-    value["base"] = base
-    value["variants"] = list(variants)
-    return value
+        raise PromptsValidationError(f"{path} is incomplete. Missing field(s): {missing}")
+    return {key: _value(value[key], kind, f"{path}.{key}", templates) for key, kind in spec.items()}
 
 
-def _validate_text_slots(snapshot: dict[str, Any], require_complete: bool) -> dict[str, Any]:
-    for slot, keys in _SLOT_KEYS.items():
-        if slot not in snapshot:
-            if require_complete:
-                raise PromptsValidationError(f"missing prompts slot: {slot}")
-            continue
-        value = snapshot[slot]
-        if not isinstance(value, dict):
-            raise PromptsValidationError(f"{slot} must be an object")
-        unknown = sorted(set(value) - keys)
-        if unknown:
-            raise PromptsValidationError(f"unknown field(s) under {slot}: {unknown}")
-        missing = sorted(keys - set(value))
-        if missing:
-            raise PromptsValidationError(
-                f"{slot} is incomplete. Missing field(s): {missing}"
-            )
-        for key in keys:
-            if (slot, key) in _LIST_KEYS:
-                value[key] = _string_list(value[key], f"{slot}.{key}")
-                continue
-            value[key] = _string(value[key], f"{slot}.{key}")
-            if (slot, key) in _TEMPLATE_FIELDS:
-                _template(value[key], f"{slot}.{key}", _TEMPLATE_FIELDS[(slot, key)])
-    return snapshot
+def section(
+    prompts: dict[str, Any],
+    name: str,
+    spec: dict[str, Any],
+    templates: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    # Spec values are str, list, or a nested spec dict. Template keys are dotted slot paths.
+    path = f"plugins.{name}"
+    placeholders = {f"{path}.{key}": fields for key, fields in (templates or {}).items()}
+    return _object(prompts["plugins"].get(name, {}), spec, path, placeholders)
 
 
-def _validate(snapshot: dict[str, Any], require_complete: bool) -> dict[str, Any]:
+def _validate(snapshot: Any, require_complete: bool) -> dict[str, Any]:
     if not isinstance(snapshot, dict):
         raise PromptsValidationError("prompts must contain a JSON object")
-    if not require_complete:
-        unknown = sorted(set(snapshot) - _TEXT_SLOTS)
-        if unknown:
-            raise PromptsValidationError(f"unknown prompts slot(s): {unknown}")
-    _validate_text_slots(snapshot, require_complete=require_complete)
-    if "proactive_generation_instruction" in snapshot:
-        snapshot["proactive_generation_instruction"] = _validate_proactive_slot(
-            snapshot["proactive_generation_instruction"], require_complete=require_complete
-        )
+    allowed = _SLOTS | {"schema_version", "prompts_version"} if require_complete else _SLOTS
+    unknown = sorted(set(snapshot) - allowed)
+    if unknown:
+        raise PromptsValidationError(f"unknown prompts slot(s): {unknown}")
+    if "companion_state" in snapshot:
+        state = snapshot["companion_state"]
+        snapshot["companion_state"] = _object(state, _COMPANION_STATE, "companion_state", {})
     elif require_complete:
-        raise PromptsValidationError("missing prompts slot: proactive_generation_instruction")
-    for slot in _STRING_SLOTS:
-        if slot in snapshot:
-            snapshot[slot] = _string(snapshot[slot], slot)
-        elif require_complete:
-            raise PromptsValidationError(f"missing prompts slot: {slot}")
+        raise PromptsValidationError("missing prompts slot: companion_state")
+    plugins = snapshot.setdefault("plugins", {})
+    if not isinstance(plugins, dict):
+        raise PromptsValidationError("plugins must be an object keyed by plugin name")
+    for name, slots in plugins.items():
+        if not isinstance(slots, dict):
+            raise PromptsValidationError(f"plugins.{name} must be an object")
     if require_complete:
         schema_version = snapshot.get("schema_version")
         if not isinstance(schema_version, int) or isinstance(schema_version, bool):
@@ -188,19 +132,31 @@ def load_prompts(path: str | Path) -> dict:
         text = source_path.read_text(encoding="utf-8")
     except OSError as error:
         raise PromptsValidationError(f"cannot read prompts file {source_path}: {error}") from error
-    return _validate(loads_strict(text, source=str(source_path)), require_complete=False)
+    overlay, found = legacy.upgrade_prompts(loads_strict(text, source=str(source_path)))
+    if found:
+        logger.warning(
+            "%s uses the schema 3 prompts layout %s. It still loads, but support ends in 2.0.21. See %s",
+            source_path, found, f"{DOCS}/blob/main/docs/guide.md#migrating",
+        )
+    return _validate(overlay, require_complete=False)
 
 
-def resolve_prompts(prompts_config: Any) -> dict:
+def resolve_prompts(prompts_config: Any, plugins: Iterable[str]) -> dict:
     snapshot = default_prompts()
     path = str(getattr(prompts_config, "path", "") or "")
     if path:
         user = load_prompts(path)
+        unknown = sorted(set(user["plugins"]) - set(plugins))
+        if unknown:
+            raise PromptsValidationError(f"unknown plugin(s) under plugins: {unknown}")
         for slot, value in user.items():
-            snapshot[slot] = copy.deepcopy(value)
+            if slot != "plugins":
+                snapshot[slot] = copy.deepcopy(value)
+                continue
+            for name, slots in value.items():
+                snapshot["plugins"].setdefault(name, {}).update(copy.deepcopy(slots))
     return _validate(snapshot, require_complete=True)
 
 
 def canonical(snapshot: dict[str, Any]) -> str:
     return _serialization_canonical(snapshot)
-

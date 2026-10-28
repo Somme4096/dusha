@@ -115,7 +115,7 @@ dusha memory reindex
 | Hook | Receives |
 | --- | --- |
 | `message` | The stored row: `id`, `conversation_id`, `role`, `text`, `content`, `external_id`, `occurred_at`, `ingested_at`, `harness`, `external_conversation_id`, `route`. An exception is logged and the message is not redelivered. |
-| `context` | `query`, `harness`, `conversation_id`, `exclude_message_ids`, and `include_recent`. A returned `Block` carries `name`, `text`, `data`, and `session` records. |
+| `context` | `query`, `harness`, `conversation_id`, `exclude_message_ids`, and `include_recent`. A returned `Block` carries `name`, `text`, `data`, `session` records, and an `instruction` for the state block. |
 | `decide` | `message`, `emotions` (the resolved dimensions), `state` (the affect snapshot), and `instruction`. |
 | `<event>` | The arguments passed to `emit` or `collect`. Custom events stay in the gateway process, so they reach every active plugin, including the emitter's own listeners. |
 
@@ -133,6 +133,25 @@ dusha memory reindex
 Services from `ctx.provide` are plain Python objects. `deltas` apply after the increment, and dimension names come from your `emotions.json`.
 One thing to pay attention to is that a dependency conflict in plugin(whether internal or external) makes dusha unable to start gateway, since they share one Python environment.
 
+## Migrating
+
+### prompts.json schema 3 to 4
+
+Since 1.1.21, prompt text lives under `plugins`, keyed by the plugin that reads it. A schema 3 overlay still loads with a startup warning until 2.0.21. Only an overlay set by `prompts.path` needs this, the packaged text moves on its own.
+
+| Schema 3 | Schema 4 |
+| --- | --- |
+| `affect_presentation` | `plugins.affect.presentation` |
+| `affect` | `plugins.affect.block` |
+| `decision_instruction` | `plugins.affect.decision_instruction` |
+| `proactive_framing` | `plugins.proactive.framing` |
+| `proactive_generation_instruction` | `plugins.proactive.generation_instruction` |
+| `evergreen` | `plugins.evergreen` |
+| `context_blocks.memo_open_delimiter`, `context_blocks.memo_close_delimiter` | `plugins.memo.open_delimiter`, `plugins.memo.close_delimiter` |
+| `context_blocks.plugin_open_delimiter`, `context_blocks.plugin_close_delimiter` | Removed. Nothing read them. |
+| `companion_state.memory_instruction` | `plugins.memory.instruction` |
+
+`companion_state` keeps `open_delimiter` and `close_delimiter`.
 
 ## Troubleshooting
 

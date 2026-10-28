@@ -161,7 +161,8 @@ async def test_http_affect_line_follows_the_presentation_prompts(
     tmp_path, config, embedding_stub, presentation, expected
 ):
     snapshot = prompts_module.default_prompts()
-    overlay = {"affect_presentation": {**snapshot["affect_presentation"], **presentation}}
+    presentation = {**snapshot["plugins"]["affect"]["presentation"], **presentation}
+    overlay = {"plugins": {"affect": {"presentation": presentation}}}
     path = tmp_path / "prompts.json"
     path.write_text(json.dumps(overlay), encoding="utf-8")
     config.prompts = PromptsConfig(path=str(path))

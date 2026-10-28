@@ -5,6 +5,7 @@ from typing import Any
 
 from fastapi import APIRouter, Query
 
+from . import prompts as _prompts
 from . import schema as _schema
 from .commands import arg, option
 from .config import MemoConfig
@@ -47,7 +48,7 @@ class MemoStore:
         self.database = database
         database.migrate(SCHEMA)
         self.config = config
-        self.blocks = prompts["context_blocks"]
+        self.delimiters = _prompts.section(prompts, name, {"open_delimiter": str, "close_delimiter": str})
 
     def add(self, text: str, now: datetime | None = None) -> dict[str, Any]:
         value = self._validate_text(text)
@@ -98,7 +99,7 @@ class MemoStore:
     def on_context(self, request: ContextRequest) -> Block | None:
         if self.config.max_items < 1:
             return None
-        opening, closing = self.blocks["memo_open_delimiter"], self.blocks["memo_close_delimiter"]
+        opening, closing = self.delimiters["open_delimiter"], self.delimiters["close_delimiter"]
         selected: list[dict[str, Any]] = []
         for note in self.list(status="active", limit=self.config.max_items):
             item = {"id": note["id"], "text": note["text"], "created_at": note["created_at"]}

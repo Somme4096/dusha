@@ -8,6 +8,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 
+from . import prompts as _prompts
 from . import schema as _schema
 from .commands import CommandError, arg, option
 from .config import MemoryConfig
@@ -286,7 +287,7 @@ class MemoryStore:
 
 
 name = "memory"
-inject = ("messages", "api", "cli", "mcp")
+inject = ("messages", "prompts", "api", "cli", "mcp")
 
 
 class SearchInput(GatewayInput):
@@ -305,7 +306,9 @@ def _record(message: dict[str, Any], source: str) -> dict[str, Any]:
     }
 
 
-def recall(store: MemoryStore, config: MemoryConfig, request: ContextRequest) -> Block | None:
+def recall(
+    store: MemoryStore, config: MemoryConfig, request: ContextRequest, instruction: str
+) -> Block | None:
     excluded = set(request.exclude_message_ids)
     internal = None
     if request.harness and request.conversation_id:
@@ -330,14 +333,15 @@ def recall(store: MemoryStore, config: MemoryConfig, request: ContextRequest) ->
             if message["id"] not in seen and message["id"] not in excluded:
                 records.append(_record(message, "recalled"))
                 seen.add(message["id"])
-    if not records and not hits:
+    if not records and not hits and not instruction:
         return None
-    return Block(name, "", {"search_hits": hits}, tuple(records))
+    return Block(name, "", {"search_hits": hits}, tuple(records), instruction)
 
 
 def apply(ctx: Any, config: MemoryConfig) -> None:
     store: MemoryStore = ctx.messages
-    ctx.on("context", lambda request: recall(store, config, request))
+    text = _prompts.section(ctx.prompts, name, {"instruction": str})
+    ctx.on("context", lambda request: recall(store, config, request, text["instruction"]))
     _routes(ctx.api, store)
     _commands(ctx.cli, store)
     _tools(ctx.mcp, store)

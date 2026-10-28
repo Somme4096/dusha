@@ -172,17 +172,74 @@ def test_startup_rejects_unreadable_emotions_file(tmp_path, text, message):
     [
         (lambda s: s.update(bogus_slot={}), "unknown prompts slot"),
         (lambda s: s["companion_state"].update(bogus_key="x"), "unknown field"),
-        (lambda s: s.update(companion_state={"memory_instruction": "only this"}), "incomplete"),
-        (lambda s: s.update(decision_instruction=5), "must be a string"),
-        (lambda s: s.update(proactive_generation_instruction=5), "must be an object"),
-        (lambda s: s["proactive_generation_instruction"].update(variants=[]), "must be a non-empty list"),
-        (lambda s: s["proactive_generation_instruction"].update(variants=["  "]), "non-empty string"),
+        (lambda s: s.update(companion_state={"open_delimiter": "only this"}), "incomplete"),
+        (lambda s: s.update(plugins=[]), "keyed by plugin name"),
+        (lambda s: s.update(plugins={"memo": "x"}), "plugins.memo must be an object"),
+        (lambda s: s["plugins"].update(afect={}), r"unknown plugin\(s\) under plugins: \['afect'\]"),
+        (lambda s: s["plugins"]["affect"].update(decision_instruction=5), "must be a string"),
+        (lambda s: s["plugins"]["affect"].update(bogus={}), r"unknown field\(s\) under plugins.affect"),
+        (lambda s: s["plugins"]["affect"].update(block={"instruction": "x"}), "affect.block is incomplete"),
+        (lambda s: s["plugins"]["memory"].update(instruction=5), "memory.instruction must be a string"),
+        (lambda s: s["plugins"]["proactive"].update(generation_instruction=5), "must be an object"),
+        (lambda s: s["plugins"]["proactive"]["generation_instruction"].update(variants=[]), "non-empty list"),
+        (lambda s: s["plugins"]["proactive"]["generation_instruction"].update(variants=[" "]), "non-empty"),
     ],
 )
 def test_startup_rejects_malformed_prompts_overlay(tmp_path, mutate, pattern):
     path = _prompts_file(tmp_path, mutate)
     with pytest.raises(ValueError, match=pattern):
         _start(tmp_path, {"prompts": {"path": str(path)}})
+
+
+async def test_http_prompts_overlay_replaces_single_plugin_slots(tmp_path):
+    overlay = {"plugins": {"affect": {"decision_instruction": "DECIDE"}, "memo": {"open_delimiter": "[m]"}}}
+    path = tmp_path / "prompts.json"
+    path.write_text(json.dumps(overlay), encoding="utf-8")
+    app = _start(tmp_path, {"prompts": {"path": str(path)}})
+    async with _client(app) as client:
+        await client.post("/state/v1/memo/add", json={"text": "water the plant"})
+        injection = (await client.post("/state/v1/context", json={"query": ""})).json()["injection"]
+    plugins = app.state.service.prompts["plugins"]
+    assert plugins["affect"]["decision_instruction"] == "DECIDE"
+    assert "Read the Affect line as your present feeling." in injection
+    assert "[m]" in injection and "</memo_notes>" in injection
+    assert plugins["proactive"] == prompts_module.default_prompts()["plugins"]["proactive"]
+
+
+def test_startup_accepts_prompts_for_a_plugin_listed_in_config(tmp_path):
+    path = tmp_path / "prompts.json"
+    path.write_text(json.dumps({"plugins": {"ambient": {"screen": "SCREEN_SENTINEL"}}}), encoding="utf-8")
+    app = _start(tmp_path, {"plugins": {"ambient": {"disabled": True}}, "prompts": {"path": str(path)}})
+    assert app.state.service.prompts["plugins"]["ambient"] == {"screen": "SCREEN_SENTINEL"}
+
+
+async def test_http_schema_3_prompts_overlay_loads_with_a_deprecation_warning(tmp_path, caplog):
+    overlay = {
+        "affect": {"open_delimiter": "<affect>", "close_delimiter": "</affect>", "instruction": "LEGACY"},
+        "companion_state": {
+            "open_delimiter": "<companion_state>\n",
+            "close_delimiter": "\n</companion_state>",
+            "memory_instruction": "MEMORY_SENTINEL",
+        },
+        "context_blocks": {
+            "memo_open_delimiter": "[memo]",
+            "memo_close_delimiter": "[/memo]",
+            "plugin_open_delimiter": "[plugin]",
+            "plugin_close_delimiter": "[/plugin]",
+        },
+    }
+    path = tmp_path / "prompts.json"
+    path.write_text(json.dumps(overlay), encoding="utf-8")
+    with caplog.at_level("WARNING", logger="dusha"):
+        app = _start(tmp_path, {"prompts": {"path": str(path)}})
+    async with _client(app) as client:
+        await client.post("/state/v1/memo/add", json={"text": "water the plant"})
+        result = (await client.post("/state/v1/context", json={"query": ""})).json()
+    assert "<affect>LEGACY\n" in result["injection"]
+    assert "[memo]" in result["injection"] and "[/memo]" in result["injection"]
+    assert result["context"]["instructions"] == {"memory": "MEMORY_SENTINEL"}
+    assert "schema 3 prompts layout" in caplog.text and "2.0.21" in caplog.text
+    assert "context_blocks.plugin_open_delimiter" in caplog.text and "guide.md#migrating" in caplog.text
 
 
 async def test_http_example_config_starts_and_serves(tmp_path):
@@ -201,7 +258,7 @@ async def test_http_config_paths_resolve_beside_the_config_file_or_stay_absolute
     base.mkdir()
     (base / "identity.md").write_text("IDENTITY_SENTINEL", encoding="utf-8")
     _emotions_file(base, lambda s: s["dimensions"]["fear"].update(neutral=0.25))
-    _prompts_file(base, lambda s: s["affect"].update(instruction="PROMPT_SENTINEL"))
+    _prompts_file(base, lambda s: s["plugins"]["affect"]["block"].update(instruction="PROMPT_SENTINEL"))
 
     def located(name):
         return str(base / name) if absolute else name

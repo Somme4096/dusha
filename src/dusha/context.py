@@ -14,7 +14,7 @@ class ContextComposer:
 
     def compose(self, blocks: list[Block]) -> dict[str, Any]:
         session = [record for block in blocks for record in block.session]
-        instructions = {"memory": self.companion["memory_instruction"]}
+        instructions = {block.name: block.instruction for block in blocks if block.instruction}
         companion = (
             self.companion["open_delimiter"]
             + safe_json({"instructions": instructions, "session": session})

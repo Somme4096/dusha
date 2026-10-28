@@ -228,7 +228,7 @@ async def test_configuration_export_commands_roundtrip(tmp_path):
     emotions.load_emotions(emotions_file)
 
     data = json.loads(prompts_file.read_text(encoding="utf-8"))
-    data["affect"]["instruction"] = "SENTINEL_EXPORT"
+    data["plugins"]["affect"]["block"]["instruction"] = "SENTINEL_EXPORT"
     prompts_file.write_text(json.dumps(data), encoding="utf-8")
     cfg = AppConfig(
         data_dir=tmp_path / "data",

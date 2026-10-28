@@ -12,6 +12,7 @@ from typing import Any
 from fastapi import APIRouter
 
 from . import emotions as _emotions
+from . import prompts as _prompts
 from . import schema as _schema
 from .affect_semantic import SemanticAppraisal
 from .config import AffectConfig, EmbeddingConfig
@@ -27,6 +28,15 @@ logger = logging.getLogger("dusha")
 Decide = Callable[[DecisionRequest], list[dict[str, Any]]]
 
 name = "affect"
+_PROMPTS = {
+    "presentation": dict.fromkeys(
+        ("prefix", "separator", "suffix", "baseline", "level_connector")
+        + ("level_high", "level_elevated", "level_noticeable"),
+        str,
+    ),
+    "block": {"open_delimiter": str, "close_delimiter": str, "instruction": str},
+    "decision_instruction": str,
+}
 inject = ("database", "settings", "prompts", "api", "cli", "mcp")
 
 SCHEMA = """
@@ -82,7 +92,8 @@ class AffectEngine:
         self.value_min = float(value_range["min"])
         self.value_max = float(value_range["max"])
         self.value_span = self.value_max - self.value_min
-        self.affect_presentation = dict(prompts["affect_presentation"])
+        self.text = _prompts.section(prompts, name, _PROMPTS)
+        self.affect_presentation = self.text["presentation"]
         if self.appraisal is not None:
             self.appraisal.configure(self.emotions["appraisal"])
 
@@ -222,7 +233,7 @@ class AffectEngine:
         now: datetime | None = None,
     ) -> dict[str, Any] | None:
         if instruction is None:
-            instruction = str(self.prompts["decision_instruction"])
+            instruction = self.text["decision_instruction"]
         requested = now if now is not None else utc_now()
         with self._lock, self.database.connect() as db:
             row, state = self._load_row(db, requested)
@@ -312,7 +323,7 @@ class AffectEngine:
 
     def on_context(self, request: ContextRequest) -> Block:
         snapshot = self.status()
-        slot = self.prompts["affect"]
+        slot = self.text["block"]
         description = self.describe(snapshot)
         data = {
             "values": {"base": snapshot["base"], "mood": snapshot["mood"]},

@@ -58,7 +58,7 @@ async def test_http_proactive_instruction_uses_base_and_variant(config):
         assert evaluated.status_code == 200
         event = evaluated.json()["event"]
         assert event is not None
-        spec = app.state.service.prompts["proactive_generation_instruction"]
+        spec = app.state.service.prompts["plugins"]["proactive"]["generation_instruction"]
         assert event["generation_base"] == spec["base"]
         assert event["generation_variant"] == spec["variants"][0]
         assert event["generation_variant_index"] == 0
@@ -141,7 +141,7 @@ async def test_http_proactive_rotation_advances_with_send_count(config):
 async def test_http_proactive_custom_object_template_renders(tmp_path, config):
     config.plugin("proactive").poll_interval_seconds = 3600
     snapshot = api.create_app(config).state.service.prompts
-    snapshot["proactive_generation_instruction"] = {
+    snapshot["plugins"]["proactive"]["generation_instruction"] = {
         "base": "SENTINEL BASE.",
         "variants": ["SENTINEL FIRST", "SENTINEL SECOND"],
     }
