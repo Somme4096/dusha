@@ -555,3 +555,47 @@ async def test_http_two_external_plugins_run_in_order_first_emotion_wins_and_del
     assert stored["affect"]["state"]["base"]["elation"] > before["elation"]
     assert list(context["context"]["blocks"]) == ["memory", "affect", "probe_two", "probe"]
     assert health.json()["plugins"][-2:] == ["probe_two", "probe"]
+
+
+PROVIDERS_SOURCE = '''\
+import json
+import pathlib
+
+
+def apply(ctx, config):
+    stub = ctx.providers.get("stub")
+    seen = {"names": ctx.providers.names(), "chat": stub.url("chat"), "base": stub.url()}
+    seen["headers"] = stub.request_headers()
+    try:
+        ctx.providers.get("absent")
+    except KeyError as error:
+        seen["absent"] = str(error)
+    pathlib.Path(config["marker"]).write_text(json.dumps(seen))
+'''
+
+
+def test_external_plugin_reads_the_companion_providers(tmp_path, monkeypatch):
+    monkeypatch.setenv("DUSHA_STUB_KEY", "sk-stub")
+    root = tmp_path / "plugins"
+    _write_suite(root, "llm", PROVIDERS_SOURCE, MANIFEST.format(name="llm", inject='["providers"]'))
+    marker = tmp_path / "seen.json"
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({
+        "data_dir": "data",
+        "plugins_dir": str(root),
+        "plugins": {"llm": {"options": {"marker": str(marker)}}},
+        "providers": {
+            "stub": {
+                "base_url": "https://stub.invalid/v1",
+                "endpoints": {"chat": "https://chat.invalid/v1"},
+                "key": "{env:DUSHA_STUB_KEY}",
+                "headers": {"x-team": "dusha"},
+            },
+        },
+    }), encoding="utf-8")
+    api.create_app(load_config(path))
+    seen = _marker(marker)
+    assert seen["names"] == ["stub"]
+    assert (seen["chat"], seen["base"]) == ("https://chat.invalid/v1", "https://stub.invalid/v1")
+    assert seen["headers"] == {"authorization": "Bearer sk-stub", "x-team": "dusha"}
+    assert "no provider named 'absent'" in seen["absent"]

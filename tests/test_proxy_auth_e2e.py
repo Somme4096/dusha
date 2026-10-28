@@ -96,38 +96,36 @@ def stub():
     server.server_close()
 
 
-async def test_auth_login_saves_a_preset_the_proxy_then_uses(tmp_path, stub):
+async def test_provider_add_saves_a_preset_the_proxy_then_uses(tmp_path, stub):
     url, seen = stub
     _catalog(tmp_path, url)
     path = _home(tmp_path, "nova", port=8765, api_token="local", proxy={"server": {"url": DEAD_SERVER}})
-    added = _cli(tmp_path, "proxy", "nova", "auth", "login", "stubai", stdin="sk-real-12345678\n")
-    vault = _cli(
-        tmp_path, "proxy", "nova", "auth", "login", "vaultai", "--profile", "vault", stdin="acct\n\n"
-    )
+    added = _cli(tmp_path, "-c", "nova", "provider", "add", "stubai", stdin="sk-real-12345678\n")
+    vault = _cli(tmp_path, "provider", "add", "vaultai", "--profile", "vault", stdin="acct\n\n")
     kept = path.read_text(encoding="utf-8")
-    declined = _cli(tmp_path, "proxy", "nova", "auth", "login", "stubai", stdin="n\n")
+    declined = _cli(tmp_path, "provider", "add", "stubai", stdin="n\n")
     unchanged = path.read_text(encoding="utf-8")
-    status = _cli(tmp_path, "proxy", "nova", "auth", "status")
-    removed = _cli(tmp_path, "proxy", "nova", "auth", "logout", "vault")
-    absent = _cli(tmp_path, "proxy", "nova", "auth", "logout", "vault")
+    listed = _cli(tmp_path, "provider", "list")
+    removed = _cli(tmp_path, "provider", "remove", "vault")
+    absent = _cli(tmp_path, "provider", "remove", "vault")
     saved = json.loads(path.read_text(encoding="utf-8"))
     assert added.returncode == 0, added.stderr
     assert "New provider stubai added to nova at http://127.0.0.1:8766/stubai." in added.stderr
-    assert "Restart dusha proxy nova" in added.stderr
+    assert "Restart dusha proxy nova and dusha serve nova" in added.stderr
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert vault.returncode == 0, vault.stderr
-    assert json.loads(kept)["proxy"]["upstreams"]["vault"] == {
+    assert json.loads(kept)["providers"]["vault"] == {
         "base_url": "https://acct.vault.invalid/v1", "key": "{env:VAULT_KEY}", "auth": "bearer",
     }
     assert declined.returncode == 1 and unchanged == kept
-    assert json.loads(status.stdout)["stubai"] == {
+    assert json.loads(listed.stdout)["stubai"] == {
         "base_url": f"{url}/openai/v1", "endpoints": {"messages": f"{url}/anthropic/v1"}, "auth": "bearer",
         "key": "...5678",
     }
-    assert json.loads(status.stdout)["vault"]["key"] == "{env:VAULT_KEY}"
-    assert removed.returncode == 0 and absent.returncode == 1 and "No profile named 'vault'" in absent.stderr
+    assert json.loads(listed.stdout)["vault"]["key"] == "{env:VAULT_KEY}"
+    assert removed.returncode == 0 and absent.returncode == 1 and "No provider named 'vault'" in absent.stderr
     assert (saved["port"], saved["api_token"]) == (8765, "local")
-    assert list(saved["proxy"]["upstreams"]) == ["stubai"]
+    assert list(saved["providers"]) == ["stubai"] and "upstreams" not in saved["proxy"]
 
     app = create_proxy_app(settings.load(path))
     dummy = {"Authorization": "Bearer dummy", "x-api-key": "dummy"}
@@ -148,21 +146,29 @@ async def test_auth_login_saves_a_preset_the_proxy_then_uses(tmp_path, stub):
     assert all("x-api-key" not in item["headers"] for item in seen)
 
 
-def test_auth_login_without_a_terminal_needs_a_known_provider(tmp_path, stub):
+def test_provider_add_without_a_terminal_needs_a_known_provider(tmp_path, stub):
     _catalog(tmp_path, stub[0])
     _home(tmp_path, "nova", proxy={"server": {"url": DEAD_SERVER}})
-    unnamed = _cli(tmp_path, "proxy", "auth", "login")
-    unknown = _cli(tmp_path, "proxy", "auth", "login", "nope")
-    blocked = _cli(tmp_path, "proxy", "auth", "login", "bedrocky")
-    first = _cli(tmp_path, "proxy", "luna", "auth", "login", "stubai", stdin=f"{DEAD_SERVER}\n\nsk-luna\n")
-    luna = json.loads((tmp_path / "config" / "dusha" / "luna" / "config.json").read_text(encoding="utf-8"))
+    unnamed = _cli(tmp_path, "provider", "add")
+    unknown = _cli(tmp_path, "provider", "add", "nope")
+    blocked = _cli(tmp_path, "provider", "add", "bedrocky")
+    missing = _cli(tmp_path, "-c", "luna", "provider", "add", "stubai")
     assert unnamed.returncode == 2 and "Name a provider" in unnamed.stderr
     assert unknown.returncode == 2 and "Unknown provider 'nope'" in unknown.stderr
     assert blocked.returncode == 2
+    assert missing.returncode == 2 and "configuration file not found" in missing.stderr
+
+
+def test_proxy_auth_still_works_with_a_deprecation_notice(tmp_path, stub):
+    _catalog(tmp_path, stub[0])
+    first = _cli(tmp_path, "proxy", "luna", "auth", "login", "stubai", stdin=f"{DEAD_SERVER}\n\nsk-luna\n")
+    status = _cli(tmp_path, "proxy", "luna", "auth", "status")
+    luna = json.loads((tmp_path / "config" / "dusha" / "luna" / "config.json").read_text(encoding="utf-8"))
     assert first.returncode == 0, first.stderr
-    assert "Server URL" in first.stderr
+    assert "Server URL" in first.stderr and "Use dusha provider" in first.stderr
+    assert "Use dusha provider" in status.stderr and json.loads(status.stdout)["stubai"]["key"] == "..."
     assert luna["proxy"]["server"]["url"] == DEAD_SERVER
-    assert luna["proxy"]["upstreams"]["stubai"]["key"] == "sk-luna"
+    assert luna["providers"]["stubai"]["key"] == "sk-luna"
 
 
 class Terminal:
@@ -205,10 +211,10 @@ needs_terminal = pytest.mark.skipif(sys.platform == "win32", reason="needs a pse
 
 
 @needs_terminal
-def test_auth_login_offers_a_searchable_menu_in_a_terminal(tmp_path, stub):
+def test_provider_add_offers_a_searchable_menu_in_a_terminal(tmp_path, stub):
     _catalog(tmp_path, stub[0])
     path = _home(tmp_path, "nova", proxy={"server": {"url": DEAD_SERVER}})
-    terminal = Terminal(tmp_path, "proxy", "auth", "login")
+    terminal = Terminal(tmp_path, "provider", "add")
     terminal.expect("Stub AI")
     terminal.send("vault")
     terminal.expect("vault")
@@ -220,7 +226,7 @@ def test_auth_login_offers_a_searchable_menu_in_a_terminal(tmp_path, stub):
     terminal.expect("Restart dusha proxy nova")
     hidden = b"sk-typed" not in terminal.output
     code = terminal.close(wait=True)
-    profile = json.loads(path.read_text(encoding="utf-8"))["proxy"]["upstreams"]["vaultai"]
+    profile = json.loads(path.read_text(encoding="utf-8"))["providers"]["vaultai"]
     assert code == 0 and hidden
     assert profile == {"base_url": "https://team.vault.invalid/v1", "key": "sk-typed", "auth": "bearer"}
 

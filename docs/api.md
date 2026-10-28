@@ -316,17 +316,17 @@ curl http://127.0.0.1:8765/health
 
 `dusha proxy <name>` runs on the machine with your harness and reads the `proxy` section of the companion's `config.json`. When no server is saved for `<name>`, a run in a terminal shows a menu: the server on this machine, when the file has one, or another server by URL and token. It checks the connection, offers to try again, saves the choice with mode `600`, and starts. Later runs just start. Outside a terminal, a missing file is asked for line by line, and a server's own `config.json` without a saved server uses that server. The proxy forwards model requests to your provider and makes the server calls from the [client flow](#client-flow) itself, so a harness only needs a base URL. Keys are in [configuration.md](configuration.md#proxy).
 
-Each entry under `proxy.upstreams` is a profile:
+Each entry under `providers` is a profile:
 
 ```json
 {
   "proxy": {
-    "server": {"url": "https://dusha.example.com", "token": "replace-with-the-server-api-token"},
-    "upstreams": {
-      "openai": {"base_url": "https://api.openai.com/v1"},
-      "llama": {"base_url": "http://127.0.0.1:8080/v1"},
-      "anthropic": {"base_url": "https://api.anthropic.com", "headers": {"x-api-key": "{env:ANTHROPIC_API_KEY}"}}
-    }
+    "server": {"url": "https://dusha.example.com", "token": "replace-with-the-server-api-token"}
+  },
+  "providers": {
+    "openai": {"base_url": "https://api.openai.com/v1"},
+    "llama": {"base_url": "http://127.0.0.1:8080/v1"},
+    "anthropic": {"base_url": "https://api.anthropic.com", "headers": {"x-api-key": "{env:ANTHROPIC_API_KEY}"}}
   }
 }
 ```
@@ -340,21 +340,19 @@ In your harness, replace the provider base URL with `http://127.0.0.1:8766/<prof
 | `http://127.0.0.1:8766/anthropic/v1/messages` | `https://api.anthropic.com/v1/messages` |
 | `http://127.0.0.1:8766/openai/responses` | `https://api.openai.com/v1/responses` |
 
-### Provider login
+### Provider commands
 
-`dusha proxy <name> auth login` adds a profile from the [models.dev](https://models.dev) catalog, so the proxy holds the provider's key, endpoints, and required headers. In a terminal it opens a menu you can filter by typing. Otherwise name the provider, such as `dusha proxy <name> auth login deepseek`. It asks for any values the provider's URL needs, then for the key, and Enter stores `{env:NAME}` with the provider's variable instead. The profile is named after the provider unless you pass `--profile`, and the file keeps mode `600`. Replacing an existing profile asks first. Restart the proxy to use it.
+`dusha provider add` adds a profile from the [models.dev](https://models.dev) catalog, with the provider's key, endpoints, and required headers. It edits the selected companion's `config.json`, picked by `-c <name>` or the usual [order](configuration.md#which-file-loads). In a terminal it opens a menu you can filter by typing. Otherwise name the provider, such as `dusha -c <name> provider add deepseek`. It asks for any values the provider's URL needs, then for the key, and Enter stores `{env:NAME}` with the provider's variable instead. The profile is named after the provider unless you pass `--profile`, and the file keeps mode `600`. Replacing an existing profile asks first. Restart the proxy and the server to use it.
 
 ```json
 {
-  "proxy": {
-    "upstreams": {
-      "opencode-go": {
-        "base_url": "https://opencode.ai/inference/go/openai/v1",
-        "endpoints": {"messages": "https://opencode.ai/inference/go/anthropic/v1"},
-        "key": "replace-with-your-key",
-        "auth": "bearer",
-        "headers": {"x-opencode-session": "{conversation_id}"}
-      }
+  "providers": {
+    "opencode-go": {
+      "base_url": "https://opencode.ai/inference/go/openai/v1",
+      "endpoints": {"messages": "https://opencode.ai/inference/go/anthropic/v1"},
+      "key": "replace-with-your-key",
+      "auth": "bearer",
+      "headers": {"x-opencode-session": "{conversation_id}"}
     }
   }
 }
@@ -362,9 +360,10 @@ In your harness, replace the provider base URL with `http://127.0.0.1:8766/<prof
 
 In the harness, add a custom OpenAI- or Anthropic-compatible provider with the base URL `http://127.0.0.1:8766/opencode-go` and any dummy key. The proxy drops the dummy key and sends its own.
 
-- `dusha proxy <name> auth status` prints each profile with its key masked.
-- `dusha proxy <name> auth logout <profile>` removes one.
-- The catalog is cached in `$XDG_CACHE_HOME/dusha/models-dev.json`, `~/.cache` by default, for a day, and `--refresh` fetches it again. Offline, login uses the stale copy.
+- `dusha provider list` prints each profile with its key masked.
+- `dusha provider remove <profile>` removes one.
+- `dusha proxy <name> auth login`, `status`, and `logout` still work with a warning until 2.0.21.
+- The catalog is cached in `$XDG_CACHE_HOME/dusha/models-dev.json`, `~/.cache` by default, for a day, and `--refresh` fetches it again. Offline, `add` uses the stale copy.
 - Providers that need cloud credentials rather than a key, such as Bedrock, Vertex, Azure, and Copilot, are not offered. Gemini's native protocol is not routed, but Google is offered through its OpenAI-compatible endpoint.
 
 The proxy reads three protocols, picked by the end of the path of a `POST`:

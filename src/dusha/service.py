@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException
 from . import affect, evergreen, identity, memo, memory, proactive
 from . import external as _external
 from . import prompts as _prompts
+from . import providers as _providers
 from .commands import Commands, arg
 from .config import AppConfig
 from .context import ContextComposer
@@ -59,6 +60,7 @@ class CompanionService:
                 "settings": config,
                 "database": self.database,
                 "prompts": self.prompts,
+                "providers": _providers.Providers(config.providers),
                 "messages": self.messages,
                 "companion": self,
                 "api": self.router,

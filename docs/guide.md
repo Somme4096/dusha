@@ -129,6 +129,7 @@ dusha memory reindex
 | `evergreen` | `remember`, `revise`, `forget`, `list_current`, `history` |
 | `memo` | `add`, `list`, `done` |
 | `proactive` | `evaluate`, `poll`, `acknowledge` |
+| `providers` | `names`, `get(name)`. A provider has `url(kind)` and `request_headers()`, with the key and `{env:NAME}` filled in. |
 
 Services from `ctx.provide` are plain Python objects. `deltas` apply after the increment, and dimension names come from your `emotions.json`.
 One thing to pay attention to is that a dependency conflict in plugin(whether internal or external) makes dusha unable to start gateway, since they share one Python environment.
@@ -153,6 +154,10 @@ Since 1.1.21, prompt text lives under `plugins`, keyed by the plugin that reads 
 
 `companion_state` keeps `open_delimiter` and `close_delimiter`.
 
+### proxy.upstreams to providers
+
+Since 1.1.21, provider profiles live in the top-level `providers` section, so server plugins can use them too. `proxy.upstreams` still loads with a warning until 2.0.21. `dusha init <name>` moves it and keeps the original as `config.json.bak`, or move the section by hand. `dusha proxy <name> auth login`, `status`, and `logout` became `dusha provider add`, `list`, and `remove`.
+
 ## Troubleshooting
 
 | Symptom | Fix |
@@ -166,10 +171,10 @@ Since 1.1.21, prompt text lives under `plugins`, keyed by the plugin that reads 
 | Requests return `401` | Send `X-Companion-Token` with the token value. |
 | A command fails with `cannot reach the server` | Start `dusha serve <name>`, or check `proxy.server.url` and `port` in the companion's `config.json`. |
 | A plugin's command ends in `No such command` | The plugin is disabled or inactive, see `dusha plugins`. |
-| `auth login` fails with `cannot load the models.dev catalog` | The machine is offline and has no cached catalog. Connect once, or add the profile to `proxy.upstreams` by hand. |
-| The provider rejects the harness's key | With a `key` in the profile, the proxy sends that key instead. Check it with `dusha proxy <name> auth status` and log in again. |
+| `provider add` fails with `cannot load the models.dev catalog` | The machine is offline and has no cached catalog. Connect once, or add the profile to `providers` by hand. |
+| The provider rejects the harness's key | With a `key` in the profile, the proxy sends that key instead. Check it with `dusha provider list` and add it again. |
 | `dusha proxy <name>` asks for the server again | That name has no saved `proxy.server.url`. Pick the server once and it is saved. Check the name with `dusha list`. |
-| Startup fails on `upstream` or `api_openai` moved to `proxy.upstreams` | Delete them and add a [profile](configuration.md#proxy) under `proxy.upstreams` instead. Clients that used `/v1/...` on the server now use `http://127.0.0.1:8766/<profile>`. |
+| Startup fails on `upstream` or `api_openai` moved to `providers` | Delete them and add a [profile](configuration.md#providers) under `providers` instead. Clients that used `/v1/...` on the server now use `http://127.0.0.1:8766/<profile>`. |
 | The proxy returns `502` | The provider is unreachable or timed out. Read the `detail`, then check the profile's `base_url`. |
 | The proxy forwards but nothing is stored | `GET /health` on the proxy shows `server.status`. Check `proxy.server.url` and `proxy.server.token`. |
 | Memory, fact, memo, affect, or proactive routes return `503` | The `detail` names the plugin. Remove its `"disabled": true`, or turn on the plugin it needs, and restart. Your stored rows are intact. |

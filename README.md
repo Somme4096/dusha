@@ -37,7 +37,7 @@ Saved ~/.config/dusha/<name>/config.json.
 Add a custom provider:
 
 ```console
-$ dusha proxy <name> auth login # Add a provider profile from the models.dev catalog
+$ dusha -c <name> provider add # Add a provider profile from the models.dev catalog
 
 ? Provider (Use arrow keys, type to filter)
  » 302.AI (302ai)
@@ -50,7 +50,7 @@ $ dusha proxy <name> auth login # Add a provider profile from the models.dev cat
 
 Success!
 New provider 302ai added to <name> at http://127.0.0.1:8766/302ai.
-Restart dusha proxy <name> to use it.
+Restart dusha proxy <name> and dusha serve <name> to use it.
 
 $ dusha proxy <name>
 
@@ -60,7 +60,7 @@ INFO:     Application startup complete.
 INFO:     Uvicorn running on http://127.0.0.1:8766 (Press CTRL+C to quit)
 ```
 
-Now in your harness or app, point your endpoint at the URL `auth login` gave you: in this case, `http://127.0.0.1:8766/302ai` and you're good to go.
+Now in your harness or app, point your endpoint at the URL `provider add` gave you: in this case, `http://127.0.0.1:8766/302ai` and you're good to go.
 
 Optionally (but recommended), add [MCP](https://github.com/Somme4096/dusha/blob/main/docs/api.md#mcp).
 
@@ -111,7 +111,7 @@ The module defines `apply(ctx, config)`, which runs at startup with the plugin's
 | `ctx.api` | The gateway's FastAPI router. |
 | `ctx.cli` | The command registry, see [Commands](#commands). |
 | `ctx.mcp` | The MCP tool registry, see [Tools](#tools--mcp). |
-| `ctx.<service>.<method>(...)` | Calls an injected service: `messages`, `companion`, `affect`, `evergreen`, `memo`, `proactive`. |
+| `ctx.<service>.<method>(...)` | Calls an injected service: `messages`, `companion`, `affect`, `evergreen`, `memo`, `proactive`, `providers`. |
 
 The first `emotion` in `plugins` order wins, and `deltas` from every plugin merge. See the [Plugin API](https://github.com/Somme4096/dusha/blob/main/docs/guide.md#plugin-api) for hook fields and service methods.
 

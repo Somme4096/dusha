@@ -4,7 +4,6 @@ import asyncio
 import contextlib
 import json
 import logging
-import os
 from collections import OrderedDict
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -17,9 +16,10 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 from starlette.background import BackgroundTask
 
+from ..providers import Provider
 from . import protocols as _protocols
 from .outbox import Outbox, retryable
-from .settings import PLACEHOLDER, Connection, Settings, Upstream
+from .settings import Connection, Settings
 
 logger = logging.getLogger("dusha.proxy")
 
@@ -146,30 +146,15 @@ class Server:
             _remember(self.responses, response_id, stored["last_message_id"])
 
 
-def _render(value: str, conversation_id: str) -> str:
-    def fill(match: Any) -> str:
-        token = match[1]
-        return conversation_id if token == "conversation_id" else os.environ[token.removeprefix("env:")]
-
-    return PLACEHOLDER.sub(fill, value)
-
-
-def _upstream_headers(request: Request, profile: Upstream, conversation_id: str) -> httpx.Headers:
+def _upstream_headers(request: Request, profile: Provider, conversation_id: str) -> httpx.Headers:
     dropped = _DROPPED_HEADERS | _KEY_HEADERS if profile.key else _DROPPED_HEADERS
     headers = httpx.Headers({name: value for name, value in request.headers.items() if name not in dropped})
-    if profile.key:
-        key = _render(profile.key, conversation_id)
-        if profile.auth == "x-api-key":
-            headers["x-api-key"] = key
-        else:
-            headers["authorization"] = f"Bearer {key}"
-    for name, value in profile.headers.items():
-        headers[name] = _render(value, conversation_id)
+    headers.update(profile.request_headers(conversation_id))
     return headers
 
 
-def _upstream_url(request: Request, profile: Upstream, path: str, kind: str | None) -> str:
-    base = profile.endpoints.get(kind, profile.base_url) if kind else profile.base_url
+def _upstream_url(request: Request, profile: Provider, path: str, kind: str | None) -> str:
+    base = profile.url(kind)
     if base.endswith("/v1") and path.startswith("v1/"):
         path = path.removeprefix("v1/")
     url = f"{base}/{path}"
@@ -188,7 +173,7 @@ def _media_type(response: httpx.Response) -> str | None:
 def create_proxy_app(cfg: Settings) -> FastAPI:
     server = Server(cfg.server, Outbox(cfg.data_dir))
     upstreams = {
-        name: httpx.AsyncClient(timeout=profile.timeout_seconds) for name, profile in cfg.upstreams.items()
+        name: httpx.AsyncClient(timeout=profile.timeout_seconds) for name, profile in cfg.providers.items()
     }
 
     @asynccontextmanager
@@ -221,13 +206,13 @@ def create_proxy_app(cfg: Settings) -> FastAPI:
         return {
             "status": "ok",
             "server": {"url": server.url, "status": await server.status()},
-            "upstreams": sorted(cfg.upstreams),
+            "providers": sorted(cfg.providers),
         }
 
     async def send(
         request: Request, name: str, path: str, content: bytes, conversation_id: str, kind: str | None = None
     ):
-        profile = cfg.upstreams[name]
+        profile = cfg.providers[name]
         client = upstreams[name]
         upstream_request = client.build_request(
             request.method,
@@ -305,8 +290,8 @@ def create_proxy_app(cfg: Settings) -> FastAPI:
 
     @app.api_route("/{name}/{path:path}", methods=_METHODS)
     async def forward(name: str, path: str, request: Request) -> Response:
-        if name not in cfg.upstreams:
-            raise HTTPException(status_code=404, detail=f"no upstream named {name!r}")
+        if name not in cfg.providers:
+            raise HTTPException(status_code=404, detail=f"no provider named {name!r}")
         protocol = _protocols.protocol_for(request.method, path)
         if protocol is not None:
             return await model(request, name, path, protocol)

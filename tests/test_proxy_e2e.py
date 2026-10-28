@@ -95,10 +95,10 @@ def server(config, run_app):
         yield url
 
 
-def _proxy_config(tmp_path: Path, proxy: dict, **server):
+def _proxy_config(tmp_path: Path, proxy: dict, **top):
     path = tmp_path / "edge" / "config.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({**server, "proxy": proxy}), encoding="utf-8")
+    path.write_text(json.dumps({**top, "proxy": proxy}), encoding="utf-8")
     return settings.load(path)
 
 
@@ -106,7 +106,7 @@ def _proxy_config(tmp_path: Path, proxy: dict, **server):
 async def _proxy(tmp_path, server_url, provider, *, token="", base="v1", headers=None):
     upstream = {"base_url": f"http://{provider.host}/{base}".rstrip("/"), "headers": headers or {}}
     cfg = _proxy_config(
-        tmp_path, {"server": {"url": server_url, "token": token}, "upstreams": {"stub": upstream}}
+        tmp_path, {"server": {"url": server_url, "token": token}}, providers={"stub": upstream}
     )
     app = create_proxy_app(cfg)
     async with app.router.lifespan_context(app):
@@ -393,7 +393,7 @@ async def test_proxy_sends_its_own_key_and_routes_each_protocol_to_its_endpoint(
         },
         "plain": {"base_url": f"{base}/plain/v1", "key": "plain-key", "auth": "x-api-key"},
     }
-    cfg = _proxy_config(tmp_path, {"server": {"url": server}, "upstreams": upstreams})
+    cfg = _proxy_config(tmp_path, {"server": {"url": server}}, providers=upstreams)
     dummy = {"Authorization": "Bearer dummy", "x-api-key": "dummy", "api-key": "dummy"}
     app = create_proxy_app(cfg)
     async with app.router.lifespan_context(app):
@@ -453,7 +453,7 @@ async def test_proxy_queues_turns_while_the_server_is_down_and_sends_them_later(
         health = await client.get("/health")
         response = await _chat(client, [{"role": "user", "content": "Still there?"}])
         assert health.json()["server"]["status"] == "unreachable"
-        assert health.json()["upstreams"] == ["stub"]
+        assert health.json()["providers"] == ["stub"]
         assert response.status_code == 200
         assert provider.seen[0]["body"]["messages"] == [{"role": "user", "content": "Still there?"}]
         with run_app(api.create_app(config), port=port) as url:
@@ -489,8 +489,8 @@ async def test_proxy_sends_the_server_token_itself(tmp_path, config, provider, r
         ({"host": "0.0.0.0"}, "proxy.host must be one of"),
         ({"bogus": 1}, r"unknown field\(s\) under proxy"),
         ({"server": {"url": "remote:8765"}}, "proxy.server.url must be an http or https URL"),
-        ({"upstreams": {"health": {"base_url": "https://a.invalid"}}}, "upstream name must be"),
-        ({"upstreams": {"a": {"base_url": "a.invalid/v1"}}}, "upstreams.a.base_url must be an http"),
+        ({"upstreams": {"health": {"base_url": "https://a.invalid"}}}, "provider name must be"),
+        ({"upstreams": {"a": {"base_url": "a.invalid/v1"}}}, "providers.a.base_url must be an http"),
         ({"upstreams": {"a": {"base_url": "https://u:p@a.invalid"}}}, "must not carry credentials"),
         ({"upstreams": {"a": {"base_url": "https://a.invalid", "timeout_seconds": 0}}}, "above 0"),
         ({"upstreams": {"a": {"base_url": "https://a.invalid", "headers": {"x": "{session}"}}}},
@@ -498,9 +498,9 @@ async def test_proxy_sends_the_server_token_itself(tmp_path, config, provider, r
         ({"upstreams": {"a": {"base_url": "https://a.invalid", "headers": {"x": "{env:DUSHA_NOPE}"}}}},
          "needs the environment variable DUSHA_NOPE"),
         ({"upstreams": {"a": {"base_url": "https://a.invalid", "region": "eu"}}},
-         r"unknown field\(s\) under proxy.upstreams.a"),
+         r"unknown field\(s\) under providers.a"),
         ({"upstreams": {"a": {"base_url": "https://a.invalid", "endpoints": {"gemini": "https://g.invalid"}}}},
-         r"unknown field\(s\) under proxy.upstreams.a.endpoints"),
+         r"unknown field\(s\) under providers.a.endpoints"),
         ({"upstreams": {"a": {"base_url": "https://a.invalid", "endpoints": {"chat": "g.invalid"}}}},
          "endpoints.chat must be an http"),
         ({"upstreams": {"a": {"base_url": "https://a.invalid", "auth": "basic"}}}, "auth must be one of"),
@@ -511,8 +511,10 @@ async def test_proxy_sends_the_server_token_itself(tmp_path, config, provider, r
     ],
 )
 def test_proxy_config_rejects_invalid_files(tmp_path, raw, pattern):
+    proxy = {"server": {"url": "http://127.0.0.1:8765"}, **raw}
+    providers = proxy.pop("upstreams", None)
     with pytest.raises(ValueError, match=pattern):
-        _proxy_config(tmp_path, {"server": {"url": "http://127.0.0.1:8765"}, **raw})
+        _proxy_config(tmp_path, proxy, **({"providers": providers} if providers else {}))
 
 
 def test_proxy_config_defaults_to_the_server_in_the_same_file(tmp_path):
@@ -524,10 +526,10 @@ def test_proxy_config_defaults_to_the_server_in_the_same_file(tmp_path):
     assert (remote.server.url, remote.server.token) == ("https://remote.invalid", "")
 
 
-def test_server_config_leaves_the_proxy_section_to_the_client(tmp_path):
+def test_server_config_starts_without_the_provider_environment(tmp_path):
     upstream = {"base_url": "https://a.invalid", "headers": {"x": "{env:DUSHA_NOPE}"}}
     path = tmp_path / "config.json"
-    raw = {"data_dir": str(tmp_path / "data"), "proxy": {"upstreams": {"a": upstream}}}
+    raw = {"data_dir": str(tmp_path / "data"), "providers": {"a": upstream}}
     path.write_text(json.dumps(raw), encoding="utf-8")
     assert load_config(path).port == 8765
     with pytest.raises(ValueError, match="needs the environment variable DUSHA_NOPE"):
@@ -673,3 +675,15 @@ async def test_responses_stream_unchanged_and_archive_the_completed_response(tmp
         response = await client.post("/stub/responses", json={"model": "m", "stream": True, "input": "Go."})
     assert response.content == b"".join(provider.stream)
     assert _texts(server) == [("user", "Go."), ("assistant", "Streamed answer.")]
+
+
+def test_proxy_upstreams_still_load_as_providers_with_a_warning(tmp_path, caplog):
+    upstream = {"base_url": "https://a.invalid/v1"}
+    path = tmp_path / "config.json"
+    raw = {"data_dir": "data", "proxy": {"upstreams": {"a": upstream}}}
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    with caplog.at_level("WARNING", logger="dusha"):
+        proxy = settings.load(path)
+        server = load_config(path)
+    assert proxy.providers["a"].base_url == server.providers["a"].base_url == "https://a.invalid/v1"
+    assert caplog.text.count("proxy.upstreams") == 2 and "2.0.21" in caplog.text

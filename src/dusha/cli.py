@@ -10,8 +10,9 @@ import click
 
 from . import homes, legacy
 from .client import catalog, presets, remote, settings
+from .providers import PLACEHOLDER, http_url
 
-STATIC = frozenset({"init", "serve", "proxy", "list", "plugins"})
+STATIC = frozenset({"init", "serve", "proxy", "provider", "list", "plugins"})
 _TYPES = {"str": click.STRING, "int": click.INT, "float": click.FLOAT}
 _BUILT = "dusha.commands"
 _PROXY_NAME = "dusha.proxy.name"
@@ -180,11 +181,15 @@ def _init_proxy(path: Path, *, interactive: bool, url: str = "", token: str = ""
 def _upgrade(path: Path) -> bool:
     from .config import load_config
 
-    prompts = load_config(path).prompts.path
-    if not prompts or not (backup := legacy.upgrade_prompts_file(Path(prompts))):
-        return False
-    click.echo(f"upgraded {prompts} to prompts schema 4, the old file is {backup}", err=True)
-    return True
+    changed = False
+    if backup := legacy.upgrade_config_file(path):
+        click.echo(f"moved proxy.upstreams to providers in {path}, the old file is {backup}", err=True)
+        changed = True
+    prompts = load_config(path).prompts.path if settings.local_server(path) is not None else ""
+    if prompts and (backup := legacy.upgrade_prompts_file(Path(prompts))):
+        click.echo(f"upgraded {prompts} to prompts schema 4, the old file is {backup}", err=True)
+        changed = True
+    return changed
 
 
 @main.command("init", help="Create or update a companion home")
@@ -212,7 +217,7 @@ def init(
         changed = _init_serve(home) if serve_part or both else False
         if proxy_part or both:
             changed = _init_proxy(path, interactive=sys.stdin.isatty(), url=url, token=token) or changed
-        if path.exists() and settings.local_server(path) is not None:
+        if path.exists():
             changed = _upgrade(path) or changed
         return changed
 
@@ -222,7 +227,7 @@ def init(
 
 def _url(value: str) -> str:
     try:
-        return settings.http_url(value, "the server URL")
+        return http_url(value, "the server URL")
     except ValueError as error:
         raise click.BadParameter(str(error)) from error
 
@@ -239,7 +244,7 @@ def _setup(path: Path) -> None:
 
 def _checked(value: str) -> bool | str:
     try:
-        settings.http_url(value.strip(), "the server URL")
+        http_url(value.strip(), "the server URL")
     except ValueError as error:
         return str(error)
     return True
@@ -260,7 +265,7 @@ def _connect(path: Path) -> None:
             url, token, probe = local.url, "", local
         else:
             typed = questionary.text("Server URL", default=url, validate=_checked).unsafe_ask()
-            url = settings.http_url(typed.strip(), "the server URL")
+            url = http_url(typed.strip(), "the server URL")
             token = questionary.password("Server token, empty for none").unsafe_ask()
             probe = settings.Connection(url, token)
         try:
@@ -319,11 +324,6 @@ def proxy(ctx: click.Context) -> None:
     uvicorn.run(create_proxy_app(cfg), host=cfg.host, port=cfg.port, log_level="info")
 
 
-@proxy.group("auth", help="Manage the provider profiles the proxy holds keys for")
-def auth() -> None:
-    pass
-
-
 def _pick(found: dict[str, presets.Preset]) -> str:
     import questionary
 
@@ -333,13 +333,19 @@ def _pick(found: dict[str, presets.Preset]) -> str:
     ).unsafe_ask()
 
 
-@auth.command("login", help="Add a provider profile from the models.dev catalog")
-@click.argument("provider", required=False)
-@click.option("--profile", help="Profile name, the provider id by default.")
-@click.option("--refresh", is_flag=True, help="Refetch the models.dev catalog.")
-@click.pass_context
-def login(ctx: click.Context, provider: str | None, profile: str | None, refresh: bool) -> None:
-    path = _proxy_file(ctx, setup=True)
+def _provider_file(ctx: click.Context) -> Path:
+    params = _selection(ctx)
+
+    def resolve() -> Path:
+        path = homes.locate(params.get("config"), home=params.get("home"), companion=params.get("companion"))
+        if path is None:
+            raise ValueError("name a companion, such as dusha -c <name> provider add")
+        return path
+
+    return _config(resolve)
+
+
+def _add(path: Path, provider: str | None, profile: str | None, refresh: bool) -> None:
     try:
         data, warning = catalog.load(refresh=refresh)
     except catalog.CatalogError as error:
@@ -350,14 +356,14 @@ def login(ctx: click.Context, provider: str | None, profile: str | None, refresh
     interactive = sys.stdin.isatty()
     if provider is None:
         if not interactive:
-            raise ConfigError("Name a provider, such as dusha proxy auth login deepseek")
+            raise ConfigError("Name a provider, such as dusha provider add deepseek")
         provider = _pick(found)
     if provider not in found:
         raise ConfigError(f"Unknown provider {provider!r}, see https://models.dev for the ids")
     preset, name = found[provider], profile or provider
     current = _config(lambda: settings.load(path, environ=False))
-    if name in current.upstreams:
-        click.confirm(f"Replace the profile {name}?", abort=True, err=True)
+    if name in current.providers:
+        click.confirm(f"Replace the provider {name}?", abort=True, err=True)
     values = {variable: click.prompt(variable, err=True) for variable in preset.variables}
     fallback = f"{{env:{preset.env}}}" if preset.env else ""
     key = click.prompt(
@@ -365,42 +371,90 @@ def login(ctx: click.Context, provider: str | None, profile: str | None, refresh
         hide_input=interactive, err=True,
     )
     raw = preset.profile(key or fallback, values)
-    _config(lambda: settings.save_upstream(path, name, raw))
+    _config(lambda: settings.save_provider(path, name, raw))
     companion, host = path.parent.name, f"[{current.host}]" if ":" in current.host else current.host
     harness = f"http://{host}:{current.port}/{name}"
     click.echo(f"Success!\nNew provider {name} added to {companion} at {harness}.", err=True)
-    click.echo(f"Restart dusha proxy {companion} to use it.", err=True)
+    click.echo(f"Restart dusha proxy {companion} and dusha serve {companion} to use it.", err=True)
 
 
-@auth.command("logout", help="Remove a provider profile")
-@click.argument("profile")
-@click.pass_context
-def logout(ctx: click.Context, profile: str) -> None:
-    path = _proxy_file(ctx, setup=False)
-    if profile not in _config(lambda: settings.load(path, environ=False)).upstreams:
-        raise click.ClickException(f"No profile named {profile!r}")
-    _config(lambda: settings.save_upstream(path, profile, None))
+def _remove(path: Path, profile: str) -> None:
+    if profile not in _config(lambda: settings.load(path, environ=False)).providers:
+        raise click.ClickException(f"No provider named {profile!r}")
+    _config(lambda: settings.save_provider(path, profile, None))
     click.echo(f"Removed {profile} from {path.parent.name}", err=True)
 
 
 def _masked(key: str) -> str:
-    if not key or settings.PLACEHOLDER.search(key):
+    if not key or PLACEHOLDER.search(key):
         return key
     return f"...{key[-4:]}" if len(key) > 8 else "..."
 
 
-@auth.command("status", help="Show the provider profiles")
-@click.pass_context
-def status(ctx: click.Context) -> None:
-    path = _proxy_file(ctx, setup=False)
+def _list(path: Path) -> None:
     cfg = _config(lambda: settings.load(path, environ=False))
     _print({
         name: {
             "base_url": profile.base_url, "endpoints": profile.endpoints, "auth": profile.auth,
             "key": _masked(profile.key),
         }
-        for name, profile in cfg.upstreams.items()
+        for name, profile in cfg.providers.items()
     })
+
+
+@main.group("provider", help="Manage the model providers of a companion")
+def provider_group() -> None:
+    pass
+
+
+@provider_group.command("add", help="Add a provider from the models.dev catalog")
+@click.argument("provider", required=False)
+@click.option("--profile", help="Profile name, the provider id by default.")
+@click.option("--refresh", is_flag=True, help="Refetch the models.dev catalog.")
+@click.pass_context
+def provider_add(ctx: click.Context, provider: str | None, profile: str | None, refresh: bool) -> None:
+    _add(_provider_file(ctx), provider, profile, refresh)
+
+
+@provider_group.command("remove", help="Remove a provider")
+@click.argument("profile")
+@click.pass_context
+def provider_remove(ctx: click.Context, profile: str) -> None:
+    _remove(_provider_file(ctx), profile)
+
+
+@provider_group.command("list", help="Show the providers, keys masked")
+@click.pass_context
+def provider_list(ctx: click.Context) -> None:
+    _list(_provider_file(ctx))
+
+
+# Deprecated dusha proxy <name> auth, removed in 2.0.21.
+@proxy.group("auth", hidden=True)
+def auth() -> None:
+    click.echo("dusha proxy auth is deprecated and goes away in 2.0.21. Use dusha provider.", err=True)
+
+
+@auth.command("login")
+@click.argument("provider", required=False)
+@click.option("--profile")
+@click.option("--refresh", is_flag=True)
+@click.pass_context
+def login(ctx: click.Context, provider: str | None, profile: str | None, refresh: bool) -> None:
+    _add(_proxy_file(ctx, setup=True), provider, profile, refresh)
+
+
+@auth.command("logout")
+@click.argument("profile")
+@click.pass_context
+def logout(ctx: click.Context, profile: str) -> None:
+    _remove(_proxy_file(ctx, setup=False), profile)
+
+
+@auth.command("status")
+@click.pass_context
+def status(ctx: click.Context) -> None:
+    _list(_proxy_file(ctx, setup=False))
 
 
 @main.command("list", help="List companions")

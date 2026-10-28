@@ -42,11 +42,11 @@ Rules for the file:
 | `timezone` | `Asia/Taipei` | IANA zone for quiet hours and the daily limit. |
 | `api_token` | `""` | The API token. Empty turns auth off. See [Auth](guide.md#auth). |
 
-`upstream` and `api_openai` moved to [proxy.upstreams](#proxy). Startup rejects them.
+`upstream` and `api_openai` moved to [providers](#providers). Startup rejects them.
 
 ## Proxy
 
-`dusha proxy <name>` reads the `proxy` section of the same `config.json`, and `dusha serve` ignores it. When no server is saved for `<name>`, the first run in a terminal asks which server to use and saves it here, with mode `600`. A new file holds only this section. Add your profiles under `proxy.upstreams` afterwards. On the server's own machine, `dusha init <name> --proxy` adds the section pointed at the local server.
+`dusha proxy <name>` reads the `proxy` section of the same `config.json`, and `dusha serve` ignores it. When no server is saved for `<name>`, the first run in a terminal asks which server to use and saves it here, with mode `600`. A new file holds only this section. Add your [providers](#providers) afterwards. On the server's own machine, `dusha init <name> --proxy` adds the section pointed at the local server.
 
 | Key | Default | Notes |
 | --- | --- | --- |
@@ -55,14 +55,21 @@ Rules for the file:
 | `proxy.server.url` | `""` | The server's base URL. Empty, or the URL of the server in the same file, uses that server's `host`, `port`, and `api_token`. The other `dusha` commands use it too. |
 | `proxy.server.token` | `""` | The server's `api_token`. The file then holds a secret. The first run writes it with mode `600`, and a file you edit by hand needs `chmod 600`. |
 | `proxy.server.timeout_seconds` | `10` | |
-| `proxy.upstreams.<profile>.base_url` | | Provider base URL, exactly as the harness would use it. |
-| `proxy.upstreams.<profile>.headers` | `{}` | Headers set on every forwarded request. Values can hold `{conversation_id}`, the matched conversation's name, and `{env:NAME}`. A missing variable fails startup. |
-| `proxy.upstreams.<profile>.timeout_seconds` | `120` | |
-| `proxy.upstreams.<profile>.key` | `""` | The provider key. The proxy then drops the harness's `authorization`, `x-api-key`, and `api-key` headers and sends this key itself, so the harness can use any dummy key. Can hold `{env:NAME}`. The file then holds a secret, so keep it at mode `600`. |
-| `proxy.upstreams.<profile>.auth` | `bearer` | How `key` is sent: `bearer` as `Authorization: Bearer`, or `x-api-key`. |
-| `proxy.upstreams.<profile>.endpoints` | `{}` | A base URL per protocol, keyed `chat`, `messages`, or `responses`. A protocol it leaves out goes to `base_url`. |
 
-A profile name holds letters, digits, dots, dashes, and underscores, and cannot be `health`. See [Proxy](api.md#proxy) for how requests are routed.
+## Providers
+
+`providers` holds the model providers of this machine, keyed by profile name. The proxy serves every one at `http://127.0.0.1:8766/<profile>`, and plugins on the server reach them through the `providers` service. Each machine keeps its own list. `dusha provider add`, `remove`, and `list` edit it, see [Provider commands](api.md#provider-commands).
+
+| Key | Default | Notes |
+| --- | --- | --- |
+| `providers.<profile>.base_url` | | Provider base URL, exactly as the harness would use it. |
+| `providers.<profile>.headers` | `{}` | Headers set on every request. Values can hold `{conversation_id}`, the matched conversation's name, and `{env:NAME}`. A missing variable fails proxy startup. |
+| `providers.<profile>.timeout_seconds` | `120` | |
+| `providers.<profile>.key` | `""` | The provider key. The proxy then drops the harness's `authorization`, `x-api-key`, and `api-key` headers and sends this key itself, so the harness can use any dummy key. Can hold `{env:NAME}`. The file then holds a secret, so keep it at mode `600`. |
+| `providers.<profile>.auth` | `bearer` | How `key` is sent: `bearer` as `Authorization: Bearer`, or `x-api-key`. |
+| `providers.<profile>.endpoints` | `{}` | A base URL per protocol, keyed `chat`, `messages`, or `responses`. A protocol it leaves out goes to `base_url`. |
+
+A profile name holds letters, digits, dots, dashes, and underscores, and cannot be `health`. `proxy.upstreams` from earlier releases still loads with a warning, see [Migrating](guide.md#migrating). See [Proxy](api.md#proxy) for how requests are routed.
 
 ## Plugins
 

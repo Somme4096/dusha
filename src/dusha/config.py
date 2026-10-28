@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import re
@@ -12,6 +13,8 @@ from pathlib import Path
 from typing import Any
 
 from . import emotions as _emotions
+from . import legacy
+from . import providers as _providers
 from .defaults import all_defaults
 from .homes import CONFIG_FILE, locate
 from .resources import loads_strict
@@ -30,6 +33,7 @@ _PROMPTS = _DEFAULTS["prompts"]
 
 IDENTITY_FILE = "identity.md"
 CLIENT_SECTIONS = frozenset({"proxy"})
+SHARED_SECTIONS = frozenset({"providers"})
 PLUGIN_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
@@ -46,7 +50,7 @@ def ensure_server_config(home: Path) -> str:
         _write_new(path, defaults)
         return f"created {path}"
     raw = _read_config_file(path)
-    if set(raw) - CLIENT_SECTIONS:
+    if set(raw) - CLIENT_SECTIONS - SHARED_SECTIONS:
         return ""
     temp = path.with_name(f".{path.name}.tmp")
     temp.unlink(missing_ok=True)
@@ -261,6 +265,7 @@ class AppConfig:
     prompts: PromptsConfig = field(default_factory=lambda: PromptsConfig())
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     plugins: dict[str, Any] = field(default_factory=dict)
+    providers: dict[str, _providers.Provider] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.plugins = _plugin_entries(self.plugins)
@@ -415,7 +420,7 @@ def _app_config_from_raw(raw: dict[str, Any], source_dir: Path) -> AppConfig:
     allowed = set(typing.get_type_hints(AppConfig)) - {"home"} | CLIENT_SECTIONS
     moved = sorted(set(raw) & {"api_openai", "upstream"})
     if moved:
-        raise ValueError(f"{moved} moved to proxy.upstreams, see https://github.com/Somme4096/dusha")
+        raise ValueError(f"{moved} moved to providers, see https://github.com/Somme4096/dusha")
     unknown = sorted(set(raw) - allowed)
     if unknown:
         raise ValueError(f"unknown top-level field(s): {unknown}")
@@ -451,6 +456,7 @@ def _app_config_from_raw(raw: dict[str, Any], source_dir: Path) -> AppConfig:
         prompts=prompts,
         embedding=_strict_section(EmbeddingConfig, raw.get("embedding"), "embedding"),
         plugins=plugins,
+        providers=_providers.parse(raw.get("providers"), environ=False),
     )
 
 
@@ -463,7 +469,10 @@ def load_config(
     config_path = locate(path, home=home, companion=companion)
     if config_path is None:
         return AppConfig()
-    cfg = _app_config_from_raw(_read_config_file(config_path), config_path.parent)
+    raw, found = legacy.upgrade_config(_read_config_file(config_path))
+    if found:
+        legacy.warn_config(logging.getLogger("dusha"), config_path, found)
+    cfg = _app_config_from_raw(raw, config_path.parent)
     cfg.home = config_path.parent
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
     return cfg

@@ -294,7 +294,7 @@ def test_cli_proxy_asks_for_the_server_once_and_saves_it(tmp_path, free_port, se
     assert stat.S_IMODE(config.stat().st_mode) == 0o600
     saved = json.loads(config.read_text(encoding="utf-8"))
     assert saved["proxy"]["server"] == {"url": url, "token": "server-secret", "timeout_seconds": 10}
-    assert saved["proxy"]["upstreams"] == {}
+    assert "providers" not in saved
 
     port = free_port()
     saved["proxy"]["port"] = port
@@ -407,3 +407,17 @@ def test_cli_init_rejects_a_bad_selection_without_creating_anything(tmp_path, ar
     result = _cli(tmp_path, *args)
     assert result.returncode == 2 and message in result.stderr
     assert not (tmp_path / "dusha").exists()
+
+
+def test_cli_init_moves_proxy_upstreams_to_providers_and_keeps_a_backup(tmp_path):
+    upstream = {"base_url": "https://a.invalid/v1", "key": "sk-a"}
+    proxy = {"server": {"url": "http://127.0.0.1:8765"}, "upstreams": {"a": upstream}}
+    config = _home(tmp_path, "nova", port=8765, proxy=proxy)
+    config.chmod(0o600)
+    original = config.read_text(encoding="utf-8")
+    result = _cli(tmp_path, "init", "nova")
+    saved = json.loads(config.read_text(encoding="utf-8"))
+    assert result.returncode == 0 and f"moved proxy.upstreams to providers in {config}" in result.stderr
+    assert saved["providers"] == {"a": upstream} and "upstreams" not in saved["proxy"]
+    assert (config.parent / "config.json.bak").read_text(encoding="utf-8") == original
+    assert stat.S_IMODE(config.stat().st_mode) == 0o600
