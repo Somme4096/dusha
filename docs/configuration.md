@@ -211,7 +211,7 @@ Optional. Set `base_url` and `model` to turn on semantic appraisal. The gateway 
 
 ## External plugins
 
-An external plugin is a directory under `plugins_dir` with `pyproject.toml` and a `[tool.dusha]` table. The gateway imports it into its own process. The [Plugin API](guide.md#plugin-api) describes the contract, and [examples/plugins](../examples/plugins/README.md) has two working external plugins as examples.
+An external plugin is a directory under `plugins_dir` with `pyproject.toml` and a `[tool.dusha]` table. The gateway imports it into its own process. The [Plugin API](guide.md#plugin-api) describes the contract, and [dusha-plugin-collections](https://github.com/Somme4096/dusha-plugin-collections) has working external plugins, such as `system_one` and `everos_memory`.
 
 | Key | Default | Notes |
 | --- | --- | --- |

@@ -51,7 +51,7 @@ artifacts = ["src/dusha/resources/*.json"]
 include = ["/src", "/docs", "/deploy", "/config.example.json", "/README.md", "/LICENSE"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "examples/plugins/*/tests"]
+testpaths = ["tests"]
 asyncio_mode = "auto"
 
 [tool.ruff]

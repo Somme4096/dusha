@@ -76,7 +76,7 @@ Dusha adds context "after" each message so cache can hit.
 - **Evergreen:** Long-term facts that you edit from the CLI and your companion edits through integration tools. No automatic extraction.
   - Think of it as a `USER.md` but with proper lifecycle management and duplication prevention.
 - **Affect:** A deterministic emotion engine that uses values like `{"anger": 0.35}` and shifts over time, including when the user goes unresponsive. Of course, you can make your own!
-  - Side note is that Message intent analysis can also be an external plugin. drop system_one plugin in examples/ or any other classifier plugin into the plugins directory, and its `decide` listener picks which emotion each user message moves.
+  - Side note is that Message intent analysis can also be an external plugin. drop the [system_one](https://github.com/Somme4096/dusha-plugin-collections/tree/main/system_one) plugin or any other classifier plugin into the plugins directory, and its `decide` listener picks which emotion each user message moves.
 - **Identity:** `identity.md`, or name your own.
 
 </details>
