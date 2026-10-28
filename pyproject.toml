@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dusha"
-version = "1.0.21"
+version = "1.1.21"
 description = "Dusha is a harness-agnostic, lightweight and extensible personality layer for LLM companions."
 readme = "README.md"
 requires-python = ">=3.11"
