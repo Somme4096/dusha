@@ -8,7 +8,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
-from . import affect, evergreen, identity, memo, memory, proactive
+from . import affect, evergreen, identity, legacy, memo, memory, proactive
 from . import external as _external
 from . import prompts as _prompts
 from . import providers as _providers
@@ -38,7 +38,8 @@ class CompanionService:
     def __init__(self, config: AppConfig):
         self.config = config
         self.database = Database(config.database_path)
-        self.prompts = _prompts.resolve_prompts(config.prompts, {*BUILTINS, *config.plugins})
+        prompts = _prompts.resolve_prompts(config.prompts, {*BUILTINS, *config.plugins})
+        self.prompts = legacy.PromptsView(prompts)
         self.messages = MemoryStore(self.database)
         self.transcripts = TranscriptTree(self.database)
         self._transcript_lock = threading.Lock()

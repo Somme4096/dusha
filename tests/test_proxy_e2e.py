@@ -453,7 +453,7 @@ async def test_proxy_queues_turns_while_the_server_is_down_and_sends_them_later(
         health = await client.get("/health")
         response = await _chat(client, [{"role": "user", "content": "Still there?"}])
         assert health.json()["server"]["status"] == "unreachable"
-        assert health.json()["providers"] == ["stub"]
+        assert health.json()["providers"] == health.json()["upstreams"] == ["stub"]
         assert response.status_code == 200
         assert provider.seen[0]["body"]["messages"] == [{"role": "user", "content": "Still there?"}]
         with run_app(api.create_app(config), port=port) as url:
@@ -687,3 +687,23 @@ def test_proxy_upstreams_still_load_as_providers_with_a_warning(tmp_path, caplog
         server = load_config(path)
     assert proxy.providers["a"].base_url == server.providers["a"].base_url == "https://a.invalid/v1"
     assert caplog.text.count("proxy.upstreams") == 2 and "2.0.21" in caplog.text
+
+
+def test_1x_python_names_still_work_with_a_deprecation_warning(tmp_path):
+    from dusha import config as config_module
+    from dusha.providers import Provider
+
+    path = tmp_path / "edge" / "config.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"providers": {"a": {"base_url": "https://a.invalid/v1"}}}), encoding="utf-8")
+    with pytest.warns(DeprecationWarning, match="Settings.upstreams is deprecated") as caught:
+        upstreams = settings.load(path).upstreams
+    with pytest.warns(DeprecationWarning, match=r"settings.Upstream is deprecated.*providers.Provider"):
+        upstream = settings.Upstream
+    with pytest.warns(DeprecationWarning, match="create_default_config is deprecated"):
+        created = config_module.create_default_config(tmp_path / "home")
+    assert upstreams["a"].base_url == "https://a.invalid/v1" and upstream is Provider
+    assert created == tmp_path / "home" / "config.json" and json.loads(created.read_text())["port"] == 8765
+    assert all("2.0.21" in str(item.message) for item in caught)
+    assert not hasattr(settings, "Nonexistent")
+

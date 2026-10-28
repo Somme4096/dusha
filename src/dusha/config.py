@@ -489,3 +489,7 @@ def _validate_packaged_defaults() -> None:
 
 
 _validate_packaged_defaults()
+
+
+def __getattr__(name: str) -> Any:
+    return legacy.alias(__name__, name)

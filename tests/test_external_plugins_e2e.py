@@ -599,3 +599,35 @@ def test_external_plugin_reads_the_companion_providers(tmp_path, monkeypatch):
     assert (seen["chat"], seen["base"]) == ("https://chat.invalid/v1", "https://stub.invalid/v1")
     assert seen["headers"] == {"authorization": "Bearer sk-stub", "x-team": "dusha"}
     assert "no provider named 'absent'" in seen["absent"]
+
+
+OLD_PROMPTS_SOURCE = '''\
+import json
+import pathlib
+
+
+def apply(ctx, config):
+    seen = {
+        "framing": ctx.prompts["proactive_framing"]["context_query"],
+        "blocks": ctx.prompts["context_blocks"],
+        "plugins": sorted(ctx.prompts["plugins"]),
+    }
+    try:
+        ctx.prompts["bogus"]
+    except KeyError:
+        seen["bogus"] = "missing"
+    pathlib.Path(config["marker"]).write_text(json.dumps(seen))
+'''
+
+
+def test_external_plugin_reads_1x_prompt_keys_with_a_deprecation_warning(tmp_path):
+    root = tmp_path / "plugins"
+    _write_suite(root, "old", OLD_PROMPTS_SOURCE, MANIFEST.format(name="old", inject='["prompts"]'))
+    marker = tmp_path / "seen.json"
+    config = _config(tmp_path, root, {"old": ExternalPluginConfig(options={"marker": str(marker)})})
+    with pytest.warns(DeprecationWarning, match=r"prompts\['proactive_framing'\] is deprecated"):
+        api.create_app(config)
+    seen = _marker(marker)
+    assert seen["framing"] == "recent conversation unresolved concern fear care"
+    assert seen["blocks"] == {"memo_open_delimiter": "<memo_notes>", "memo_close_delimiter": "</memo_notes>"}
+    assert "proactive" in seen["plugins"] and seen["bogus"] == "missing"

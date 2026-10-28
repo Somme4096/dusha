@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import copy
+import importlib
 import json
 import logging
 import os
 import shutil
+import warnings
 from pathlib import Path
 from typing import Any
 
-from .homes import DOCS
+from .homes import CONFIG_FILE, DOCS
 from .resources import loads_strict
 
 # Old layouts that still load during their deprecation. Remove each entry in the version it names.
@@ -96,3 +98,62 @@ def warn_config(logger: logging.Logger, path: Path, found: list[str]) -> None:
 def upgrade_config_file(path: Path) -> Path | None:
     upgraded, found = upgrade_config(loads_strict(path.read_text(encoding="utf-8"), source=str(path)))
     return _rewrite(path, upgraded) if found else None
+
+
+# 1.x Python names, removed in 2.0.21. Each use warns.
+_ALIASES: dict[str, dict[str, tuple[str, str]]] = {
+    "dusha.client.settings": {
+        "Upstream": ("dusha.providers", "Provider"),
+        "save_upstream": ("dusha.client.settings", "save_provider"),
+        "PLACEHOLDER": ("dusha.providers", "PLACEHOLDER"),
+        "PROTOCOLS": ("dusha.providers", "PROTOCOLS"),
+        "AUTH_STYLES": ("dusha.providers", "AUTH_STYLES"),
+        "PROXY_ROUTES": ("dusha.providers", "RESERVED"),
+        "http_url": ("dusha.providers", "http_url"),
+    },
+    "dusha.config": {"create_default_config": ("dusha.legacy", "create_default_config")},
+}
+
+
+def _deprecated(old: str, new: str) -> None:
+    warnings.warn(f"{old} is deprecated and goes away in 2.0.21. Use {new}", DeprecationWarning, stacklevel=3)
+
+
+def alias(module: str, name: str) -> Any:
+    if name not in _ALIASES.get(module, {}):
+        raise AttributeError(f"module {module!r} has no attribute {name!r}")
+    target, attribute = _ALIASES[module][name]
+    _deprecated(f"{module}.{name}", f"{target}.{attribute}")
+    return getattr(importlib.import_module(target), attribute)
+
+
+def upstreams(settings: Any) -> dict[str, Any]:
+    _deprecated("Settings.upstreams", "Settings.providers")
+    return settings.providers
+
+
+def proxy_health(providers: dict[str, Any]) -> dict[str, Any]:
+    return {"upstreams": sorted(providers)}
+
+
+def create_default_config(home: Path) -> Path:
+    from .config import ensure_server_config
+
+    path = home / CONFIG_FILE
+    if path.exists():
+        raise FileExistsError(path)
+    ensure_server_config(home)
+    return path
+
+
+class PromptsView(dict):
+    def __missing__(self, key: str) -> Any:
+        old = {path: new for path, new in _PROMPTS_V3.items() if path[0] == key and new is not None}
+        if not old:
+            raise KeyError(key)
+        _deprecated(f"prompts[{key!r}]", "prompts['plugins'][<name>] or dusha.prompts.section()")
+        plugins = self["plugins"]
+        if (key,) in old:
+            return plugins[old[(key,)][0]][old[(key,)][1]]
+        return {path[1]: plugins[new[0]][new[1]] for path, new in old.items()}
+

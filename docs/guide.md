@@ -158,6 +158,8 @@ Since 1.1.21, prompt text lives under `plugins`, keyed by the plugin that reads 
 
 Since 1.1.21, provider profiles live in the top-level `providers` section, so server plugins can use them too. `proxy.upstreams` still loads with a warning until 2.0.21. `dusha init <name>` moves it and keeps the original as `config.json.bak`, or move the section by hand. `dusha proxy <name> auth login`, `status`, and `logout` became `dusha provider add`, `list`, and `remove`.
 
+Plugins that used the 1.x Python names keep working with a `DeprecationWarning` until 2.0.21: `Settings.upstreams` is now `Settings.providers`, `dusha.client.settings.Upstream` is now `dusha.providers.Provider`, `save_upstream` is now `save_provider`, and `dusha.config.create_default_config` is now `ensure_server_config`. Reading a 1.x key such as `ctx.prompts["proactive_framing"]` returns the text from its new place under `plugins`. The proxy's `/health` returns `providers` next to the old `upstreams` until then.
+
 ## Troubleshooting
 
 | Symptom | Fix |

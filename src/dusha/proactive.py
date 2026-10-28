@@ -137,6 +137,7 @@ class ProactiveEngine:
         database.migrate(SCHEMA)
         self.rules = config
         self.timezone = ZoneInfo(timezone)
+        self.prompts = prompts
         self.text = _prompts.section(prompts, name, _PROMPTS, _TEMPLATES)
         self.affect = affect
         self.companion = companion

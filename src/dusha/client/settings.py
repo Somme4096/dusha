@@ -41,6 +41,13 @@ class Settings:
     providers: dict[str, Provider] = field(default_factory=dict)
 
 
+Settings.upstreams = property(legacy.upstreams)
+
+
+def __getattr__(name: str) -> Any:
+    return legacy.alias(__name__, name)
+
+
 def _object(value: Any, label: str, allowed: set[str]) -> dict[str, Any]:
     if value is None:
         return {}

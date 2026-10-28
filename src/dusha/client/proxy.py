@@ -16,6 +16,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 from starlette.background import BackgroundTask
 
+from .. import legacy as _legacy
 from ..providers import Provider
 from . import protocols as _protocols
 from .outbox import Outbox, retryable
@@ -207,6 +208,7 @@ def create_proxy_app(cfg: Settings) -> FastAPI:
             "status": "ok",
             "server": {"url": server.url, "status": await server.status()},
             "providers": sorted(cfg.providers),
+            **_legacy.proxy_health(cfg.providers),
         }
 
     async def send(
