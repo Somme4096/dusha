@@ -115,6 +115,7 @@ dusha memory reindex
 | Hook | Receives |
 | --- | --- |
 | `message` | The stored row: `id`, `conversation_id`, `role`, `text`, `content`, `external_id`, `occurred_at`, `ingested_at`, `harness`, `external_conversation_id`, `route`. An exception is logged and the message is not redelivered. |
+| `claim` | A user message about to be stored: `harness`, `conversation_id`, `text`, `route`. A non-null answer stores it as an `event`, so `message` listeners such as affect and proactive treat it as no user turn. |
 | `context` | `query`, `harness`, `conversation_id`, `exclude_message_ids`, and `include_recent`. A returned `Block` carries `name`, `text`, `data`, `session` records, and an `instruction` for the state block. |
 | `decide` | `message`, `emotions` (the resolved dimensions), `state` (the affect snapshot), and `instruction`. |
 | `<event>` | The arguments passed to `emit` or `collect`. Custom events stay in the gateway process, so they reach every active plugin, including the emitter's own listeners. |

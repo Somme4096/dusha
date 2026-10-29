@@ -75,6 +75,8 @@ def apply(ctx, config):
     ctx.on("message", lambda message: on_message(ctx, message, config))
     ctx.on("context", lambda request: on_context(ctx, request, config))
     ctx.on("decide", lambda request: decide(request, config))
+    if config.get("claim"):
+        ctx.on("claim", lambda offer: on_claim(offer, config))
     if config.get("listen"):
         ctx.on("probe_event", lambda payload: on_probe_event(payload, config))
     ctx.on_dispose(lambda: _note(config, "close", True))
@@ -83,6 +85,11 @@ def apply(ctx, config):
 def on_probe_event(payload, config):
     _note(config, "events", payload)
     return {"seen": payload["text"]}
+
+
+def on_claim(offer, config):
+    _note(config, "claims", offer)
+    return True if config["claim"] in offer["text"] else None
 
 
 def on_message(ctx, message, config):
@@ -395,6 +402,25 @@ async def test_http_external_plugin_custom_events_cross_plugins(tmp_path, plugin
     results = json.loads(collected["text"])
     assert results["probe"] == {"seen": "lantern"}
     assert results["probe_two"] == {"seen": "lantern"}
+
+
+async def test_http_claimed_user_message_is_stored_as_an_event_and_leaves_affect_alone(tmp_path, plugins_dir):
+    marker = tmp_path / "probe.json"
+    async with _client(_config(tmp_path, plugins_dir, marker=str(marker), claim="<mine/>")) as client:
+        before = await _base(client)
+        claimed = await _post(client, "<mine/> write to her")
+        after = (await client.get("/state/v1/affect")).json()
+        plain = await _post(client, "hello")
+    seen = _marker(marker)
+    assert seen["claims"][0] == {
+        "harness": "e2e", "conversation_id": "one", "text": "<mine/> write to her", "route": "",
+    }
+    assert claimed.get("affect") is None
+    assert after["base"] == pytest.approx(before, abs=1e-3)
+    assert after["last_user_message_at"] is None
+    roles = {item["id"]: item["role"] for item in seen["messages"]}
+    assert roles == {claimed["id"]: "event", plain["id"]: "user"}
+    assert len(seen["claims"]) == 2
 
 
 async def test_http_external_plugin_reports_its_name_and_error(tmp_path, plugins_dir):

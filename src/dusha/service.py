@@ -110,6 +110,15 @@ class CompanionService:
         occurred_at: str | datetime | None = None,
         source_payload: Any | None = None,
     ) -> dict[str, Any]:
+        if role == "user":
+            offer = {
+                "harness": harness,
+                "conversation_id": conversation_id,
+                "text": text_from_content(content),
+                "route": route,
+            }
+            if self.registry.collect("claim", offer):
+                role = "event"
         message = self.messages.ingest(
             harness=harness,
             conversation_id=conversation_id,
