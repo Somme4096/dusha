@@ -172,7 +172,7 @@ Plugins that used the 1.x Python names keep working with a `DeprecationWarning` 
 | Startup fails on an unknown `api_token_env` field | Rename it to `api_token` and put the token value there. |
 | Startup fails on an unknown `memory_plugin` or `decision` field | Move the external plugin under [`plugins`](configuration.md#external-plugins) and `decision.increment` to `plugins.affect.increment`. |
 | Requests return `401` | Send `X-Companion-Token` with the token value. |
-| A command fails with `cannot reach the server` | Start `dusha serve <name>`, or check `proxy.server.url` and `port` in the companion's `config.json`. |
+| A command fails with `cannot connect to the server` | Start `dusha serve <name>`, or check `proxy.server.url` and `port` in the companion's `config.json`. |
 | A plugin's command ends in `No such command` | The plugin is disabled or inactive, see `dusha plugins`. |
 | `provider add` fails with `cannot load the models.dev catalog` | The machine is offline and has no cached catalog. Connect once, or add the profile to `providers` by hand. |
 | The provider rejects the harness's key | With a `key` in the profile, the proxy sends that key instead. Check it with `dusha provider list` and add it again. |

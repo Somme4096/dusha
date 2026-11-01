@@ -14,6 +14,7 @@ import httpx
 import pytest
 
 from dusha import api
+from dusha.client import settings
 from dusha.config import load_config
 
 SRC = str(Path(__file__).parents[1] / "src")
@@ -151,8 +152,29 @@ def test_cli_help_works_offline_from_the_cached_command_list(tmp_path, free_port
     assert online.returncode == offline.returncode == 0
     assert offline.stdout == online.stdout and "done" in offline.stdout
     assert "using the cached command list" in offline.stderr
-    assert run.returncode == 1 and "cannot reach the server at http://127.0.0.1:" in run.stderr
+    assert run.returncode == 1
+    assert re.search(r"Error: cannot connect to .*127\.0\.0\.1:\d+ \(refused\)\.", run.stderr)
     assert moved.returncode == 0 and "memo" not in moved.stdout and "serve" in moved.stdout
+    assert "Plugin commands are hidden." in moved.stderr
+
+
+def test_cli_gives_up_quickly_on_a_server_that_drops_packets(tmp_path):
+    url = "http://10.255.255.1:9"
+    path = _home(tmp_path, "nova", proxy={"server": {"url": url}})
+    _, cache = settings.connection(path)
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    spec = {"name": "list", "group": "memo", "args": []}
+    cache.write_text(json.dumps({"url": url, "manifest": {"commands": [spec]}}), encoding="utf-8")
+    started = time.monotonic()
+    result = _cli(tmp_path, "memo", "list")
+    assert time.monotonic() - started < 5.5
+    assert result.returncode == 1 and "cannot connect to the server at" in result.stderr
+
+
+def test_cli_names_a_host_that_does_not_exist(tmp_path):
+    _home(tmp_path, "nova", proxy={"server": {"url": "http://no-such-host.invalid"}})
+    result = _cli(tmp_path, "memo", "list")
+    assert result.returncode == 1 and "(host not found)." in result.stderr
 
 
 def test_cli_resolves_companions_in_the_documented_order(tmp_path, free_port):

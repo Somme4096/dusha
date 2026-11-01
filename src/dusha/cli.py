@@ -72,10 +72,14 @@ def _param(spec: dict[str, Any]) -> click.Parameter:
     return click.Argument([name], type=value, required=required, nargs=-1 if repeated else 1)
 
 
-def _command(spec: dict[str, Any], connection: settings.Connection) -> click.Command:
+def _command(
+    spec: dict[str, Any], connection: settings.Connection, offline: remote.Unreachable | None
+) -> click.Command:
     path = [part for part in (spec.get("group"), spec["name"]) if part]
 
     def callback(**values: Any) -> None:
+        if offline:
+            raise click.ClickException(str(offline))
         values = {key: list(value) if isinstance(value, tuple) else value for key, value in values.items()}
         _print(_remote(remote.run, connection, path, values))
 
@@ -83,7 +87,9 @@ def _command(spec: dict[str, Any], connection: settings.Connection) -> click.Com
     return click.Command(spec["name"], callback=callback, params=params, help=spec.get("help", ""))
 
 
-def _build(manifest: dict[str, Any], connection: settings.Connection) -> dict[str, click.Command]:
+def _build(
+    manifest: dict[str, Any], connection: settings.Connection, offline: remote.Unreachable | None
+) -> dict[str, click.Command]:
     built: dict[str, click.Command] = {}
     helps = manifest.get("groups", {})
     for spec in manifest.get("commands", []):
@@ -91,11 +97,11 @@ def _build(manifest: dict[str, Any], connection: settings.Connection) -> dict[st
         if (group or spec["name"]) in STATIC:
             continue
         if not group:
-            built.setdefault(spec["name"], _command(spec, connection))
+            built.setdefault(spec["name"], _command(spec, connection, offline))
             continue
         target = built.setdefault(group, click.Group(group, help=helps.get(group, "")))
         if isinstance(target, click.Group):
-            target.add_command(_command(spec, connection))
+            target.add_command(_command(spec, connection, offline))
     return built
 
 
@@ -105,10 +111,11 @@ class Root(click.Group):
         if _BUILT not in root.meta:
             try:
                 connection, cache = _client(root)
-                manifest, warning = _remote(remote.manifest, connection, cache)
-                if warning:
-                    click.echo(warning, err=True)
-                root.meta[_BUILT] = _build(manifest, connection)
+                manifest, stale = _remote(remote.manifest, connection, cache)
+                if stale:
+                    click.echo(f"using the cached command list, {stale}", err=True)
+                offline = stale if isinstance(stale, remote.Unreachable) else None
+                root.meta[_BUILT] = _build(manifest, connection, offline)
                 root.meta[_CORE] = frozenset(manifest.get("core", []))
             except click.ClickException as error:
                 root.meta[_BUILT] = error
@@ -130,6 +137,9 @@ class Root(click.Group):
     def format_commands(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
         sections: dict[str, list[tuple[str, str]]] = {"Core commands": [], "Plugin commands": []}
         names = self.list_commands(ctx)
+        failed = ctx.find_root().meta.get(_BUILT)
+        if isinstance(failed, click.ClickException) and isinstance(failed.__cause__, remote.Unreachable):
+            click.echo(f"{failed.format_message()} Plugin commands are hidden.", err=True)
         core = {*self.commands, *ctx.find_root().meta.get(_CORE, ())}
         limit = formatter.width - 6 - max(map(len, names), default=0)
         for name in names:
