@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 import sys
 from collections.abc import Callable
+from gettext import gettext
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +20,69 @@ _TYPES = {"str": click.STRING, "int": click.INT, "float": click.FLOAT}
 _BUILT = "dusha.commands"
 _CORE = "dusha.core"
 _PROXY_NAME = "dusha.proxy.name"
+_HEADING, _TERM, _DONE, _WARNING, _ERROR = "green", "cyan", "green", "yellow", "red"
+
+
+def _paint(text: str, **style: Any) -> str:
+    return text if os.environ.get("NO_COLOR") else click.style(text, **style)
+
+
+def _label(word: str, color: str) -> str:
+    return f"{_paint(word, fg=color, bold=True)}{_paint(':', bold=True)}"
+
+
+def _warn(text: str) -> str:
+    return f"{_label('warning', _WARNING)} {_paint(text, bold=True)}"
+
+
+def _done(text: str) -> str:
+    return _paint(text, fg=_DONE)
+
+
+def _ask(text: str) -> str:
+    return f"{_paint('?', fg=_WARNING, bold=True)} {_paint(text, bold=True)}"
+
+
+def _prompt_style() -> Any:
+    import questionary
+
+    return questionary.Style([
+        ("qmark", f"fg:ansi{_WARNING} bold"),
+        ("answer", f"fg:ansi{_TERM}"),
+        ("pointer", f"fg:ansi{_TERM} bold"),
+        ("highlighted", f"fg:ansi{_TERM} bold"),
+        ("search_success", f"noinherit fg:ansi{_DONE} bold"),
+        ("search_none", f"noinherit fg:ansi{_ERROR} bold"),
+    ])
+
+
+def _term(term: str) -> str:
+    def paint(piece: str) -> str:
+        name = piece.startswith("-") or not term.startswith("-")
+        return _paint(piece, fg=_TERM, bold=True if name else None)
+
+    pieces = re.split(r"(, | / | )", term)
+    return "".join(piece if index % 2 else paint(piece) for index, piece in enumerate(pieces))
+
+
+class Styled(click.HelpFormatter):
+    def write_usage(self, prog: str, args: str = "", prefix: str | None = None) -> None:
+        label = _paint(prefix or "Usage: ", fg=_HEADING, bold=True)
+        super().write_usage(_paint(prog, fg=_TERM, bold=True), args and _paint(args, fg=_TERM), label)
+
+    def write_heading(self, heading: str) -> None:
+        self.write(f"{'':>{self.current_indent}}{_paint(heading + ':', fg=_HEADING, bold=True)}\n")
+
+    def write_dl(self, rows: Any, col_max: int = 30, col_spacing: int = 2) -> None:
+        super().write_dl([(_term(term), text) for term, text in rows], col_max, col_spacing)
+
+
+def _translate(text: str) -> str:
+    return gettext(text).replace("Error:", _label("error", _ERROR), 1)
+
+
+click.Context.formatter_class = Styled
+click.exceptions._ = _translate
 
 
 class ConfigError(click.ClickException):
@@ -113,7 +179,7 @@ class Root(click.Group):
                 connection, cache = _client(root)
                 manifest, stale = _remote(remote.manifest, connection, cache)
                 if stale:
-                    click.echo(f"using the cached command list, {stale}", err=True)
+                    click.echo(_warn(f"using the cached command list, {stale}"), err=True)
                 offline = stale if isinstance(stale, remote.Unreachable) else None
                 root.meta[_BUILT] = _build(manifest, connection, offline)
                 root.meta[_CORE] = frozenset(manifest.get("core", []))
@@ -139,7 +205,7 @@ class Root(click.Group):
         names = self.list_commands(ctx)
         failed = ctx.find_root().meta.get(_BUILT)
         if isinstance(failed, click.ClickException) and isinstance(failed.__cause__, remote.Unreachable):
-            click.echo(f"{failed.format_message()} Plugin commands are hidden.", err=True)
+            click.echo(_warn(f"{failed.format_message()} Plugin commands are hidden."), err=True)
         core = {*self.commands, *ctx.find_root().meta.get(_CORE, ())}
         limit = formatter.width - 6 - max(map(len, names), default=0)
         for name in names:
@@ -187,19 +253,19 @@ def _init_serve(home: Path) -> bool:
     from .config import ensure_server_config
 
     if done := ensure_server_config(home):
-        click.echo(done, err=True)
+        click.echo(_done(done), err=True)
     return bool(done)
 
 
 def _init_proxy(path: Path, *, interactive: bool, url: str = "", token: str = "") -> bool:
     if url:
-        click.echo(f"Saved {settings.save_server(path, url, token)}.", err=True)
+        click.echo(_done(f"Saved {settings.save_server(path, url, token)}."), err=True)
     elif path.exists() and settings.server_saved(path):
         return False
     elif interactive:
         _connect(path)
     elif (local := settings.local_server(path)) is not None:
-        click.echo(f"Saved {settings.save_server(path, local.url, '')}.", err=True)
+        click.echo(_done(f"Saved {settings.save_server(path, local.url, '')}."), err=True)
     else:
         _setup(path)
     return True
@@ -210,11 +276,11 @@ def _upgrade(path: Path) -> bool:
 
     changed = False
     if backup := legacy.upgrade_config_file(path):
-        click.echo(f"moved proxy.upstreams to providers in {path}, the old file is {backup}", err=True)
+        click.echo(_done(f"moved proxy.upstreams to providers in {path}, the old file is {backup}"), err=True)
         changed = True
     prompts = load_config(path).prompts.path if settings.local_server(path) is not None else ""
     if prompts and (backup := legacy.upgrade_prompts_file(Path(prompts))):
-        click.echo(f"upgraded {prompts} to prompts schema 4, the old file is {backup}", err=True)
+        click.echo(_done(f"upgraded {prompts} to prompts schema 4, the old file is {backup}"), err=True)
         changed = True
     return changed
 
@@ -261,12 +327,12 @@ def _url(value: str) -> str:
 
 def _setup(path: Path) -> None:
     click.echo(f"No server saved for {path.parent.name} yet.", err=True)
-    url = click.prompt("Server URL", default=settings.SERVER_URL, value_proc=_url, err=True)
+    url = click.prompt(_ask("Server URL"), default=settings.SERVER_URL, value_proc=_url, err=True)
     hidden = sys.stdin.isatty()
     token = click.prompt(
-        "Server token, empty for none", default="", show_default=False, hide_input=hidden, err=True
+        _ask("Server token, empty for none"), default="", show_default=False, hide_input=hidden, err=True
     )
-    click.echo(f"created {settings.create(path, url, token)}", err=True)
+    click.echo(_done(f"created {settings.create(path, url, token)}"), err=True)
 
 
 def _checked(value: str) -> bool | str:
@@ -282,30 +348,33 @@ def _connect(path: Path) -> None:
 
     local = settings.local_server(path)
     url = settings.SERVER_URL
+    style = _prompt_style()
     click.echo(f"{path.parent.name} isn't connected to a server yet.", err=True)
     while True:
         here = local is not None and questionary.select("Connect to:", choices=[
             questionary.Choice(f"The server on this machine ({local.url})", value=True),
             questionary.Choice("Another server", value=False),
-        ]).unsafe_ask()
+        ], style=style).unsafe_ask()
         if here:
             url, token, probe = local.url, "", local
         else:
-            typed = questionary.text("Server URL", default=url, validate=_checked).unsafe_ask()
+            typed = questionary.text("Server URL", default=url, validate=_checked, style=style).unsafe_ask()
             url = http_url(typed.strip(), "the server URL")
-            token = questionary.password("Server token, empty for none").unsafe_ask()
+            token = questionary.password("Server token, empty for none", style=style).unsafe_ask()
             probe = settings.Connection(url, token)
         try:
             remote.plugins(probe)
         except remote.RemoteError as error:
-            click.echo(str(error), err=True)
-            choice = questionary.select("What now?", choices=["Try again", "Save anyway"]).unsafe_ask()
+            click.echo(_warn(str(error)), err=True)
+            choice = questionary.select(
+                "What now?", choices=["Try again", "Save anyway"], style=style
+            ).unsafe_ask()
             if choice == "Try again":
                 continue
         else:
-            click.echo(f"Connected to {url}.", err=True)
+            click.echo(_done(f"Connected to {url}."), err=True)
         break
-    click.echo(f"Saved {settings.save_server(path, url, token)}.", err=True)
+    click.echo(_done(f"Saved {settings.save_server(path, url, token)}."), err=True)
 
 
 class Proxy(click.Group):
@@ -356,7 +425,7 @@ def _pick(found: dict[str, presets.Preset]) -> str:
 
     choices = [questionary.Choice(f"{item.name} ({item.id})", value=item.id) for item in found.values()]
     return questionary.select(
-        "Provider", choices=choices, use_search_filter=True, use_jk_keys=False
+        "Provider", choices=choices, use_search_filter=True, use_jk_keys=False, style=_prompt_style()
     ).unsafe_ask()
 
 
@@ -378,7 +447,7 @@ def _add(path: Path, provider: str | None, profile: str | None, refresh: bool) -
     except catalog.CatalogError as error:
         raise click.ClickException(str(error)) from error
     if warning:
-        click.echo(warning, err=True)
+        click.echo(_warn(warning), err=True)
     found = presets.build(data)
     interactive = sys.stdin.isatty()
     if provider is None:
@@ -390,18 +459,18 @@ def _add(path: Path, provider: str | None, profile: str | None, refresh: bool) -
     preset, name = found[provider], profile or provider
     current = _config(lambda: settings.load(path, environ=False))
     if name in current.providers:
-        click.confirm(f"Replace the provider {name}?", abort=True, err=True)
-    values = {variable: click.prompt(variable, err=True) for variable in preset.variables}
+        click.confirm(_ask(f"Replace the provider {name}?"), abort=True, err=True)
+    values = {variable: click.prompt(_ask(variable), err=True) for variable in preset.variables}
     fallback = f"{{env:{preset.env}}}" if preset.env else ""
     key = click.prompt(
-        f"API key for {preset.name}, Enter for {fallback or 'none'}", default="", show_default=False,
+        _ask(f"API key for {preset.name}, Enter for {fallback or 'none'}"), default="", show_default=False,
         hide_input=interactive, err=True,
     )
     raw = preset.profile(key or fallback, values)
     _config(lambda: settings.save_provider(path, name, raw))
     companion, host = path.parent.name, f"[{current.host}]" if ":" in current.host else current.host
     harness = f"http://{host}:{current.port}/{name}"
-    click.echo(f"Success!\nNew provider {name} added to {companion} at {harness}.", err=True)
+    click.echo(_done(f"Success!\nNew provider {name} added to {companion} at {harness}."), err=True)
     click.echo(f"Restart dusha proxy {companion} and dusha serve {companion} to use it.", err=True)
 
 
@@ -409,7 +478,7 @@ def _remove(path: Path, profile: str) -> None:
     if profile not in _config(lambda: settings.load(path, environ=False)).providers:
         raise click.ClickException(f"No provider named {profile!r}")
     _config(lambda: settings.save_provider(path, profile, None))
-    click.echo(f"Removed {profile} from {path.parent.name}", err=True)
+    click.echo(_done(f"Removed {profile} from {path.parent.name}"), err=True)
 
 
 def _masked(key: str) -> str:
@@ -459,7 +528,7 @@ def provider_list(ctx: click.Context) -> None:
 # Deprecated dusha proxy <name> auth, removed in 2.0.21.
 @proxy.group("auth", hidden=True)
 def auth() -> None:
-    click.echo("dusha proxy auth is deprecated and goes away in 2.0.21. Use dusha provider.", err=True)
+    click.echo(_warn("dusha proxy auth is deprecated and goes away in 2.0.21. Use dusha provider."), err=True)
 
 
 @auth.command("login")

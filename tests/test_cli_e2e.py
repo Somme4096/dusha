@@ -153,7 +153,7 @@ def test_cli_help_works_offline_from_the_cached_command_list(tmp_path, free_port
     assert offline.stdout == online.stdout and "done" in offline.stdout
     assert "using the cached command list" in offline.stderr
     assert run.returncode == 1
-    assert re.search(r"Error: cannot connect to .*127\.0\.0\.1:\d+ \(refused\)\.", run.stderr)
+    assert re.search(r"error: cannot connect to .*127\.0\.0\.1:\d+ \(refused\)\.", run.stderr)
     assert moved.returncode == 0 and "memo" not in moved.stdout and "serve" in moved.stdout
     assert "Plugin commands are hidden." in moved.stderr
 

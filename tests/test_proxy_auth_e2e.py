@@ -172,13 +172,13 @@ def test_proxy_auth_still_works_with_a_deprecation_notice(tmp_path, stub):
 
 
 class Terminal:
-    def __init__(self, root: Path, *args: str):
+    def __init__(self, root: Path, *args: str, **env: str):
         import pty
 
         self.fd, terminal = pty.openpty()
         self.child = subprocess.Popen(
             [sys.executable, "-m", "dusha.cli", *args], stdin=terminal, stdout=terminal, stderr=terminal,
-            env=_env(root), start_new_session=True,
+            env={**_env(root), "NO_COLOR": "", **env}, start_new_session=True,
         )
         os.close(terminal)
         self.seen = self.output = b""
@@ -231,6 +231,32 @@ def test_provider_add_offers_a_searchable_menu_in_a_terminal(tmp_path, stub):
     assert profile == {"base_url": "https://team.vault.invalid/v1", "key": "sk-typed", "auth": "bearer"}
 
 
+@needs_terminal
+def test_prompts_share_one_palette_and_no_color_turns_it_off(tmp_path, stub):
+    _catalog(tmp_path, stub[0])
+    _home(tmp_path, "nova", proxy={"server": {"url": DEAD_SERVER}})
+
+    def add(*, replace: bool, **env: str) -> bytes:
+        terminal = Terminal(tmp_path, "provider", "add", "--profile", "shared", **env)
+        terminal.expect("Stub AI")
+        terminal.send("stub\r")
+        if replace:
+            terminal.expect("Replace the provider shared?")
+            terminal.send("y\r")
+        terminal.expect("API key")
+        terminal.send("sk-typed\r")
+        terminal.expect("Restart dusha proxy nova")
+        assert terminal.close(wait=True) == 0
+        return terminal.output
+
+    plain, colored = add(replace=False, NO_COLOR="1"), add(replace=True)
+    assert b"\x1b[0;33;1m?" in colored and b"\x1b[33m\x1b[1m?" in colored
+    assert b"\x1b[0;36;1m" in colored and b"\x1b[32mSuccess!" in colored and b"38;5" not in colored
+    assert not any(code in plain for code in (b"[33m", b"[36m", b"[32m", b";33", b";36", b"38;5"))
+    assert b"\x1b[33m\x1b[1m?\x1b[0m \x1b[1mReplace the provider shared?" in colored
+    assert b"sk-typed" not in colored + plain
+
+
 @pytest.fixture
 def serving(run_app):
     @contextmanager
@@ -250,6 +276,30 @@ def _health(port: int) -> dict:
         except httpx.HTTPError:
             assert time.monotonic() < deadline, "the proxy never answered"
             time.sleep(0.2)
+
+
+@needs_terminal
+def test_help_and_errors_are_colored_only_on_a_terminal(tmp_path, free_port, serving):
+    def shown(*args: str, until: str, **env: str) -> bytes:
+        terminal = Terminal(tmp_path, *args, **env)
+        terminal.expect(until)
+        terminal.close(wait=True)
+        return terminal.output
+
+    path = _home(tmp_path, "nova", port=free_port())
+    with serving(path):
+        root = shown("--help", until="Plugin commands")
+        remote = shown("memory", "--help", until="recent")
+        blank = shown("--help", until="Plugin commands", NO_COLOR="1")
+        missing = shown("no-such-command", until="No such command")
+        piped = _cli(tmp_path, "memory", "--help")
+    assert b"\x1b[32m\x1b[1mCore commands:\x1b[0m" in root and b"\x1b[36m\x1b[1mhealth\x1b[0m" in root
+    assert b"\x1b[32m\x1b[1mPlugin commands:\x1b[0m" in root
+    assert b"\x1b[36m\x1b[1m--companion\x1b[0m \x1b[36mTEXT\x1b[0m" in root
+    assert b"\x1b[32m\x1b[1mUsage: \x1b[0m\x1b[36m\x1b[1m" in remote and b"\x1b[36m\x1b[1mrecent" in remote
+    assert b"\x1b[" not in blank and b"Core commands:" in blank
+    assert b"\x1b[31m\x1b[1merror\x1b[0m\x1b[1m:\x1b[0m No such command" in missing
+    assert piped.returncode == 0 and "\x1b[" not in piped.stdout + piped.stderr and "Usage: " in piped.stdout
 
 
 @needs_terminal
