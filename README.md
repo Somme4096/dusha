@@ -3,16 +3,16 @@
 > [!NOTE]
 > *This README.md is proudly written by a human (and a little bit by Claude (˶>⩊<˶)❤️)*
 
-*Dusha* (Russian: душа, [dʊˈʂa], "soul") is a small HTTP API and a proxy that stores messages, identity, memories, affect state—anything makes your agent yours— outside your harness. Any client that can add a custom provider are able to use it, so you can hop between harnesses (or even use multiple at once!) and still get the same soul on the other side.
+*Dusha* (Russian: душа, [dʊˈʂa], "soul") is a small HTTP API and a proxy that stores messages, identity, memories, affect state—anything makes your LLM companion yours—outside your harness. Any client that can add a custom provider are able to use it, so you can hop between harnesses (or even use multiple at once!) and still get the same soul on the other side.
 
-Almost everything is configurable through JSON. For things that aren't, dusha is also built on [everything-is-a-plugin](https://github.com/deepseek-ai/deepseek-harness) architecture, so you can easily wire an external memory provider, or do crazy things like writing your own emotion system!
+Almost everything is configurable through JSON. For things that aren't, dusha is also built on [everything-is-a-plugin](https://github.com/deepseek-ai/deepseek-harness) architecture, so you can easily wire an external memory provider, or do ~~crazy~~ fun things like writing your own emotion system!
 
 ## Quickstart
 
 
 ```sh
 uv tool install dusha
-dusha init <name>
+dusha init <name> --serve # Also you can use --proxy for proxy setup, or without flags for generating both
 dusha serve <name>
 ```
 
