@@ -565,7 +565,9 @@ async def test_http_deltas_apply_after_the_decision_sees_the_earlier_state(tmp_p
     assert _marker(marker)["decide"][-1]["state"]["elation"] == pytest.approx(before["elation"], abs=1e-3)
 
 
-async def test_http_appraisal_lowers_dimensions_the_decision_did_not_choose(tmp_path, plugins_dir, embedding_stub):
+async def test_http_appraisal_lowers_dimensions_the_decision_did_not_choose(
+    tmp_path, plugins_dir, embedding_stub
+):
     embedding_stub.says["You can trust me."] = "reassuring"
     async with _client(_config(tmp_path, plugins_dir, mode="deltas", deltas={"anxiety": 0.3})) as client:
         await _post(client, "Something feels off")
