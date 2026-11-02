@@ -23,6 +23,8 @@ from .transcript import ROLES, TranscriptTree, transcript_key
 
 logger = logging.getLogger("dusha")
 
+# A route harnesses send when a turn has nowhere to deliver to, for clients that need a non-empty value.
+NO_ROUTE = "-"
 BUILTINS = {plugin.name: plugin for plugin in (identity, memory, evergreen, memo, affect, proactive)}
 
 
@@ -110,6 +112,7 @@ class CompanionService:
         occurred_at: str | datetime | None = None,
         source_payload: Any | None = None,
     ) -> dict[str, Any]:
+        route = "" if route == NO_ROUTE else route
         if role == "user":
             offer = {
                 "harness": harness,

@@ -101,7 +101,7 @@ The injection has no overall cap. Each part has its own limit in [config.json](c
 
 ### 3. Call the provider
 
-Send the provider request yourself. Pass the same `route` on ingest as the return address for proactive messages.
+Send the provider request yourself. Pass the same `route` on ingest as the return address for proactive messages. `-` means no return address, the same as an empty `route`, for clients that can't send an empty value.
 
 ### 4. Archive the assistant reply
 
@@ -392,7 +392,7 @@ Routing headers are optional:
 | --- | --- | --- |
 | `X-Conversation-Id` | Inferred | Names the conversation. See [conversation matching](#conversation-matching). |
 | `X-Harness` | The profile name | Labels stored messages. |
-| `X-Companion-Route` | `""` | Return address for proactive messages. |
+| `X-Companion-Route` | `""` | Return address for proactive messages. `-` means none. |
 
 ### Conversation matching
 

@@ -137,3 +137,17 @@ async def test_http_raised_fear_wins_over_silence_as_the_reason(config, embeddin
         event = await _evaluate(client)
     assert event["reason"] == "fear"
     assert event["ruling_feeling"]["dimension"] == "fear"
+
+
+async def test_a_turn_with_no_route_never_becomes_the_proactive_target(config):
+    async with _running(config) as client:
+        await _silent_for(client, 5)
+        response = await client.post(
+            "/state/v1/messages",
+            json={"harness": "spawn", "conversation_id": "spawn-1", "route": "-", "role": "assistant",
+                  "content": "Done with the chores."},
+        )
+        stored = (await client.get(f"/state/v1/messages/{response.json()['id']}")).json()
+        assert stored["route"] == ""
+        event = await _evaluate(client)
+        assert event["target"]["route"] == ROUTE
