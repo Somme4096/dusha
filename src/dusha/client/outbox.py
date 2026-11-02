@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import fcntl
 import json
 import logging
 import sqlite3
+import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -22,6 +22,23 @@ CREATE TABLE IF NOT EXISTS pending (
     queued_at TEXT NOT NULL
 );
 """
+
+
+def _locked(handle: Any) -> bool:
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return False
+    return True
+
+
 _RETRY = frozenset({401, 408, 429, 502, 504})
 
 
@@ -62,9 +79,7 @@ class Outbox:
 
     def flush(self, client: httpx.Client) -> int:
         with open(self.lock, "w") as handle:
-            try:
-                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
+            if not _locked(handle):
                 return 0
             sent = 0
             while True:
