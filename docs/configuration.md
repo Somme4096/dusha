@@ -73,7 +73,7 @@ A profile name holds letters, digits, dots, dashes, and underscores, and cannot 
 
 ## Plugins
 
-Every part of the companion is a plugin under `plugins`, keyed by name. The built-in plugins are `identity`, `memory`, `evergreen`, `memo`, `affect`, and `proactive`. Any other name is an [external plugin](#external-plugins), which lives in a directory under `plugins_dir` and is imported into the gateway process. Messages are always stored. 
+Every part of the companion is a plugin under `plugins`, keyed by name. The built-in plugins are `identity`, `memory`, `evergreen`, `memo`, `affect`, `proactive`, and `relay`. `relay` stays off until `plugins` lists it. Any other name is an [external plugin](#external-plugins), which lives in a directory under `plugins_dir` and is imported into the gateway process. Messages are always stored. 
 
 > [!WARNING] 
 > Earlier releases called these mods, and the old `mods_dir` key and `DUSHA_MODS_DIR` variable are no longer accepted.
@@ -264,6 +264,34 @@ External plugins run inside the gateway process with its permissions and depende
 | `plugins.proactive.retry_delay_minutes` | `15` | Wait after a failed delivery. |
 
 The emotional triggers live in [emotions.json](#emotionsjson). Limits survive a restart.
+
+## Relay
+
+Relay gives the hub MCP tools and `dusha relay` commands that reach their other devices: `look`, `notify`, `spawn`, `spawn_status`, `spawn_wait`, `music`, `shell`, `type_text`, `press_key`, `list_windows`, and `speak`. It asks the `presence` plugin which devices exist, fails fast when a device is down or lacks the capability, and calls the device's own plugin over HTTP, or in this process for the local device. It also adds `<local_time>` to the context and mirrors sent proactive messages to the active device. The device plugins live in [dusha-plugin-collections](https://github.com/Somme4096/dusha-plugin-collections).
+
+```json
+{
+  "plugins": {
+    "presence": {"options": {"device": "nas"}},
+    "relay": {"token": "device-secret"}
+  }
+}
+```
+
+| Key | Default | Notes |
+| --- | --- | --- |
+| `plugins.relay.token` | `""` | Sent as `X-Companion-Token` to every device. |
+| `plugins.relay.tokens` | `{}` | Per-device tokens, keyed by device name. |
+| `plugins.relay.timeout_seconds` | `60` | |
+| `plugins.relay.mirror_proactive` | `true` | Shows sent proactive messages on the active device. |
+| `plugins.relay.mirror_title` | `"dusha"` | |
+| `plugins.relay.mirror_voice` | `false` | Also speaks the mirrored message. |
+| `plugins.relay.spawn_timeout_seconds` | `1800` | |
+| `plugins.relay.spawn_poll_seconds` | `2` | Poll gap for `spawn_wait`. |
+| `plugins.relay.speak_order` | `["presence", "discord"]` | Ways `speak` tries with `device: "auto"`. |
+| `plugins.relay.speak_route` | `""` | Discord route for voice clips. Empty uses the latest chat. |
+| `plugins.relay.speak_timeout_seconds` | `180` | |
+| `plugins.relay.speak_help` | `""` | Replaces the `speak` tool description. |
 
 ## See also
 

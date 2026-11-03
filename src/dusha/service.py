@@ -8,7 +8,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
-from . import affect, evergreen, identity, legacy, memo, memory, proactive
+from . import affect, evergreen, identity, legacy, memo, memory, proactive, relay
 from . import external as _external
 from . import prompts as _prompts
 from . import providers as _providers
@@ -25,7 +25,7 @@ logger = logging.getLogger("dusha")
 
 # A route harnesses send when a turn has nowhere to deliver to, for clients that need a non-empty value.
 NO_ROUTE = "-"
-BUILTINS = {plugin.name: plugin for plugin in (identity, memory, evergreen, memo, affect, proactive)}
+BUILTINS = {plugin.name: plugin for plugin in (identity, memory, evergreen, memo, affect, proactive, relay)}
 
 
 class Disabled:

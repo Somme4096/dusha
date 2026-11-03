@@ -84,7 +84,7 @@ Dusha adds context "after" each message so cache can hit.
 
 ## Plugin
 
-Everything is a plugin in dusha. Identity, memory, evergreen, memo, affect, and proactive are built in that you can alter/disable. You can also create a plugin under the plugins directory holding `pyproject.toml` with a `[tool.dusha]` table. 
+Everything is a plugin in dusha. Identity, memory, evergreen, memo, affect, and proactive are built in that you can alter/disable. [Relay](https://github.com/Somme4096/dusha/blob/main/docs/configuration.md#relay) is built in too, and stays off until you list it. You can also create a plugin under the plugins directory holding `pyproject.toml` with a `[tool.dusha]` table. 
 
 ```toml
 [tool.dusha]
