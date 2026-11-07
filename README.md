@@ -1,9 +1,9 @@
 # Dusha
 
-> [!NOTE]
-> *This README.md is proudly written by a human (and a little bit by Claude (˶>⩊<˶)❤️)*
+> [!IMPORTANT]
+> This README.md is proudly written by a human (and a little bit by Claude (˶>⩊<˶)❤️)
 
-*Dusha* (Russian: душа, [dʊˈʂa], "soul") is a small HTTP API and a proxy that stores messages, identity, memories, affect state—anything makes your LLM companion yours—outside your harness. Any client that can add a custom provider are able to use it, so you can hop between harnesses (or even use multiple at once!) and still get the same soul on the other side.
+*Dusha* (Russian: душа, [dʊˈʂa], "soul") is a small HTTP API / proxy that stores messages, identity, memories, affect—basically anything makes your LLM companion yours—outside your harness. Any client that can add a custom provider are able to use it, so you can hop between harnesses (or even use multiple at once!) and still get the same soul on the other side.
 
 Almost everything is configurable through JSON. For things that aren't, dusha is also built on [everything-is-a-plugin](https://github.com/deepseek-ai/deepseek-harness) architecture, so you can easily wire an external memory provider, or do ~~crazy~~ fun things like writing your own emotion system!
 
@@ -16,7 +16,6 @@ dusha init <name> --serve # Also you can use --proxy for proxy setup, or without
 dusha serve <name>
 ```
 
-`init` makes the folder `~/.config/dusha/<name>/` and writes a `config.json`, then `serve` starts the companion. `serve` also writes the file when it is missing.
 Then on the same or another device, run:
 
 ```console
@@ -54,13 +53,11 @@ Restart dusha proxy <name> and dusha serve <name> to use it.
 
 $ dusha proxy <name>
 
-INFO:     Started server process [3970524]
-INFO:     Waiting for application startup.
 INFO:     Application startup complete.
 INFO:     Uvicorn running on http://127.0.0.1:8766 (Press CTRL+C to quit)
 ```
 
-Now in your harness or app, point your endpoint at the URL `provider add` gave you: in this case, `http://127.0.0.1:8766/302ai` and you're good to go.
+Now in your harness or app, point your endpoint at the URL `provider add` gave you: in this case, `http://127.0.0.1:8766/302ai` and you're good to go!
 
 Optionally (but recommended), add [MCP](https://github.com/Somme4096/dusha/blob/main/docs/api.md#mcp).
 
@@ -84,7 +81,7 @@ Dusha adds context "after" each message so cache can hit.
 
 ## Plugin
 
-Everything is a plugin in dusha. Identity, memory, evergreen, memo, affect, and proactive are built in that you can alter/disable. [Relay](https://github.com/Somme4096/dusha/blob/main/docs/configuration.md#relay) is built in too, and stays off until you list it. You can also create a plugin under the plugins directory holding `pyproject.toml` with a `[tool.dusha]` table. 
+Everything is a plugin in dusha! Identity, memory, evergreen, memo, affect, and proactive are built in that you can alter/disable. You can also create a plugin under the plugins directory that has `pyproject.toml` with a `[tool.dusha]` table. 
 
 ```toml
 [tool.dusha]
@@ -158,8 +155,6 @@ def apply(ctx, config):
         args=[arg("text", help="Note text.")],
     )
 ```
-
-For clients that you'd like to receive proactive messages from, use integration for each platform under integrations/, or build your own there.
 
 ## Documentation
 
