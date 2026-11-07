@@ -38,7 +38,6 @@ class Preset:
     base_url: str
     endpoints: dict[str, str] = field(default_factory=dict)
     auth: str = "bearer"
-    env: str = ""
     variables: tuple[str, ...] = ()
     headers: dict[str, str] = field(default_factory=dict)
 
@@ -75,14 +74,12 @@ def _preset(provider_id: str, provider: dict[str, Any]) -> Preset | None:
     base = api.rstrip("/") if npm in KINDS and isinstance(api, str) and api else next(iter(chosen.values()))
     endpoints = {kind: url for kind, url in chosen.items() if url != base}
     variables = tuple(dict.fromkeys(VARIABLE.findall(" ".join([base, *endpoints.values()]))))
-    env = next((name for name in provider.get("env") or [] if name not in variables), "")
     return Preset(
         id=provider_id,
         name=str(provider.get("name") or provider_id),
         base_url=base,
         endpoints=endpoints,
         auth="x-api-key" if npm == ANTHROPIC else "bearer",
-        env=env,
         variables=variables,
         headers=HEADERS.get(provider_id, {}),
     )

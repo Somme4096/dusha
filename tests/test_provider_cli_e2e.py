@@ -114,15 +114,13 @@ async def test_provider_add_saves_a_preset_the_proxy_then_uses(tmp_path, stub):
     assert "Restart dusha proxy nova and dusha serve nova" in added.stderr
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert vault.returncode == 0, vault.stderr
-    assert json.loads(kept)["providers"]["vault"] == {
-        "base_url": "https://acct.vault.invalid/v1", "key": "{env:VAULT_KEY}", "auth": "bearer",
-    }
+    assert json.loads(kept)["providers"]["vault"] == {"base_url": "https://acct.vault.invalid/v1"}
     assert declined.returncode == 1 and unchanged == kept
     assert json.loads(listed.stdout)["stubai"] == {
         "base_url": f"{url}/openai/v1", "endpoints": {"messages": f"{url}/anthropic/v1"}, "auth": "bearer",
         "key": "...5678",
     }
-    assert json.loads(listed.stdout)["vault"]["key"] == "{env:VAULT_KEY}"
+    assert json.loads(listed.stdout)["vault"]["key"] == ""
     assert removed.returncode == 0 and absent.returncode == 1 and "No provider named 'vault'" in absent.stderr
     assert (saved["port"], saved["api_token"]) == (8765, "local")
     assert list(saved["providers"]) == ["stubai"] and "upstreams" not in saved["proxy"]
@@ -146,6 +144,20 @@ async def test_provider_add_saves_a_preset_the_proxy_then_uses(tmp_path, stub):
     assert all("x-api-key" not in item["headers"] for item in seen)
 
 
+def test_provider_add_stores_a_typed_env_reference_and_no_key_on_enter(tmp_path, stub):
+    _catalog(tmp_path, stub[0])
+    path = _home(tmp_path, "nova", proxy={"server": {"url": DEAD_SERVER}})
+    typed = _cli(tmp_path, "provider", "add", "stubai", "--profile", "ref", stdin="{env:STUB_KEY}\n")
+    blank = _cli(tmp_path, "provider", "add", "stubai", "--profile", "bare", stdin="\n")
+    saved = json.loads(path.read_text(encoding="utf-8"))["providers"]
+    endpoints = {"messages": f"{stub[0]}/anthropic/v1"}
+    assert typed.returncode == blank.returncode == 0
+    assert saved["ref"] == {
+        "base_url": f"{stub[0]}/openai/v1", "endpoints": endpoints, "key": "{env:STUB_KEY}", "auth": "bearer",
+    }
+    assert saved["bare"] == {"base_url": f"{stub[0]}/openai/v1", "endpoints": endpoints}
+
+
 def test_provider_add_without_a_terminal_needs_a_known_provider(tmp_path, stub):
     _catalog(tmp_path, stub[0])
     _home(tmp_path, "nova", proxy={"server": {"url": DEAD_SERVER}})
@@ -159,7 +171,7 @@ def test_provider_add_without_a_terminal_needs_a_known_provider(tmp_path, stub):
     assert missing.returncode == 2 and "configuration file not found" in missing.stderr
 
 
-def test_proxy_auth_still_works_with_a_deprecation_notice(tmp_path, stub):
+def test_deprecated_proxy_auth_login_and_status_still_work(tmp_path, stub):
     _catalog(tmp_path, stub[0])
     first = _cli(tmp_path, "proxy", "luna", "auth", "login", "stubai", stdin=f"{DEAD_SERVER}\n\nsk-luna\n")
     status = _cli(tmp_path, "proxy", "luna", "auth", "status")
@@ -182,6 +194,7 @@ class Terminal:
         )
         os.close(terminal)
         self.seen = self.output = b""
+        self.answered = 0
 
     def expect(self, text: str, timeout: float = 20) -> None:
         deadline = time.monotonic() + timeout
@@ -194,7 +207,27 @@ class Terminal:
                     break
                 self.seen += chunk
                 self.output += chunk
+                self._answer_cursor_requests()
         self.seen = self.seen.split(text.encode(), 1)[1]
+
+    def settle(self, seconds: float = 0.3) -> None:
+        # Let the prompt finish its startup frame, so the next keystrokes reach the filter.
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            if select.select([self.fd], [], [], 0.05)[0]:
+                try:
+                    chunk = os.read(self.fd, 65536)
+                except OSError:
+                    break
+                self.seen += chunk
+                self.output += chunk
+                self._answer_cursor_requests()
+
+    def _answer_cursor_requests(self) -> None:
+        # A real terminal answers each cursor position request, or prompt_toolkit swallows the next keys.
+        while (at := self.output.find(b"\x1b[6n", self.answered)) != -1:
+            self.answered = at + len(b"\x1b[6n")
+            os.write(self.fd, b"\x1b[1;1R")
 
     def send(self, text: str) -> None:
         os.write(self.fd, text.encode())
@@ -216,6 +249,7 @@ def test_provider_add_offers_a_searchable_menu_in_a_terminal(tmp_path, stub):
     path = _home(tmp_path, "nova", proxy={"server": {"url": DEAD_SERVER}})
     terminal = Terminal(tmp_path, "provider", "add")
     terminal.expect("Stub AI")
+    terminal.settle()
     terminal.send("vault")
     terminal.expect("vault")
     terminal.send("\r")
@@ -232,6 +266,58 @@ def test_provider_add_offers_a_searchable_menu_in_a_terminal(tmp_path, stub):
 
 
 @needs_terminal
+async def test_provider_add_custom_writes_a_profile_the_proxy_then_uses(tmp_path, stub):
+    url, seen = stub
+    _catalog(tmp_path, url)
+    path = _home(tmp_path, "nova", proxy={"server": {"url": DEAD_SERVER}})
+    terminal = Terminal(tmp_path, "provider", "add")
+    terminal.expect("Custom")
+    terminal.send("custom")
+    terminal.expect("Custom")
+    terminal.send("\r")
+    terminal.expect("Profile name")
+    terminal.send("mine\r")
+    terminal.expect("Base URL")
+    terminal.send(f"{url}/openai/v1\r")
+    terminal.expect("chat endpoint")
+    terminal.send("\r")
+    terminal.expect("messages endpoint")
+    terminal.send(f"{url}/anthropic/v1\r")
+    terminal.expect("responses endpoint")
+    terminal.send("\r")
+    terminal.expect("Auth header")
+    terminal.send("x-api-key\r")
+    terminal.expect("API key")
+    terminal.send("sk-custom\r")
+    terminal.expect("Header name")
+    terminal.send("x-tenant\r")
+    terminal.expect("Value for x-tenant")
+    terminal.send("nova\r")
+    terminal.expect("Header name")
+    terminal.send("\r")
+    terminal.expect("Restart dusha proxy nova")
+    hidden = b"sk-custom" not in terminal.output
+    assert terminal.close(wait=True) == 0 and hidden
+    assert json.loads(path.read_text(encoding="utf-8"))["providers"]["mine"] == {
+        "base_url": f"{url}/openai/v1", "endpoints": {"messages": f"{url}/anthropic/v1"},
+        "auth": "x-api-key", "key": "sk-custom", "headers": {"x-tenant": "nova"},
+    }
+
+    app = create_proxy_app(settings.load(path))
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://proxy") as client:
+            chat = await client.post(
+                "/mine/chat/completions", headers={"Authorization": "Bearer dummy"},
+                json={"model": "chatty", "messages": [{"role": "user", "content": "Hi"}]},
+            )
+    assert chat.status_code == 200
+    assert seen[-1]["path"] == "/openai/v1/chat/completions"
+    assert seen[-1]["headers"]["x-api-key"] == "sk-custom" and "authorization" not in seen[-1]["headers"]
+    assert seen[-1]["headers"]["x-tenant"] == "nova"
+
+
+@needs_terminal
 def test_prompts_share_one_palette_and_no_color_turns_it_off(tmp_path, stub):
     _catalog(tmp_path, stub[0])
     _home(tmp_path, "nova", proxy={"server": {"url": DEAD_SERVER}})
@@ -239,6 +325,7 @@ def test_prompts_share_one_palette_and_no_color_turns_it_off(tmp_path, stub):
     def add(*, replace: bool, **env: str) -> bytes:
         terminal = Terminal(tmp_path, "provider", "add", "--profile", "shared", **env)
         terminal.expect("Stub AI")
+        terminal.settle()
         terminal.send("stub\r")
         if replace:
             terminal.expect("Replace the provider shared?")

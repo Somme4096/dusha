@@ -11,7 +11,7 @@ from typing import Any
 
 import click
 
-from . import homes, legacy
+from . import homes, legacy, providers
 from .client import catalog, presets, remote, settings
 from .providers import PLACEHOLDER, http_url
 
@@ -420,10 +420,14 @@ def proxy(ctx: click.Context) -> None:
     uvicorn.run(create_proxy_app(cfg), host=cfg.host, port=cfg.port, log_level="info")
 
 
+CUSTOM = "custom"
+
+
 def _pick(found: dict[str, presets.Preset]) -> str:
     import questionary
 
     choices = [questionary.Choice(f"{item.name} ({item.id})", value=item.id) for item in found.values()]
+    choices.append(questionary.Choice("Custom", value=CUSTOM))
     return questionary.select(
         "Provider", choices=choices, use_search_filter=True, use_jk_keys=False, style=_prompt_style()
     ).unsafe_ask()
@@ -454,24 +458,81 @@ def _add(path: Path, provider: str | None, profile: str | None, refresh: bool) -
         if not interactive:
             raise ConfigError("Name a provider, such as dusha provider add deepseek")
         provider = _pick(found)
+    if provider == CUSTOM:
+        _custom(path, profile)
+        return
     if provider not in found:
         raise ConfigError(f"Unknown provider {provider!r}, see https://models.dev for the ids")
     preset, name = found[provider], profile or provider
-    current = _config(lambda: settings.load(path, environ=False))
-    if name in current.providers:
-        click.confirm(_ask(f"Replace the provider {name}?"), abort=True, err=True)
+    _replaceable(path, name)
     values = {variable: click.prompt(_ask(variable), err=True) for variable in preset.variables}
-    fallback = f"{{env:{preset.env}}}" if preset.env else ""
     key = click.prompt(
-        _ask(f"API key for {preset.name}, Enter for {fallback or 'none'}"), default="", show_default=False,
+        _ask(f"API key for {preset.name}, Enter for none"), default="", show_default=False,
         hide_input=interactive, err=True,
     )
-    raw = preset.profile(key or fallback, values)
+    _save(path, name, preset.profile(key, values))
+
+
+def _replaceable(path: Path, name: str) -> None:
+    if name in _config(lambda: settings.load(path, environ=False)).providers:
+        click.confirm(_ask(f"Replace the provider {name}?"), abort=True, err=True)
+
+
+def _save(path: Path, name: str, raw: dict[str, Any]) -> None:
+    current = _config(lambda: settings.load(path, environ=False))
     _config(lambda: settings.save_provider(path, name, raw))
     companion, host = path.parent.name, f"[{current.host}]" if ":" in current.host else current.host
     harness = f"http://{host}:{current.port}/{name}"
     click.echo(_done(f"Success!\nNew provider {name} added to {companion} at {harness}."), err=True)
     click.echo(f"Restart dusha proxy {companion} and dusha serve {companion} to use it.", err=True)
+
+
+def _custom(path: Path, profile: str | None) -> None:
+    name = profile or click.prompt(_ask("Profile name"), err=True)
+    _replaceable(path, name)
+    raw: dict[str, Any] = {"base_url": click.prompt(_ask("Base URL"), value_proc=_upstream, err=True)}
+    for kind in sorted(providers.PROTOCOLS):
+        typed = click.prompt(_ask(f"{kind} endpoint, Enter for the base URL"), default="", show_default=False,
+                             value_proc=_optional_url(kind), err=True)
+        if typed:
+            raw.setdefault("endpoints", {})[kind] = typed
+    raw["auth"] = click.prompt(_ask("Auth header"), type=click.Choice(sorted(providers.AUTH_STYLES)),
+                               default="bearer", err=True)
+    key = click.prompt(_ask("API key, or {env:NAME}, Enter for none"), default="", show_default=False,
+                       hide_input=sys.stdin.isatty(), err=True)
+    if key:
+        raw["key"] = key
+    headers = {}
+    while header := click.prompt(
+        _ask("Header name, Enter to finish"), default="", show_default=False, err=True
+    ):
+        headers[header] = click.prompt(_ask(f"Value for {header}"), err=True)
+    if headers:
+        raw["headers"] = headers
+    try:
+        providers.provider(name, raw)
+    except ValueError as error:
+        raise click.ClickException(str(error)) from error
+    _save(path, name, raw)
+
+
+def _upstream(value: str) -> str:
+    try:
+        return http_url(value.strip(), "the base URL")
+    except ValueError as error:
+        raise click.BadParameter(str(error)) from error
+
+
+def _optional_url(kind: str) -> Callable[[str], str]:
+    def check(value: str) -> str:
+        if not value.strip():
+            return ""
+        try:
+            return http_url(value.strip(), f"the {kind} endpoint")
+        except ValueError as error:
+            raise click.BadParameter(str(error)) from error
+
+    return check
 
 
 def _remove(path: Path, profile: str) -> None:

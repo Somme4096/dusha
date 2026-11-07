@@ -42,13 +42,13 @@ Each entry under `providers` is a profile:
 }
 ```
 
-`dusha provider add` adds a profile from the [models.dev](https://models.dev) catalog, with the provider's key, endpoints, and required headers. It edits the `config.json` of the companion you pick with `-c <name>`, or the file picked by the usual [order](configuration.md#which-file-loads). In a terminal, it opens a menu you can filter by typing. Otherwise, name the provider:
+`dusha provider add` adds a profile from the [models.dev](https://models.dev) catalog, with the provider's key, endpoints, and required headers. It edits the `config.json` of the companion you pick with `-c <name>`, or the file picked by the usual [order](configuration.md#which-file-loads). In a terminal, it opens a menu you can filter by typing, including a `Custom` option. The `Custom` option asks for a profile name, a base URL, optional alternative URLs for each protocol, the auth header type, an optional key, and extra headers. Otherwise, name the provider:
 
 ```sh
 dusha -c <name> provider add deepseek
 ```
 
-The command asks for any values the provider's URL needs, then for the key. Press Enter at the key prompt to store `{env:NAME}`, a reference to the provider's environment variable, instead. The profile is named after the provider unless you pass `--profile`. The file keeps mode `600`. Replacing an existing profile asks first. Restart the proxy and the server to use it.
+The command asks for any values the provider's URL needs, then for the key. Press Enter at the key prompt to store no key, or type the key directly. To use an environment variable, type `{env:NAME}` explicitly. The profile is named after the provider unless you pass `--profile`. The file keeps mode `600`. Replacing an existing profile asks first. Restart the proxy and the server to use it.
 
 ```json
 {
