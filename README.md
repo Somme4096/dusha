@@ -115,7 +115,7 @@ inject = ["messages", "cli", "mcp"]
 | `ctx.mcp` | The MCP tool registry, see [Tools](#tools--mcp). |
 | `ctx.<service>.<method>(...)` | Calls an injected service: `messages`, `companion`, `affect`, `evergreen`, `memo`, `proactive`, `providers`. |
 
-See the [Plugin API](https://github.com/Somme4096/dusha/blob/main/docs/guide.md#plugin-api) for hook fields and service methods.
+See the [Plugin API](https://github.com/Somme4096/dusha/blob/main/docs/plugins.md#plugin-api) for hook fields and service methods.
 
 ### Commands
 
@@ -165,6 +165,7 @@ def apply(ctx, config):
 - [docs/configuration.md](https://github.com/Somme4096/dusha/blob/main/docs/configuration.md): JSON settings, identity and prompt files.
 - [docs/guide.md](https://github.com/Somme4096/dusha/blob/main/docs/guide.md): service setup, auth and network, backup, and troubleshooting.
 - [docs/api.md](https://github.com/Somme4096/dusha/blob/main/docs/api.md): HTTP endpoints, the proxy, and MCP.
+- [docs/plugins.md](https://github.com/Somme4096/dusha/blob/main/docs/plugins.md): the built-in plugins, their commands and tools, and the Plugin API.
 
 ## Verisioning
 

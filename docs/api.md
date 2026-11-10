@@ -148,20 +148,7 @@ The proxy keeps an outbox, `outbox.sqlite3`, in the `data_dir` of the companion'
 }
 ```
 
-The server lists the tools of active plugins only. The built-in plugins add the tools below. An external plugin adds its own, see [Tools](https://github.com/Somme4096/dusha#tools--mcp).
-
-| Tool | Plugin | Does |
-| --- | --- | --- |
-| `memory_search` | `memory` | Search the archive |
-| `memory_get` | `memory` | Read one message with its neighbors |
-| `evergreen_list` | `evergreen` | List evergreen facts |
-| `evergreen_remember` | `evergreen` | Store a new fact |
-| `evergreen_revise` | `evergreen` | Replace a fact at `expected_revision`. `clear_review_after` and `clear_expires_at` remove those times |
-| `evergreen_forget` | `evergreen` | Forget a fact at `expected_revision` |
-| `memo_add` | `memo` | Add a memo |
-| `memo_list` | `memo` | List memos |
-| `memo_done` | `memo` | Archive a memo |
-| `affect_status` | `affect` | Read the affect state |
+The server lists the tools of active plugins only. Each built-in plugin adds its own, listed in [plugins.md](plugins.md#built-in-plugins). An external plugin adds its own, see [Tools](https://github.com/Somme4096/dusha#tools--mcp).
 
 A tool that fails returns `isError` with the reason in `detail`. The harness reaches the server directly, so every tool fails while the server is down. Nothing waits in the [outbox](#outbox) for MCP.
 
@@ -393,12 +380,7 @@ A consumer that does not hold the lease, or an unknown `outcome`, gets `409`.
 
 ## Plugins
 
-`GET /state/v1/plugins` returns one object per plugin, keyed by name, in `plugins` order:
-
-- `state`: `active`, `disabled`, `inactive` when a service it injects is missing, or `failed` when a plugin reported a runtime error via `ctx.error`
-- `error`: the reason for `inactive` or `failed`, otherwise empty
-- `inject` and `provides`: the services it uses and offers
-- `events`: the events it listens for
+`GET /state/v1/plugins` returns one object per plugin, keyed by name, in `plugins` order, with `state`, `error`, `inject`, `provides`, and `events`. `state` is `active`, `disabled`, `inactive` when a service it injects is missing, or `failed` when a plugin reported a runtime error via `ctx.error`. `error` is the reason for `inactive` or `failed`, otherwise empty. See [plugins.md](plugins.md) for the built-in plugins.
 
 `/health` lists the active plugins under `plugins`.
 
@@ -456,4 +438,5 @@ An unknown command returns `404`. A command that fails returns `400` with the re
 
 - [configuration.md](configuration.md): every config key.
 - [guide.md](guide.md): service setup, auth, backup, troubleshooting.
+- [plugins.md](plugins.md): the built-in plugins, their commands and tools, and the Plugin API.
 - [AstrBot plugin](../integrations/astrbot_dusha/README.md): setup, settings, and troubleshooting for AstrBot.

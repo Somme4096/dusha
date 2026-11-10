@@ -106,34 +106,7 @@ dusha memory reindex
 
 `plugins` prints each plugin's `state`, `error`, `inject`, `provides`, and `events`. Each plugin adds its own commands, such as `memory`, `evergreen`, `memo`, `affect`, and `proactive`. `memory reindex` rebuilds the built-in search index. Plugin commands run on the server, so it must be up. `dusha --help` lists them, from the last list it saw while the server is down.
 
-### Plugin API
-> [!NOTE]
-> This adds detail to the [Plugin](https://github.com/Somme4096/dusha#plugin) table in the README.
-
-`inject` also takes `api`, `cli`, and `mcp` when the plugin registers routes, commands, or tools. 
-
-| Hook | Receives |
-| --- | --- |
-| `message` | The stored row: `id`, `conversation_id`, `role`, `text`, `content`, `external_id`, `occurred_at`, `ingested_at`, `harness`, `external_conversation_id`, `route`. An exception is logged and the message is not redelivered. |
-| `claim` | A user message about to be stored: `harness`, `conversation_id`, `text`, `route`. A non-null answer stores it as an `event`, so `message` listeners such as affect and proactive treat it as no user turn. |
-| `context` | `query`, `harness`, `conversation_id`, `exclude_message_ids`, and `include_recent`. A returned `Block` carries `name`, `text`, `data`, `session` records, and an `instruction` for the state block. |
-| `decide` | `message`, `emotions` (the resolved dimensions), `state` (the affect snapshot), and `instruction`. |
-| `<event>` | The arguments passed to `emit` or `collect`. Custom events stay in the gateway process, so they reach every active plugin, including the emitter's own listeners. |
-
-`ctx.data_dir` is `plugins/<plugin>` under `data_dir`. `ctx.collect` keeps each plugin's first non-null result.
-
-| Service | Methods |
-| --- | --- |
-| `messages` | `get`, `recent`, `search`, `context`, `after` |
-| `companion` | `ingest_message`, `ingest_transcript`, `build_context`, `latest_route` |
-| `affect` | `status` |
-| `evergreen` | `remember`, `revise`, `forget`, `list_current`, `history` |
-| `memo` | `add`, `list`, `done` |
-| `proactive` | `evaluate`, `poll`, `acknowledge` |
-| `providers` | `names`, `get(name)`. A provider has `url(kind)` and `request_headers()`, with the key and `{env:NAME}` filled in. |
-
-Services from `ctx.provide` are plain Python objects. `deltas` apply after the increment, and dimension names come from your `emotions.json`.
-One thing to pay attention to is that a dependency conflict in plugin(whether internal or external) makes dusha unable to start gateway, since they share one Python environment.
+See [plugins.md](plugins.md) for the built-in plugins, the commands and tools each one adds, and the [Plugin API](plugins.md#plugin-api) for writing your own.
 
 ## Migrating
 
@@ -182,7 +155,7 @@ Plugins that used the 1.x Python names keep working with a `DeprecationWarning` 
 | The proxy forwards but nothing is stored | `GET /health` on the proxy shows `server.status`. Check `proxy.server.url` and `proxy.server.token`. |
 | Memory, fact, memo, affect, or proactive routes return `503` | The `detail` names the plugin. Remove its `"disabled": true`, or turn on the plugin it needs, and restart. Your stored rows are intact. |
 | Startup fails on an external plugin import or `apply` error | The traceback names the plugin directory and the failing module. Check that directory, its `[tool.dusha]` table in `pyproject.toml`, and the traceback. |
-| An external plugin stopped working after an upgrade | External plugins define `apply(ctx, config)` and name it in `[tool.dusha]`. See the [Plugin API](#plugin-api). |
+| An external plugin stopped working after an upgrade | External plugins define `apply(ctx, config)` and name it in `[tool.dusha]`. See the [Plugin API](plugins.md#plugin-api). |
 | Duplicate proactive events or write errors | Two processes share one `state.sqlite3`. Stop one. |
 
 ## See also

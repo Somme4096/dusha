@@ -73,7 +73,7 @@ A profile name holds letters, digits, dots, dashes, and underscores, and cannot 
 
 ## Plugins
 
-Every part of the companion is a plugin under `plugins`, keyed by name. The built-in plugins are `identity`, `memory`, `evergreen`, `memo`, `affect`, `proactive`, and `relay`. `relay` stays off until `plugins` lists it. Any other name is an [external plugin](#external-plugins), which lives in a directory under `plugins_dir` and is imported into the gateway process. Messages are always stored. 
+Every part of the companion is a plugin under `plugins`, keyed by name. The built-in plugins are `identity`, `memory`, `evergreen`, `memo`, `affect`, `proactive`, and `relay`. `relay` stays off until `plugins` lists it. See [plugins.md](plugins.md) for what each one does. Any other name is an [external plugin](#external-plugins), which lives in a directory under `plugins_dir` and is imported into the gateway process. Messages are always stored. 
 
 > [!WARNING] 
 > Earlier releases called these mods, and the old `mods_dir` key and `DUSHA_MODS_DIR` variable are no longer accepted.
@@ -234,7 +234,7 @@ Optional. Set `base_url` and `model` to turn on semantic appraisal. The gateway 
 
 ## External plugins
 
-An external plugin is a directory under `plugins_dir` with `pyproject.toml` and a `[tool.dusha]` table. The gateway imports it into its own process. The [Plugin API](guide.md#plugin-api) describes the contract, and [dusha-plugin-collections](https://github.com/Somme4096/dusha-plugin-collections) has working external plugins, such as `system_one` and `everos_memory`.
+An external plugin is a directory under `plugins_dir` with `pyproject.toml` and a `[tool.dusha]` table. The gateway imports it into its own process. The [Plugin API](plugins.md#plugin-api) describes the contract, and [dusha-plugin-collections](https://github.com/Somme4096/dusha-plugin-collections) has working external plugins, such as `system_one` and `everos_memory`.
 
 | Key | Default | Notes |
 | --- | --- | --- |
