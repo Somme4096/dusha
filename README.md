@@ -12,7 +12,7 @@
 
 *Dusha* (Russian: душа, [dʊˈʂa], "soul") is a small HTTP API / proxy that stores messages, identity, memories, affect—basically anything makes your LLM companion yours—outside your harness. Any client that can add a custom provider are able to use it, so you can hop between harnesses (or even use multiple at once!) and still get the same soul on the other side.
 
-Almost everything is configurable through JSON. For things that aren't, dusha is also built on [everything-is-a-plugin](https://github.com/deepseek-ai/deepseek-harness) architecture, so you can easily wire an external memory provider, or do ~~crazy~~ fun things like writing your own emotion system!
+Almost everything is configurable through JSON. For things that aren't, I also built dusha on [everything-is-a-plugin](https://github.com/deepseek-ai/deepseek-harness) architecture, so you can easily wire an external memory provider or do fun things like writing your own emotion system~!
 
 ## Quickstart
 
@@ -66,7 +66,7 @@ INFO:     Uvicorn running on http://127.0.0.1:8766 (Press CTRL+C to quit)
 
 Now in your harness or app, point your endpoint at the URL `provider add` gave you: in this case, `http://127.0.0.1:8766/302ai` and you're good to go!
 
-Optionally (but recommended), add [MCP](https://github.com/Somme4096/dusha/blob/main/docs/api.md#mcp).
+Optionally (but I highly recommend it), add [MCP](https://github.com/Somme4096/dusha/blob/main/docs/api.md#mcp).
 
 ## How it works
 
@@ -75,28 +75,26 @@ Optionally (but recommended), add [MCP](https://github.com/Somme4096/dusha/blob/
 Dusha adds context "after" each message so cache can hit.
 
 <details>
-<summary>How do messages, memory, affect, and identity work in Dusha by default?</summary>
+<summary>How do messages, memory, affect, and identity work in stock dusha?</summary>
 
 - **Messages:** Basic SQLite FTS5 plus optional embedding search. An plugin can do everything you can imagine if that's not enough.
 - **Evergreen:** Long-term facts that you edit from the CLI and your companion edits through integration tools. No automatic extraction.
   - Think of it as a `USER.md` but with proper lifecycle management and duplication prevention.
 - **Affect:** A deterministic emotion engine that uses values like `{"anger": 0.35}` and shifts over time, including when the user goes unresponsive. Of course, you can make your own!
   - Side note is that Message intent analysis can also be an external plugin. drop the [system_one](https://github.com/Somme4096/dusha-plugin-collections/tree/main/system_one) plugin or any other classifier plugin into the plugins directory, and its `decide` listener picks which emotion each user message moves.
-- **Identity:** `identity.md`, or name your own.
+- **Identity:** `identity.md`, or custom name.
 
 </details>
 
 ## Plugin
 
-Everything is a plugin in dusha! Identity, memory, evergreen, memo, affect, and proactive are built in that you can alter/disable. You can also create a plugin under the plugins directory that has `pyproject.toml` with a `[tool.dusha]` table. 
+Everything is a plugin in dusha! Identity, memory, evergreen, memo, affect, and proactive are built in that you can alter/disable. You can create a plugin under the plugins directory like this.
 
 ```toml
 [tool.dusha]
 entry = "my_plugin"
 inject = ["messages", "cli", "mcp"]
 ```
-
-The module defines `apply(ctx, config)`, which runs at startup with the plugin's `options` from `config.json`. `inject` lists the services the plugin calls, and a plugin whose service is missing stays inactive. External plugins share the gateway's Python environment, so install their dependencies there.
 
 | Call | Effect |
 | --- | --- |
@@ -117,7 +115,7 @@ The module defines `apply(ctx, config)`, which runs at startup with the plugin's
 | `ctx.mcp` | The MCP tool registry, see [Tools](#tools--mcp). |
 | `ctx.<service>.<method>(...)` | Calls an injected service: `messages`, `companion`, `affect`, `evergreen`, `memo`, `proactive`, `providers`. |
 
-The first `emotion` in `plugins` order wins, and `deltas` from every plugin merge. See the [Plugin API](https://github.com/Somme4096/dusha/blob/main/docs/guide.md#plugin-api) for hook fields and service methods.
+See the [Plugin API](https://github.com/Somme4096/dusha/blob/main/docs/guide.md#plugin-api) for hook fields and service methods.
 
 ### Commands
 
@@ -137,8 +135,7 @@ def apply(ctx, config):
     )
 ```
 
-`dusha notes add "Buy tea" --pinned --tags home --tags errand` sends the values to the server as JSON and prints the handler's return value as JSON.
-As you can see, dusha builds `--help` list dynamically from registered commands. But it also caches the last command list, so `--help` works while the server is down.
+`dusha notes add "Buy tea" --pinned --tags home` sends the values to the server as JSON and prints the handler's return value as JSON.
 
 | Helper | Makes |
 | --- | --- |
