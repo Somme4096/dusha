@@ -8,7 +8,7 @@
 [![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
 
 > [!IMPORTANT]
-> This README.md is proudly written by a human (and a little bit by Claude (˶>⩊<˶)❤️)
+> This README.md is proudly written by a human (˶>⩊<˶)❤️
 
 *Dusha* (Russian: душа, [dʊˈʂa], "soul") is a small HTTP API / proxy that stores messages, identity, memories, affect—basically anything makes your LLM companion yours—outside your harness. Any client that can add a custom provider are able to use it, so you can hop between harnesses (or even use multiple at once!) and still get the same soul on the other side.
 
