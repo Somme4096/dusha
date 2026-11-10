@@ -88,84 +88,17 @@ Dusha adds context "after" each message so cache can hit.
 
 ## Plugin
 
-Everything is a plugin in dusha! Identity, memory, evergreen, memo, affect, and proactive are built in that you can alter/disable. You can create a plugin under the plugins directory like this.
+Everything is a plugin in dusha! Identity, memory, evergreen, memo, affect, and proactive are built in that you can alter/disable. 
 
-```toml
-[tool.dusha]
-entry = "my_plugin"
-inject = ["messages", "cli", "mcp"]
-```
+See [Plugin](https://github.com/Somme4096/dusha/blob/main/docs/plugins.md) for list of build-in plugins and how to build your own plugin. If you like, you can also take a look at [dusha-plugin-collections](https://github.com/Somme4096/dusha-plugin-collections) which contain dusha plugins I use daily.
 
-| Call | Effect |
-| --- | --- |
-| `ctx.on("message", fn)` | `fn(message)` runs for every stored message, in id order. |
-| `ctx.on("context", fn)` | `fn(request)` runs for every context build. Return a `Block` from `dusha.hooks` or `None`. |
-| `ctx.on("decide", fn)` | `fn(request)` runs for every new user message while affect is on. Return `{"emotion": "<dimension>"}`, `{"deltas": {"<dimension>": <number>}}`, both, or `None`. |
-| `ctx.on("<event>", fn)` | `fn(*args)` runs when a plugin emits `<event>`. |
-| `ctx.interval(seconds, fn)` | `fn()` runs on that interval. |
-| `ctx.on_dispose(fn)` | `fn()` runs on shutdown. |
-| `ctx.data_dir` | The plugin's private directory. |
-| `ctx.name` | The plugin's name. |
-| `ctx.error` | A non-empty string marks the plugin failed in `/state/v1/plugins`. |
-| `ctx.provide(name, value)` | Publishes a service other plugins can `inject`. |
-| `ctx.emit(event, ...)` | Calls every listener of `event`. |
-| `ctx.collect(event, ...)` | Calls every listener and returns `{"<plugin>": <result>}`. |
-| `ctx.api` | The gateway's FastAPI router. |
-| `ctx.cli` | The command registry, see [Commands](#commands). |
-| `ctx.mcp` | The MCP tool registry, see [Tools](#tools--mcp). |
-| `ctx.<service>.<method>(...)` | Calls an injected service: `messages`, `companion`, `affect`, `evergreen`, `memo`, `proactive`, `providers`. |
-
-See the [Plugin API](https://github.com/Somme4096/dusha/blob/main/docs/plugins.md#plugin-api) for hook fields and service methods.
-
-### Commands
-
-You can add CLI commands to your plugin. The dusha CLI is just another client to access dusha, so for example you can do things like:
-
-```python
-from dusha.commands import arg, option
-
-
-def apply(ctx, config):
-    notes = ctx.cli.group("notes", "Manage notes")
-    notes.command(
-        "add",
-        lambda text, pinned, tags: {"note": save(text, pinned, tags)},
-        help="Add a note",
-        args=[arg("text"), option("pinned", bool), option("tags", repeated=True)],
-    )
-```
-
-`dusha notes add "Buy tea" --pinned --tags home` sends the values to the server as JSON and prints the handler's return value as JSON.
-
-| Helper | Makes |
-| --- | --- |
-| `arg(name, type=str, help="", choices=(), optional=False, repeated=False)` | A positional argument. |
-| `option(name, type=str, help="", default=None, choices=(), required=False, repeated=False)` | `--name`, with each underscore as a dash. A `bool` option is a flag. |
-
-
-### Tools & MCP
-
-Dusha exposes a HTTP [MCP](https://github.com/Somme4096/dusha/blob/main/docs/api.md#mcp) per each companion. It takes the same `arg` and `option` specs as a CLI command, so it's pretty easy to add tools for dusha MCP in your own plugin:
-
-```python
-from dusha.commands import arg
-
-
-def apply(ctx, config):
-    ctx.mcp.tool(
-        "notes_add",
-        lambda text: {"note": save(text)},
-        help="Add a note the companion keeps.",
-        args=[arg("text", help="Note text.")],
-    )
-```
-
-## Documentation
+## See Also
 
 - [docs/configuration.md](https://github.com/Somme4096/dusha/blob/main/docs/configuration.md): JSON settings, identity and prompt files.
 - [docs/guide.md](https://github.com/Somme4096/dusha/blob/main/docs/guide.md): service setup, auth and network, backup, and troubleshooting.
 - [docs/api.md](https://github.com/Somme4096/dusha/blob/main/docs/api.md): HTTP endpoints, the proxy, and MCP.
 - [docs/plugins.md](https://github.com/Somme4096/dusha/blob/main/docs/plugins.md): the built-in plugins, their commands and tools, and the Plugin API.
+- [dusha-plugin-collections](https://github.com/Somme4096/dusha-plugin-collections): My daily-driving dusha plugins. Useful as reference implementation.
 
 ## Verisioning
 
