@@ -262,7 +262,10 @@ def create_proxy_app(cfg: Settings) -> FastAPI:
             after=server.responses.get(protocol.previous(body)),
         )
         injection, conversation = await server.context(turn, messages)
-        forwarded = json.dumps(protocol.inject(body, injection) if injection else body).encode()
+        prepared = protocol.inject(body, injection) if injection else body
+        if isinstance(protocol, _protocols.ChatCompletions):
+            prepared = protocol.sanitize(prepared)
+        forwarded = json.dumps(prepared).encode()
         response = await send(request, name, path, forwarded, conversation, protocol.kind)
         if response.status_code >= 400:
             return streamed(response)

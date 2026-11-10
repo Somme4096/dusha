@@ -19,6 +19,22 @@ def _is(item: Any, **fields: Any) -> bool:
     return isinstance(item, dict) and all(item.get(key) == value for key, value in fields.items())
 
 
+_CHAT_KEYS = {
+    "system": frozenset({"role", "content", "name"}),
+    "user": frozenset({"role", "content", "name"}),
+    "assistant": frozenset({"role", "content", "name", "tool_calls", "function_call"}),
+    "tool": frozenset({"role", "content", "name", "tool_call_id"}),
+    "function": frozenset({"role", "content", "name"}),
+}
+
+
+def _chat_message(message: Any) -> Any:
+    if not isinstance(message, dict):
+        return message
+    keys = _CHAT_KEYS.get(message.get("role"), _CHAT_KEYS["user"])
+    return {key: value for key, value in message.items() if key in keys}
+
+
 class ChatCompletions:
     kind = "chat"
 
@@ -26,8 +42,14 @@ class ChatCompletions:
         messages = body.get("messages")
         return messages if isinstance(messages, list) else None
 
+    def sanitize(self, body: dict[str, Any]) -> dict[str, Any]:
+        messages = body.get("messages")
+        if not isinstance(messages, list):
+            return body
+        return {**body, "messages": [_chat_message(message) for message in messages]}
+
     def inject(self, body: dict[str, Any], injection: str) -> dict[str, Any]:
-        messages = list(body["messages"])
+        messages = [_chat_message(message) for message in body["messages"]]
         index = _last(messages, lambda item: _is(item, role="user"))
         if index is None:
             position = next(

@@ -172,7 +172,7 @@ async def test_proxy_carries_a_conversation_through_the_server_to_the_profile(
     assert opening["messages"][0] == {"role": "system", "content": "caller system"}
     assert opening["messages"][1]["content"].startswith("<")
     assert opening["messages"][1]["content"].endswith("</companion_state>\n\nHello.")
-    assert provider.seen[1]["body"]["messages"][-1]["custom_message_field"] == "kept"
+    assert "custom_message_field" not in provider.seen[1]["body"]["messages"][-1]
     stored = _stored(server)
     assert [message["text"] for message in stored] == [
         "Hello.", "First reply.", "Remember the amber window.", "Second reply.",
@@ -246,6 +246,33 @@ async def test_proxy_keeps_one_copy_of_messages_the_harness_echoes_back_reshaped
         ("tool", "v is 42"),
         ("assistant", "Found it."),
     ]
+
+
+async def test_proxy_drops_reasoning_extras_from_forwarded_chat_messages(tmp_path, server, provider):
+    call = {"id": "call_1", "type": "function", "function": {"name": "lookup", "arguments": '{"k":"v"}'}}
+    thoughts = {"reasoning_content": "private", "reasoning": "private", "thinking": "private",
+                "thinking_blocks": [{"type": "thinking", "thinking": "private"}]}
+    echoed = {"role": "assistant", "content": "First reply.", **thoughts}
+    provider.reply = echoed
+    async with _proxy(tmp_path, server, provider) as client:
+        await _chat(client, [{"role": "user", "content": "Hello."}])
+        provider.reply = {"role": "assistant", "content": "Second reply."}
+        second = await _chat(client, [
+            {"role": "user", "content": "Hello."},
+            echoed,
+            {"role": "assistant", "content": None, "tool_calls": [call], **thoughts},
+            {"role": "tool", "tool_call_id": "call_1", "content": "42", **thoughts},
+            {"role": "user", "content": "Again."},
+        ])
+    assert second.status_code == 200
+    forwarded = provider.seen[1]["body"]["messages"]
+    assert forwarded[1:4] == [
+        {"role": "assistant", "content": "First reply."},
+        {"role": "assistant", "content": None, "tool_calls": [call]},
+        {"role": "tool", "tool_call_id": "call_1", "content": "42"},
+    ]
+    assert "<companion_state>" in forwarded[-1]["content"]
+    assert any("private" in message["text"] for message in _stored(server))
 
 
 async def test_proxy_stores_a_regenerated_turn_as_a_branch(tmp_path, server, provider):
