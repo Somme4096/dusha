@@ -1,5 +1,12 @@
 # Dusha
 
+[![PyPI](https://img.shields.io/pypi/v/dusha)](https://pypi.org/project/dusha/)
+[![Python](https://img.shields.io/pypi/pyversions/dusha)](https://pypi.org/project/dusha/)
+[![License](https://img.shields.io/github/license/Somme4096/dusha)](LICENSE)
+[![CI](https://github.com/Somme4096/dusha/actions/workflows/publish.yml/badge.svg)](https://github.com/Somme4096/dusha/actions/workflows/publish.yml)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
+
 > [!IMPORTANT]
 > This README.md is proudly written by a human (and a little bit by Claude (˶>⩊<˶)❤️)
 
