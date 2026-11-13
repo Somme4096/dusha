@@ -49,6 +49,41 @@ curl http://127.0.0.1:8765/health # `/health` should return ok.
 
 The unit is a template. `dusha@<name>` serves the home `~/.config/dusha/<name>/`.
 
+## Deployment
+
+Images are built from source on every release and published to `ghcr.io/somme4096/dusha`. The container runs `dusha serve` with the companion home at `/data`, so one volume holds `config.json`, the data directory, and your identity, prompts, and plugins files.
+
+1. Fetch the compose file and start. The commands are the same for `podman compose`.
+
+```sh
+mkdir dusha && cd dusha
+curl -O https://raw.githubusercontent.com/Somme4096/dusha/main/deploy/compose.yaml
+touch .env # Put EMBEDDING_API_KEY=... here if you use one.
+docker compose up -d
+curl http://127.0.0.1:8765/health # Should return ok.
+```
+
+The compose file sets `DUSHA_HOST=0.0.0.0` to override the config's `host` key, and publishes the port on loopback only. Reach it from another device with Tailscale on the host, or a TLS reverse proxy. When Tailscale itself runs in a container, put both on one compose network and point it at `dusha:8765` instead of publishing the port. Do not expose plain HTTP.
+
+2. Edit the config in the volume and restart.
+
+```sh
+docker compose cp dusha:/data/config.json .
+${EDITOR:-vi} config.json
+docker compose cp config.json dusha:/data/config.json
+docker compose restart
+```
+
+3. Update and back up with the commands running inside the container.
+
+```sh
+docker compose pull && docker compose up -d
+docker compose exec dusha dusha backup /data/backup.sqlite3
+docker compose cp dusha:/data/backup.sqlite3 backup.sqlite3
+```
+
+Podman runs the same file with `podman compose`, and Quadlet turns it into a rootless systemd service. Pin `image:` to `1.3` or `1.3.21` to hold a version back.
+
 ## Auth
 
 Auth is off by default, and the service binds to localhost. To turn auth on, put a token in the config:
