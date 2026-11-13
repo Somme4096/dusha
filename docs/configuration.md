@@ -42,6 +42,8 @@ Rules for the file:
 | `timezone` | `Asia/Taipei` | IANA zone for quiet hours and the daily limit. |
 | `api_token` | `""` | The API token. Empty turns auth off. See [Auth](guide.md#auth). |
 
+The `DUSHA_HOST` environment variable overrides `host` for one `dusha serve` run, so a container can bind all interfaces. The proxy ignores it and keeps its loopback rule.
+
 `upstream` and `api_openai` moved to [providers](#providers). Startup rejects them.
 
 ## Proxy

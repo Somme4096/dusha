@@ -297,6 +297,17 @@ def test_cli_serve_follows_the_selection_order(tmp_path, free_port):
     assert ambiguous.returncode == 2 and "several companions exist" in ambiguous.stderr
 
 
+def test_cli_serve_binds_the_dusha_host_override(tmp_path, free_port):
+    port = free_port()
+    _home(tmp_path, "nova", port=port)
+    server = _start(tmp_path, "serve", "nova", DUSHA_HOST="0.0.0.0")
+    try:
+        health = _wait_for(lambda: _get_json(f"http://127.0.0.1:{port}/health"))
+    finally:
+        _stop(server)
+    assert health["status"] == "ok"
+
+
 def test_cli_serve_rejects_a_bad_companion_name_without_creating_anything(tmp_path):
     result = _cli(tmp_path, "serve", "../escape")
     assert result.returncode == 2

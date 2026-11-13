@@ -246,7 +246,8 @@ def serve(ctx: click.Context, name: str | None) -> None:
 
     from .api import create_app
 
-    uvicorn.run(create_app(cfg), host=cfg.host, port=cfg.port, log_level="info")
+    host = os.getenv("DUSHA_HOST") or cfg.host
+    uvicorn.run(create_app(cfg), host=host, port=cfg.port, log_level="info")
 
 
 def _init_serve(home: Path) -> bool:
