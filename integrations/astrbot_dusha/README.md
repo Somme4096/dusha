@@ -1,6 +1,8 @@
 # AstrBot plugin
 
-This plugin connects AstrBot to the dusha server. It needs AstrBot 4.8 or later and supports Discord.
+This plugin delivers proactive messages from dusha servers to AstrBot. It needs AstrBot 4.8 or later and supports Discord.
+
+The plugin no longer stores conversations, injects chat context, or registers tools. Chat memory comes from the dusha proxy provider, so point AstrBot's chat provider at the dusha proxy (`provider: dusha`) and let the proxy serve the model behind it. Without that provider, AstrBot has no memory and the plugin only sends nudges.
 
 ## Install
 
@@ -11,79 +13,66 @@ cp -a integrations/astrbot_dusha \
   /path/to/AstrBot/data/plugins/astrbot_dusha
 ```
 
-Restart AstrBot or reload the plugin from its manager. Keep AstrBot's chat provider pointed at your model provider, not at the server.
+Restart AstrBot or reload the plugin from its manager.
 
 ## Settings
 
-Each field's description lives in [`_conf_schema.json`](_conf_schema.json). The table lists the defaults and the points that need care.
+Each field's description lives in [`_conf_schema.json`](_conf_schema.json). Every setting sits in one `companions` entry, and the table lists the defaults and the points that need care.
 
 | Field | Default |
 | --- | --- |
+| `label` | `Companion` |
 | `gateway_url` | `http://127.0.0.1:8765` |
 | `platform_id` | `""` |
 | `config_profile` | `""` |
-| `api_token` | `""` |
 | `harness` | `astrbot` |
-| `request_timeout_seconds` | `60` |
+| `api_token` | `""` |
 | `poll_interval_seconds` | `30` |
 | `proactive_enabled` | `true` |
-| `proactive_tool_keywords` | `["donsetch", "fetch"]` |
-| `proactive_request_hooks` | `["astrbot_plugin_opencode_go_session"]` |
-| `bindings` | `[]` |
+| `request_timeout_seconds` | `60` |
 
-- `platform_id`: run `/sid` on your Discord bot and copy its `Bot ID`. With `config_profile` also set, a chat must match both. With both empty, the settings serve no chat.
+- `label`: a name for the entry in the AstrBot settings page. It is never sent to the server and never affects routing.
+- `platform_id`: run `/sid` on your Discord bot and copy its `Bot ID`. With `config_profile` also set, a chat must match both.
+- `config_profile`: an AstrBot config profile ID or name. Leave both `platform_id` and `config_profile` empty to disable the entry.
+- `harness`: keep it unique per companion. The server keys proactive events by this name, so a rename orphans the events queued under the old name and the companion stops receiving them.
 - `api_token`: the server's API token, when [auth](../../docs/guide.md#auth) is on.
-- `harness`: a rename starts each chat with empty recent history, and the plugin stops receiving proactive events queued under the old name.
-- `request_timeout_seconds` has a minimum of 1. Message storage runs plugin hooks in the server process, so raise it if storage is slow.
 - `poll_interval_seconds` has a minimum of 5.
-- `proactive_tool_keywords`: AstrBot tools whose names contain a keyword join proactive generation.
+- `request_timeout_seconds` has a minimum of 1.
 
 ## Several companions
 
 Each companion needs its own server, with its own home and port. Then:
 
 1. In AstrBot, route each chat to a config profile, one per companion. Give each profile its own persona, because proactive messages use the persona of the target chat.
-2. Add one `bindings` entry per companion, with that profile in `config_profile` and that server in `gateway_url`.
+2. Add one `companions` entry per companion, with a label, its own `gateway_url`, and a `harness` no other entry uses. Use `config_profile` to send a chat to that entry.
 
 ```json
 {
-  "bindings": [
+  "companions": [
     {
+      "label": "Alice",
+      "gateway_url": "http://127.0.0.1:8765",
+      "config_profile": "Alice profile",
+      "harness": "alice-bot"
+    },
+    {
+      "label": "Bruno",
       "gateway_url": "http://127.0.0.1:8767",
-      "config_profile": "work",
-      "harness": "astrbot-work"
+      "platform_id": "123456789012345678",
+      "config_profile": "Bruno profile",
+      "harness": "bruno-bot"
     }
   ]
 }
 ```
 
-The first entry that matches a chat serves it. The top-level settings serve chats that no entry matches. Each companion polls its own server, and it acknowledges an event as failed when AstrBot now routes its chat to another companion.
-
-## Tools
-
-| Tool | Arguments | Calls |
-| --- | --- | --- |
-| `search_conversation_memory` | `query`, `limit` | `POST /state/v1/memory/search` |
-| `get_conversation_record` | `memory_id`, `context_messages` | `GET /state/v1/memory/{id}` |
-| `remember_evergreen_fact` | `key`, `text`, `priority`, `review_after`, `expires_at`, `reason` | `POST /state/v1/evergreen/facts` |
-| `revise_evergreen_fact` | `fact_id`, `expected_revision`, `text`, `priority`, `review_after`, `expires_at`, `reason` | `POST /state/v1/evergreen/facts/{id}/revisions` |
-| `forget_evergreen_fact` | `fact_id`, `expected_revision`, `reason` | `POST /state/v1/evergreen/facts/{id}/forget` |
-| `review_evergreen_facts` | `due_only`, `include_inactive`, `limit` | `GET /state/v1/evergreen/facts` |
-| `yumecho_add` | `text` | `POST /state/v1/memo/add` |
-| `yumecho_list` | `status`, `limit` | `GET /state/v1/memo/list` |
-| `yumecho_done` | `note_id`, `reason` | `POST /state/v1/memo/{id}/done` |
-
-Tools return JSON with `ok: true`, or `ok: false` plus `error` and, for HTTP failures, `status`.
+The first entry that matches a chat serves it. Each companion polls its own server and acknowledges an event as failed when AstrBot now routes its chat to another companion, so the server offers it to the right one later.
 
 ## Behavior
 
-Each turn follows the [client flow](../../docs/api.md#client-flow): the plugin stores the user message, requests context, and archives the assistant reply. Two details differ.
+With `proactive_enabled` on, each companion polls one event at a time. It generates a message with the route's persona and the event's context, rendered the way the [client flow](../../docs/api.md#client-flow) renders a turn. It tries the route's chat provider first and then each other provider until one answers, then sends the text, writes it into AstrBot's history after a `[proactive <reason>]` marker, and acknowledges `sent`.
 
-The rendered context goes into two parts of the user message. Facts, memos, the affect block, external plugin blocks, and recalled records go into a part that AstrBot marks provider-only. AstrBot sends it with the request and keeps it out of saved history. On the first turn of a conversation, the plugin also saves recent records once as a `<previous_session>` part, which bridges the previous session. Later turns skip them, because AstrBot's history holds them. AstrBot releases without provider-only parts get the text in the system prompt instead.
-
-If the store call fails, the plugin logs `Message archive failed` and still requests context. If the context call fails, it logs `Context unavailable` and sends the request without an injection.
-
-With `proactive_enabled` on, the plugin polls one event at a time. It generates a message with the route's persona, the event's context rendered the same way, and the tools above. It tries each configured provider until one answers, then sends the text, writes it into AstrBot's history after a `[proactive <reason>]` marker, and acknowledges `sent`. A wrong platform, a missing persona, an empty reply, or a failed send ends in a `failed` acknowledgement, and the server offers the event again later.
+A wrong platform, a missing persona, an empty reply, or a failed send ends in a `failed` acknowledgement, and the server offers the event again later.
 
 ## Troubleshooting
 
