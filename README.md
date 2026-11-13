@@ -10,28 +10,28 @@
 > [!IMPORTANT]
 > This README.md is proudly written by a human (˶>⩊<˶)❤️
 
-**Dusha** (_Rus:_ душа, [dʊˈʂa], "soul") is an extremely simple python API that:
+**Dusha** (_Rus:_ душа, [dʊˈʂa], "soul") is a lightweight python API that:
 
 1) stores messages, memories, affect state, anything you want
 2) injects those contexts at every LLM call (any provider is supported)
 3) has an extensible MCP and CLI to let you add any tools.
 
-Because it's just an extensible python program, you can do **literally anything**. Including:
+Because it's just a hackable python API, you can do **literally anything**. Including:
 
+- hop between harnesses and get the same soul on the other side
 - write your own emotion system
 - call weather API and feed it to the model real-time (so they know it's raining outside)
 - feed them your browser history
 - let your companion play music on any device through built-in `relay` plugin
 - integrate an external memory provider like [Supermemory](https://github.com/supermemoryai/supermemory) and add tools to Dusha MCP
-- hop between harnesses and get the same soul on the other side
 
-See [dusha-plugin-collections](https://github.com/Somme4096/dusha-plugin-collections). 
+See [dusha-plugin-collections](https://github.com/Somme4096/dusha-plugin-collections).
 
 ## Quickstart
 
 
 ```sh
-uv tool install dusha
+uv tool install dusha # docker image available. See below
 dusha init <name> --serve # Also you can use --proxy for proxy setup, or without flags for generating both
 dusha serve <name>
 ```
@@ -79,7 +79,20 @@ INFO:     Uvicorn running on http://127.0.0.1:8766 (Press CTRL+C to quit)
 
 Now in your harness or app, point your endpoint at the URL `provider add` gave you: in this case, `http://127.0.0.1:8766/302ai` and you're good to go. Now every request routes through dusha proxy.
 
-Optionally (but I highly recommend it), add [MCP](https://github.com/Somme4096/dusha/blob/main/docs/api.md#mcp).
+Optionally (highly recommended), add [MCP](https://github.com/Somme4096/dusha/blob/main/docs/api.md#mcp).
+
+### Docker (and Podman)
+
+Prefer a container? The image is `ghcr.io/somme4096/dusha`. We have compose at home:
+
+```sh
+mkdir dusha && cd dusha
+curl -O https://raw.githubusercontent.com/Somme4096/dusha/main/deploy/compose.yaml
+touch .env # Put EMBEDDING_API_KEY=... here if you use one.
+docker compose up -d # podman and podman-compose also works.
+```
+
+Detail in [Deployment](https://github.com/Somme4096/dusha/blob/main/docs/guide.md#deployment).
 
 ## How it works
 

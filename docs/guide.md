@@ -49,9 +49,9 @@ curl http://127.0.0.1:8765/health # `/health` should return ok.
 
 The unit is a template. `dusha@<name>` serves the home `~/.config/dusha/<name>/`.
 
-## Deployment
+## Run as a docker/podman container
 
-Images are built from source on every release and published to `ghcr.io/somme4096/dusha`. The container runs `dusha serve` with the companion home at `/data`, so one volume holds `config.json`, the data directory, and your identity, prompts, and plugins files.
+Images are built from source on every release and published to `ghcr.io/somme4096/dusha`. The container runs `dusha serve` with the companion home at `/data`, so one volume has `config.json`, the data directory, and your identity, prompts, and plugins files.
 
 1. Fetch the compose file and start. The commands are the same for `podman compose`.
 
@@ -63,7 +63,7 @@ docker compose up -d
 curl http://127.0.0.1:8765/health # Should return ok.
 ```
 
-The compose file sets `DUSHA_HOST=0.0.0.0` to override the config's `host` key, and publishes the port on loopback only. Reach it from another device with Tailscale on the host, or a TLS reverse proxy. When Tailscale itself runs in a container, put both on one compose network and point it at `dusha:8765` instead of publishing the port. Do not expose plain HTTP.
+The compose file sets `DUSHA_HOST=0.0.0.0` to override the config's `host` key, and publishes the port on loopback only. Reach it from another device with Tailscale on the host, or a TLS reverse proxy. When Tailscale itself runs in a container, put both on one compose network and point it at `dusha:8765` instead of publishing the port. Do not expose plain HTTP. You know the drill. 
 
 2. Edit the config in the volume and restart.
 
@@ -82,7 +82,7 @@ docker compose exec dusha dusha backup /data/backup.sqlite3
 docker compose cp dusha:/data/backup.sqlite3 backup.sqlite3
 ```
 
-Podman runs the same file with `podman compose`, and Quadlet turns it into a rootless systemd service. Pin `image:` to `1.3` or `1.3.21` to hold a version back.
+Podman runs the same file with `podman compose`, and Quadlet turns it into a rootless systemd service. Pin `image:` to `1.2.21` or `1.3.21` if you are afraid of it breaking after update.
 
 ## Auth
 
