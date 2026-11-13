@@ -12,9 +12,9 @@
 
 **Dusha** (_Rus:_ душа, [dʊˈʂa], "soul") is an extremely simple python API that:
 
-1) store messages, memories, affect state, anything you want
-2) inject those contexts at every LLM call (any provider is supported)
-3) has a extensible MCP and CLI to let you add any tools.
+1) stores messages, memories, affect state, anything you want
+2) injects those contexts at every LLM call (any provider is supported)
+3) has an extensible MCP and CLI to let you add any tools.
 
 Because it's just an extensible python program, you can do **literally anything**. Including:
 
@@ -90,11 +90,11 @@ Dusha adds context "after" each message so cache can hit.
 <details>
 <summary>How do messages, memory, affect, and identity work in stock dusha?</summary>
 
-- **Messages:** Basic SQLite FTS5 plus optional embedding search. An plugin can do everything you can imagine if that's not enough.
+- **Messages:** Basic SQLite FTS5 plus optional embedding search. A plugin can do everything you can imagine if that's not enough.
 - **Evergreen:** Long-term facts that you edit from the CLI and your companion edits through integration tools. No automatic extraction.
   - Think of it as a `USER.md` but with proper lifecycle management and duplication prevention.
 - **Affect:** A deterministic emotion engine that uses values like `{"anger": 0.35}` and shifts over time, including when the user goes unresponsive. Of course, you can make your own!
-  - Side note is that Message intent analysis can also be an external plugin. drop the [system_one](https://github.com/Somme4096/dusha-plugin-collections/tree/main/system_one) plugin or any other classifier plugin into the plugins directory, and its `decide` listener picks which emotion each user message moves.
+  - Message intent analysis can also be an external plugin. drop the [system_one](https://github.com/Somme4096/dusha-plugin-collections/tree/main/system_one) plugin or any other classifier plugin into the plugins directory, and its `decide` listener picks which emotion each user message should provoke.
 - **Identity:** `identity.md`, or custom name.
 
 </details>
@@ -103,7 +103,7 @@ Dusha adds context "after" each message so cache can hit.
 
 Everything is a plugin in dusha! Identity, memory, evergreen, memo, affect, and proactive are built in that you can alter/disable. 
 
-See [Plugin](https://github.com/Somme4096/dusha/blob/main/docs/plugins.md) for list of build-in plugins and how to build your own plugin. If you like, you can also take a look at [dusha-plugin-collections](https://github.com/Somme4096/dusha-plugin-collections) which contain dusha plugins I use daily.
+See [Plugin](https://github.com/Somme4096/dusha/blob/main/docs/plugins.md) for list of built-in plugins and how to build your own plugin. If you like, you can also take a look at [dusha-plugin-collections](https://github.com/Somme4096/dusha-plugin-collections) which contain dusha plugins I use daily.
 
 ## See Also
 
@@ -113,7 +113,7 @@ See [Plugin](https://github.com/Somme4096/dusha/blob/main/docs/plugins.md) for l
 - [docs/plugins.md](https://github.com/Somme4096/dusha/blob/main/docs/plugins.md): the built-in plugins, their commands and tools, and the Plugin API.
 - [dusha-plugin-collections](https://github.com/Somme4096/dusha-plugin-collections): My daily-driving dusha plugins. Useful as reference implementation.
 
-## Verisioning
+## Versioning
 
 With version `1.0.21`, dusha entered `5:Stable/Production` on PyPI. I will avoid breaking changes in minor and patch releases and deprecate features before removing them.
 
