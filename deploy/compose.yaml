@@ -1,0 +1,16 @@
+services:
+  dusha:
+    image: ghcr.io/somme4096/dusha:latest
+    container_name: dusha
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8765:8765"
+    environment:
+      DUSHA_HOST: 0.0.0.0
+    env_file:
+      - .env
+    volumes:
+      - dusha:/data
+
+volumes:
+  dusha:

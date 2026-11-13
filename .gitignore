@@ -5,6 +5,7 @@ __pycache__/
 *.pyc
 config.yaml
 config.json
+.env
 data/
 integrations/*.zip
 .claude/settings.local.json
