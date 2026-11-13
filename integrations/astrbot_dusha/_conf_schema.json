@@ -1,54 +1,64 @@
 {
   "companions": {
-    "description": "One entry per companion, each with its own dusha server and AstrBot platform or config profile. The first entry that matches a chat serves it. Leave platform_id and config_profile empty to disable an entry.",
+    "description": "Proactive companions",
+    "hint": "One entry per companion, each with its own dusha server and AstrBot platform or config profile. The first entry that matches a chat serves it.",
     "type": "template_list",
     "templates": {
       "companion": {
         "name": "Companion",
         "items": {
           "label": {
-            "description": "Name for this companion in this settings page only. It is never sent to the server and never affects routing.",
+            "description": "Display name (settings page only)",
+            "hint": "Never sent to the server and never affects routing. Use it to tell companions apart.",
             "type": "string",
-            "default": "Companion"
+            "default": ""
           },
           "gateway_url": {
-            "description": "Dusha server URL for this companion.",
+            "description": "Dusha server URL",
+            "hint": "One server per companion, each with its own home and port.",
             "type": "string",
             "default": "http://127.0.0.1:8765"
           },
           "platform_id": {
-            "description": "Exact AstrBot platform ID allowed to use this companion. Run /sid on the selected bot and copy Bot ID. Empty matches every platform when config_profile is set.",
+            "description": "AstrBot platform ID",
+            "hint": "Run /sid on the selected bot and copy its Bot ID. Empty matches every platform when a config profile is set.",
             "type": "string",
             "default": ""
           },
           "config_profile": {
-            "description": "AstrBot config profile ID or name allowed to use this companion. Empty matches every profile. Leave both this and platform_id empty to disable this companion.",
+            "description": "AstrBot config profile",
+            "hint": "Profile ID or name allowed to use this companion. Empty matches every profile. Leave both this and platform ID empty to disable this companion.",
             "type": "string",
             "default": ""
           },
           "harness": {
-            "description": "Harness name sent to the server. Keep it unique per companion, because the server keys proactive events by this name. After a rename, events queued under the old name are orphaned and this companion stops receiving them.",
+            "description": "Harness name",
+            "hint": "Keys stored conversations and proactive events on the server. Keep it unique per companion. After a rename, queued events under the old name are orphaned.",
             "type": "string",
             "default": "astrbot"
           },
           "api_token": {
-            "description": "Value for X-Companion-Token",
+            "description": "Server API token",
+            "hint": "Sent as X-Companion-Token. Required when the server has auth turned on.",
             "type": "string",
             "default": "",
             "obvious_hint": true
           },
           "poll_interval_seconds": {
-            "description": "Seconds between proactive event polls. Values below 5 clamp to 5.",
+            "description": "Poll interval (seconds)",
+            "hint": "How often to ask the server for proactive events. Values below 5 clamp to 5.",
             "type": "int",
             "default": 30
           },
           "proactive_enabled": {
-            "description": "Poll and send proactive events for this companion.",
+            "description": "Enable proactive delivery",
+            "hint": "Turn off to pause this companion without deleting it.",
             "type": "bool",
             "default": true
           },
           "request_timeout_seconds": {
-            "description": "Seconds to wait for one server response. Values below 1 clamp to 1.",
+            "description": "Request timeout (seconds)",
+            "hint": "How long to wait for one server response. Values below 1 clamp to 1.",
             "type": "float",
             "default": 60.0
           }

@@ -233,9 +233,11 @@ class DushaPlugin(star.Star):
             if not persona:
                 raise RuntimeError("no AstrBot persona is configured for this session")
             provider_id = await self.context.get_current_chat_provider_id(route)
-            context = event["context"]
+            context = event.get("context") or {}
+            records = context.get("records") or []
+            block = context.get("context") or {}
             injection = render_turn(
-                context["context"], list(context.get("records", [])), await self._companion_name(binding)
+                block, list(records), await self._companion_name(binding)
             )
             request = ProviderRequest(
                 prompt=str(event["generation_instruction"]),
