@@ -10,9 +10,22 @@
 > [!IMPORTANT]
 > This README.md is proudly written by a human (˶>⩊<˶)❤️
 
-*Dusha* (Russian: душа, [dʊˈʂa], "soul") is an extremely simple HTTP API / proxy that stores messages, identity, memories, affect—basically anything makes your LLM companion yours—outside your harness. Any client that can add a custom provider are able to use it, so you can hop between harnesses (or even use multiple at once!) and still get the same soul on the other side.
+**Dusha** (_Rus:_ душа, [dʊˈʂa], "soul") is an extremely simple python API that:
 
-Almost everything, including instruction prompt, is configurable through JSON. I also built dusha on [everything-is-a-plugin](https://github.com/deepseek-ai/deepseek-harness) architecture, so you can super easily wire an external memory provider or do fun things like writing your own emotion system~!
+1) store messages, memories, affect state, anything you want
+2) inject those contexts at every LLM call (any provider is supported)
+3) has a extensible MCP and CLI to let you add any tools.
+
+Because it's just an extensible python program, you can do **literally anything**. Including:
+
+- write your own emotion system
+- call weather API and feed it to the model real-time (so they know it's raining outside)
+- feed them your browser history
+- let your companion play music on any device through built-in `relay` plugin
+- integrate an external memory provider like [Supermemory](https://github.com/supermemoryai/supermemory) and add tools to Dusha MCP
+- hop between harnesses and get the same soul on the other side
+
+See [dusha-plugin-collections](https://github.com/Somme4096/dusha-plugin-collections). 
 
 ## Quickstart
 
@@ -64,7 +77,7 @@ INFO:     Application startup complete.
 INFO:     Uvicorn running on http://127.0.0.1:8766 (Press CTRL+C to quit)
 ```
 
-Now in your harness or app, point your endpoint at the URL `provider add` gave you: in this case, `http://127.0.0.1:8766/302ai` and you're good to go!
+Now in your harness or app, point your endpoint at the URL `provider add` gave you: in this case, `http://127.0.0.1:8766/302ai` and you're good to go. Now every request routes through dusha proxy.
 
 Optionally (but I highly recommend it), add [MCP](https://github.com/Somme4096/dusha/blob/main/docs/api.md#mcp).
 
