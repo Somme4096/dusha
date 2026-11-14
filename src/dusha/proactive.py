@@ -154,6 +154,19 @@ class ProactiveEngine:
             )
         return None
 
+    def _route(self, target: Any = None) -> dict[str, Any] | None:
+        chosen = self.rules.target if target is None else target
+        if chosen == "latest":
+            return self.companion.latest_route()
+        if not chosen.get("conversation_id"):
+            return self.companion.latest_route(chosen["harness"])
+        with self.database.connect() as db:
+            row = db.execute(
+                "SELECT * FROM conversations WHERE harness=? AND external_id=? AND route != ''",
+                (chosen["harness"], chosen["conversation_id"]),
+            ).fetchone()
+        return dict(row) if row else None
+
     def _quiet(self, now: datetime) -> bool:
         hour = now.astimezone(self.timezone).hour
         start, end = self.rules.quiet_start_hour, self.rules.quiet_end_hour
@@ -194,7 +207,7 @@ class ProactiveEngine:
             elapsed = (current - parse_time(state["last_proactive_sent_at"])).total_seconds() / 60
             if elapsed < self.rules.cooldown_minutes:
                 return None
-        route = self.companion.latest_route()
+        route = self._route()
         if not route:
             return None
         with self.database.connect() as db:

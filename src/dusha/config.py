@@ -210,9 +210,21 @@ class ProactiveConfig:
     quiet_end_hour: int = _PROACTIVE["quiet_end_hour"]
     lease_seconds: int = _PROACTIVE["lease_seconds"]
     retry_delay_minutes: int = _PROACTIVE["retry_delay_minutes"]
+    target: Any = "latest"
 
     def __post_init__(self) -> None:
         _check_bounds(self, "plugins.proactive")
+        target = self.target
+        if target == "latest":
+            return
+        valid = isinstance(target, dict) and set(target) <= {"harness", "conversation_id"}
+        valid = valid and isinstance(target.get("harness"), str) and bool(target["harness"])
+        if valid and "conversation_id" in target:
+            valid = isinstance(target["conversation_id"], str) and bool(target["conversation_id"])
+        if not valid:
+            raise ValueError(
+                "plugins.proactive.target must be 'latest', {harness}, or {harness, conversation_id}"
+            )
 
 
 @dataclass(slots=True)

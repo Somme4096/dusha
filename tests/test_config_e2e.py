@@ -70,6 +70,18 @@ def _prompts_file(tmp_path, mutate, name="prompts.json"):
         ('{"plugins": {"proactive": {"thresholds": {"fear": 5.0}}}}', "within value_range"),
         ('{"plugins": {"proactive": {"thresholds": {"play": 0.5}}}}', "without a proactive trigger"),
         ('{"plugins": {"proactive": {"quiet_start_hour": 99}}}', "plugins.proactive.quiet_start_hour"),
+        ('{"plugins": {"proactive": {"target": "pinned"}}}', "plugins.proactive.target must be"),
+        ('{"plugins": {"proactive": {"target": {}}}}', "plugins.proactive.target must be"),
+        ('{"plugins": {"proactive": {"target": {"harness": ""}}}}', "plugins.proactive.target must be"),
+        ('{"plugins": {"proactive": {"target": {"harness": 7}}}}', "plugins.proactive.target must be"),
+        (
+            '{"plugins": {"proactive": {"target": {"harness": "astrbot", "conversation_id": ""}}}}',
+            "plugins.proactive.target must be",
+        ),
+        (
+            '{"plugins": {"proactive": {"target": {"harness": "astrbot", "route": "x"}}}}',
+            "plugins.proactive.target must be",
+        ),
         ('{"plugins": {"proactive": {"poll_interval_seconds": -5}}}', "plugins.proactive.poll_interval"),
         ('{"plugins": {"evergreen": {"max_items": -3}}}', "plugins.evergreen.max_items"),
         ('{"embedding": {"timeout_seconds": 0}}', "embedding.timeout_seconds must be above 0"),
@@ -250,6 +262,16 @@ async def test_http_example_config_starts_and_serves(tmp_path):
         context = await client.post("/state/v1/context", json={"query": ""})
     assert health.json()["status"] == "ok"
     assert context.status_code == 200
+
+
+@pytest.mark.parametrize(
+    "target", ["latest", {"harness": "astrbot"}, {"harness": "astrbot", "conversation_id": "c1"}]
+)
+async def test_startup_accepts_a_proactive_target(tmp_path, target):
+    app = _start(tmp_path, {"plugins": {"proactive": {"target": target}}})
+    assert app.state.service.get("proactive").rules.target == target
+    async with _client(app) as client:
+        assert (await client.get("/health")).json()["status"] == "ok"
 
 
 @pytest.mark.parametrize("absolute", [False, True])

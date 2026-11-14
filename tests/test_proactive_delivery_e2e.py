@@ -33,13 +33,27 @@ async def _say(client, content="I will be away for a while."):
     return response.json()
 
 
-async def _silent_for(client, hours):
-    await _say(client)
+async def _routed(client, harness, conversation_id, route):
+    response = await client.post(
+        "/state/v1/messages",
+        json={"harness": harness, "conversation_id": conversation_id, "route": route,
+              "role": "user", "content": "Talk to me there."},
+    )
+    assert response.status_code == 200
+    return response.json()
+
+
+def _backdate(client, hours):
     past = isoformat(utc_now() - timedelta(hours=hours))
     with client.app.state.service.database.connect() as db:
         db.execute(
             "UPDATE affect_state SET last_user_message_at=?, last_updated_at=? WHERE id=1", (past, past)
         )
+
+
+async def _silent_for(client, hours):
+    await _say(client)
+    _backdate(client, hours)
 
 
 async def _evaluate(client):
@@ -48,9 +62,9 @@ async def _evaluate(client):
     return response.json()["event"]
 
 
-async def _poll(client, consumer="astrbot"):
+async def _poll(client, consumer="astrbot", harness="astrbot"):
     response = await client.get(
-        "/state/v1/proactive/events", params={"consumer": consumer, "harness": "astrbot", "limit": 1}
+        "/state/v1/proactive/events", params={"consumer": consumer, "harness": harness, "limit": 1}
     )
     assert response.status_code == 200
     return [event["id"] for event in response.json()["events"]]
@@ -151,3 +165,43 @@ async def test_a_turn_with_no_route_never_becomes_the_proactive_target(config):
         assert stored["route"] == ""
         event = await _evaluate(client)
         assert event["target"]["route"] == ROUTE
+
+
+async def test_a_pinned_harness_target_beats_a_newer_route_on_another_harness(config):
+    config.plugin("proactive").target = {"harness": "astrbot"}
+    async with _running(config) as client:
+        await _silent_for(client, 5)
+        await _routed(client, "other", "other-1", "other-route")
+        _backdate(client, 5)
+        event = await _evaluate(client)
+        assert event["target"] == {"harness": "astrbot", "conversation_id": ROUTE, "route": ROUTE}
+        assert await _poll(client, harness="other") == []
+        assert await _poll(client) == [event["id"]]
+        assert (await _ack(client, event["id"], "sent", text="Still here.")).status_code == 200
+        assert await _evaluate(client) is None
+
+
+async def test_a_pinned_conversation_target_beats_a_newer_route_in_the_same_harness(config):
+    config.plugin("proactive").target = {"harness": "astrbot", "conversation_id": ROUTE}
+    async with _running(config) as client:
+        await _silent_for(client, 5)
+        await _routed(client, "astrbot", "newer", "newer-route")
+        await _routed(client, "other", "other-1", "other-route")
+        _backdate(client, 5)
+        event = await _evaluate(client)
+        assert event["target"] == {"harness": "astrbot", "conversation_id": ROUTE, "route": ROUTE}
+        assert await _poll(client) == [event["id"]]
+
+
+async def test_a_pinned_conversation_without_a_route_targets_nothing(config):
+    config.plugin("proactive").target = {"harness": "astrbot", "conversation_id": "unrouted"}
+    async with _running(config) as client:
+        await _silent_for(client, 5)
+        response = await client.post(
+            "/state/v1/messages",
+            json={"harness": "astrbot", "conversation_id": "unrouted", "route": "-", "role": "user",
+                  "content": "No route here."},
+        )
+        assert response.status_code == 200
+        _backdate(client, 5)
+        assert await _evaluate(client) is None

@@ -214,13 +214,19 @@ class CompanionService:
                 hits.extend(block["search_hits"])
         return {**composed, "search_hits": hits}
 
-    def latest_route(self) -> dict[str, Any] | None:
+    def latest_route(self, harness: str = "") -> dict[str, Any] | None:
+        clause = "WHERE route != ''"
+        args: list[str] = []
+        if harness:
+            clause += " AND harness=?"
+            args.append(harness)
         with self.database.connect() as db:
             row = db.execute(
-                """SELECT id, harness, external_id, route
+                f"""SELECT id, harness, external_id, route
                    FROM conversations
-                   WHERE route != ''
+                   {clause}
                    ORDER BY updated_at DESC, id DESC LIMIT 1""",
+                args,
             ).fetchone()
         return dict(row) if row else None
 
