@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import json
 from contextlib import asynccontextmanager
 
@@ -251,3 +252,110 @@ async def test_http_active_memos_reach_the_injection_and_archived_ones_do_not(co
     assert result["context"]["blocks"]["memo"] == [
         {"id": active["id"], "text": "Draft the report.", "created_at": active["created_at"]}
     ]
+
+
+def _with_harnesses(config, harnesses):
+    return dataclasses.replace(config, harnesses=harnesses)
+
+
+async def test_http_harness_config_filters_the_context_by_plugin(tmp_path, config):
+    config = _with_harnesses(
+        config,
+        {
+            "coding": ["identity", "evergreen"],
+            "chat": {"include": ["identity", "memo"]},
+            "quiet": {"exclude": ["affect", "memo"]},
+            "bare": {},
+        },
+    )
+    config.plugins["identity"].config = _identity(tmp_path, b"IDENTITY_SENTINEL")
+    async with _running(config) as client:
+        await _say(client, "The orchid token is in the blue cabinet.")
+        assert (await _remember(client, "user.favorite", "The user likes tea.")).status_code == 200
+        await client.post("/state/v1/memo/add", json={"text": "Draft the report."})
+        coding = await _context(client, harness="coding")
+        chat = await _context(client, harness="chat")
+        quiet = await _context(client, harness="quiet")
+        bare = await _context(client, harness="bare")
+        plain = await _context(client, harness="api")
+    all_plugins = {"identity", "memory", "evergreen", "memo", "affect"}
+    assert set(coding["context"]["blocks"]) == {"identity", "evergreen"}
+    assert set(chat["context"]["blocks"]) == {"identity", "memo"}
+    assert set(quiet["context"]["blocks"]) == {"identity", "memory", "evergreen"}
+    assert set(bare["context"]["blocks"]) == set(plain["context"]["blocks"]) == all_plugins
+    assert coding["injection"].startswith("IDENTITY_SENTINEL")
+    assert "The orchid token is in the blue cabinet." not in coding["injection"]
+    assert "The orchid token is in the blue cabinet." in plain["injection"]
+    assert "Draft the report." in chat["injection"]
+    assert "Draft the report." not in quiet["injection"]
+    assert "Read the Affect line as your present feeling." in plain["injection"]
+    assert "Read the Affect line as your present feeling." not in quiet["injection"]
+    assert coding["injection"] != plain["injection"]
+
+
+def test_harness_excludes_skip_the_plugin_context_listeners(tmp_path, config, svc):
+    config = _with_harnesses(config, {"quiet": {"exclude": ["affect", "memo"]}})
+    config.plugins["identity"].config = _identity(tmp_path, b"IDENTITY_SENTINEL")
+    service = svc(cfg=config)
+    calls: list[str] = []
+    for runtime in service.registry.runtimes:
+        if "context" not in runtime.listeners:
+            continue
+        runtime.listeners["context"].insert(0, lambda request, name=runtime.name: calls.append(name))
+    result = service.build_context(query="", harness="quiet")
+    assert sorted(calls) == ["evergreen", "identity", "memory"]
+    assert "affect" not in result["context"]["blocks"]
+    assert "memo" not in result["context"]["blocks"]
+    calls.clear()
+    service.build_context(query="", harness="api")
+    assert sorted(calls) == ["affect", "evergreen", "identity", "memo", "memory"]
+
+
+async def test_http_plugins_header_and_body_override_the_harness_config(tmp_path, config):
+    config = _with_harnesses(config, {"chat": {"include": ["identity"]}})
+    config.plugins["identity"].config = _identity(tmp_path, b"IDENTITY_SENTINEL")
+    async with _running(config) as client:
+        await _say(client, "The orchid token is in the blue cabinet.")
+        assert (await _remember(client, "user.favorite", "The user likes tea.")).status_code == 200
+        await client.post("/state/v1/memo/add", json={"text": "Draft the report."})
+        allowed = await client.post(
+            "/state/v1/context",
+            json={"harness": "chat", "conversation_id": "one"},
+            headers={"X-Companion-Plugins": "identity,evergreen"},
+        )
+        none = await client.post(
+            "/state/v1/context",
+            json={"harness": "chat", "conversation_id": "one"},
+            headers={"X-Companion-Plugins": "none"},
+        )
+        body = await client.post(
+            "/state/v1/context",
+            json={"harness": "chat", "conversation_id": "one", "plugins": ["memo"]},
+        )
+        configured = await _context(client, harness="chat")
+        trailing = await client.post(
+            "/state/v1/context",
+            json={"harness": "chat"},
+            headers={"X-Companion-Plugins": "identity,"},
+        )
+        unknown = await client.post(
+            "/state/v1/context",
+            json={"harness": "chat"},
+            headers={"X-Companion-Plugins": "bad-name"},
+        )
+        mixed = await client.post(
+            "/state/v1/context",
+            json={"harness": "chat"},
+            headers={"X-Companion-Plugins": "none,identity"},
+        )
+        bad_body = await client.post(
+            "/state/v1/context", json={"harness": "chat", "plugins": ["bad-name"]}
+        )
+    assert set(allowed.json()["context"]["blocks"]) == {"identity", "evergreen"}
+    assert allowed.json()["injection"].startswith("IDENTITY_SENTINEL")
+    assert none.json()["context"]["blocks"] == {}
+    assert none.json()["injection"].startswith("<companion_state>")
+    assert set(body.json()["context"]["blocks"]) == {"memo"}
+    assert set(configured["context"]["blocks"]) == {"identity"}
+    codes = [response.status_code for response in (trailing, unknown, mixed, bad_body)]
+    assert codes == [422, 422, 422, 422]

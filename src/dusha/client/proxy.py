@@ -4,6 +4,8 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
+import secrets
 from collections import OrderedDict
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -17,6 +19,7 @@ from fastapi.responses import Response, StreamingResponse
 from starlette.background import BackgroundTask
 
 from .. import legacy as _legacy
+from ..homes import COMPANION_NAME
 from ..providers import Provider
 from . import protocols as _protocols
 from .outbox import Outbox, retryable
@@ -24,7 +27,7 @@ from .settings import Connection, Settings
 
 logger = logging.getLogger("dusha.proxy")
 
-_ROUTING_HEADERS = frozenset({"x-conversation-id", "x-harness", "x-companion-route"})
+_ROUTING_HEADERS = frozenset({"x-conversation-id", "x-harness", "x-companion-route", "x-companion-plugins"})
 _DROPPED_HEADERS = _ROUTING_HEADERS | {
     "host",
     "content-length",
@@ -41,6 +44,7 @@ _DROPPED_HEADERS = _ROUTING_HEADERS | {
 }
 _KEY_HEADERS = frozenset({"authorization", "x-api-key", "api-key"})
 _METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
+_PLUGIN_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _KEPT = 256
 _FLUSH_SECONDS = 2.0
 
@@ -51,6 +55,7 @@ class Turn:
     conversation_id: str
     route: str
     after: int | None
+    plugins: tuple[str, ...] | None = None
 
     def transcript(self, messages: list[Any]) -> dict[str, Any]:
         return {
@@ -60,6 +65,51 @@ class Turn:
             "after": self.after,
             "messages": messages,
         }
+
+
+def _credential(request: Request) -> str:
+    token = request.headers.get("x-companion-token")
+    if token:
+        return token
+    authorization = request.headers.get("authorization", "")
+    if authorization:
+        if authorization.lower().startswith("bearer "):
+            return authorization[len("bearer ") :]
+        return authorization
+    return request.headers.get("x-api-key") or request.headers.get("api-key") or ""
+
+
+def _credential_harness(raw: str, expected: str) -> str:
+    if not expected:
+        if ":" in raw:
+            prefix, _ = raw.split(":", 1)
+            return prefix if COMPANION_NAME.fullmatch(prefix) else ""
+        return ""
+    if raw and secrets.compare_digest(raw.encode("utf-8"), expected.encode("utf-8")):
+        return ""
+    if ":" in raw:
+        prefix, rest = raw.split(":", 1)
+        matching = COMPANION_NAME.fullmatch(prefix)
+        if matching and secrets.compare_digest(rest.encode("utf-8"), expected.encode("utf-8")):
+            return prefix
+    raise HTTPException(status_code=401, detail="invalid companion token")
+
+
+def _plugins_header(value: str | None) -> tuple[str, ...] | None:
+    if value is None or not value.strip():
+        return None
+    items = [part.strip() for part in value.split(",")]
+    if any(not item for item in items):
+        raise HTTPException(
+            status_code=422, detail="X-Companion-Plugins must be comma-separated plugin names or 'none'"
+        )
+    if [item.casefold() for item in items] == ["none"]:
+        return ()
+    for item in items:
+        if item.casefold() == "none" or not _PLUGIN_NAME.fullmatch(item):
+            detail = f"invalid plugin name in X-Companion-Plugins: {item!r}"
+            raise HTTPException(status_code=422, detail=detail)
+    return tuple(dict.fromkeys(items))
 
 
 def _remember(cache: OrderedDict, key: Any, value: Any) -> None:
@@ -80,7 +130,7 @@ class Server:
         self.client = httpx.AsyncClient(**options)
         self.flusher = httpx.Client(**options)
         self.outbox = outbox
-        self.turns: OrderedDict[int, str] = OrderedDict()
+        self.turns: OrderedDict[Any, str] = OrderedDict()
         self.responses: OrderedDict[str, int] = OrderedDict()
 
     async def post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
@@ -117,21 +167,22 @@ class Server:
         try:
             ingested = await self.post("/state/v1/transcript", turn.transcript(messages))
             user = ingested["message_id"]
-            injection = self.turns.get(user) if user is not None else None
+            key = (user, turn.plugins)
+            injection = self.turns.get(key) if user is not None else None
             if injection is None:
-                context = await self.post(
-                    "/state/v1/context",
-                    {
-                        "query": ingested["query"],
-                        "harness": turn.harness,
-                        "conversation_id": ingested["conversation_id"],
-                        "exclude_message_ids": [user] if user is not None else [],
-                        "include_recent": False,
-                    },
-                )
+                body: dict[str, Any] = {
+                    "query": ingested["query"],
+                    "harness": turn.harness,
+                    "conversation_id": ingested["conversation_id"],
+                    "exclude_message_ids": [user] if user is not None else [],
+                    "include_recent": False,
+                }
+                if turn.plugins is not None:
+                    body["plugins"] = list(turn.plugins)
+                context = await self.post("/state/v1/context", body)
                 injection = str(context["injection"])
             if user is not None:
-                _remember(self.turns, user, injection)
+                _remember(self.turns, key, injection)
         except (httpx.HTTPError, ValueError, KeyError) as error:
             self.queue(turn, messages, error)
             return None, turn.conversation_id
@@ -148,7 +199,7 @@ class Server:
 
 
 def _upstream_headers(request: Request, profile: Provider, conversation_id: str) -> httpx.Headers:
-    dropped = _DROPPED_HEADERS | _KEY_HEADERS if profile.key else _DROPPED_HEADERS
+    dropped = _DROPPED_HEADERS | _KEY_HEADERS
     headers = httpx.Headers({name: value for name, value in request.headers.items() if name not in dropped})
     headers.update(profile.request_headers(conversation_id))
     return headers
@@ -245,7 +296,14 @@ def create_proxy_app(cfg: Settings) -> FastAPI:
 
         return StreamingResponse(chunks(), status_code=response.status_code, media_type=_media_type(response))
 
-    async def model(request: Request, name: str, path: str, protocol: Any) -> Response:
+    async def model(
+        request: Request,
+        name: str,
+        path: str,
+        protocol: Any,
+        credential_harness: str,
+        plugins: tuple[str, ...] | None,
+    ) -> Response:
         raw = await request.body()
         try:
             body = json.loads(raw)
@@ -256,10 +314,11 @@ def create_proxy_app(cfg: Settings) -> FastAPI:
             named = request.headers.get("x-conversation-id", "")
             return streamed(await send(request, name, path, raw, named, protocol.kind))
         turn = Turn(
-            harness=request.headers.get("x-harness") or name,
+            harness=request.headers.get("x-harness") or credential_harness or name,
             conversation_id=request.headers.get("x-conversation-id", ""),
             route=request.headers.get("x-companion-route", ""),
             after=server.responses.get(protocol.previous(body)),
+            plugins=plugins,
         )
         injection, conversation = await server.context(turn, messages)
         prepared = protocol.inject(body, injection) if injection else body
@@ -297,9 +356,11 @@ def create_proxy_app(cfg: Settings) -> FastAPI:
     async def forward(name: str, path: str, request: Request) -> Response:
         if name not in cfg.providers:
             raise HTTPException(status_code=404, detail=f"no provider named {name!r}")
+        credential_harness = _credential_harness(_credential(request), cfg.server.token)
+        plugins = _plugins_header(request.headers.get("x-companion-plugins"))
         protocol = _protocols.protocol_for(request.method, path)
         if protocol is not None:
-            return await model(request, name, path, protocol)
+            return await model(request, name, path, protocol, credential_harness, plugins)
         conversation_id = request.headers.get("x-conversation-id", "")
         return streamed(await send(request, name, path, await request.body(), conversation_id))
 

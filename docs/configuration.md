@@ -52,7 +52,7 @@ The `DUSHA_HOST` environment variable overrides `host` for one `dusha serve` run
 
 | Key | Default | Notes |
 | --- | --- | --- |
-| `proxy.host` | `127.0.0.1` | Must be a loopback address. The proxy has no auth of its own. |
+| `proxy.host` | `127.0.0.1` | Must be a loopback address unless a server token is set. Without a token the proxy has no auth of its own. |
 | `proxy.port` | `8766` | |
 | `proxy.server.url` | `""` | The server's base URL. Empty, or the URL of the server in the same file, uses that server's `host`, `port`, and `api_token`. The other `dusha` commands use it too. |
 | `proxy.server.token` | `""` | The server's `api_token`. The file then holds a secret. The first run writes it with mode `600`, and a file you edit by hand needs `chmod 600`. |
@@ -67,11 +67,32 @@ The `DUSHA_HOST` environment variable overrides `host` for one `dusha serve` run
 | `providers.<profile>.base_url` | | Provider base URL, exactly as the harness would use it. |
 | `providers.<profile>.headers` | `{}` | Headers set on every request. Values can hold `{conversation_id}`, the matched conversation's name, and `{env:NAME}`. A missing variable fails proxy startup. |
 | `providers.<profile>.timeout_seconds` | `120` | |
-| `providers.<profile>.key` | `""` | The provider key. The proxy then drops the harness's `authorization`, `x-api-key`, and `api-key` headers and sends this key itself, so the harness can use any dummy key. Can hold `{env:NAME}`. The file then holds a secret, so keep it at mode `600`. |
+| `providers.<profile>.key` | `""` | The provider key. The proxy always drops the harness's `authorization`, `x-api-key`, and `api-key` headers and sends this key itself, so the harness uses the Dusha token as its API key instead. Can hold `{env:NAME}`. The file then holds a secret, so keep it at mode `600`. |
 | `providers.<profile>.auth` | `bearer` | How `key` is sent: `bearer` as `Authorization: Bearer`, or `x-api-key`. |
 | `providers.<profile>.endpoints` | `{}` | A base URL per protocol, keyed `chat`, `messages`, or `responses`. A protocol it leaves out goes to `base_url`. |
 
 A profile name holds letters, digits, dots, dashes, and underscores, and cannot be `health`. `proxy.upstreams` from earlier releases still loads with a warning, see [Migrating](guide.md#migrating). See [Proxy](api.md#proxy) for how requests are routed.
+
+## Harnesses
+
+`harnesses` narrows the plugins that go into the context of one harness, keyed by harness name. A harness name holds letters, digits, dots, dashes, and underscores. The keys are the harness names the [proxy](api.md#headers) sends, which are `X-Harness`, a `<harness>:` prefix on the Dusha token, or the profile name.
+
+| Value | Meaning |
+| --- | --- |
+| `["identity", "memory"]` | Include only the listed plugins. |
+| `{"include": ["identity", "memory"]}` | Same as the list. |
+| `{"exclude": ["ambient", "affect"]}` | Include every plugin except the listed ones. |
+
+```json
+{
+  "harnesses": {
+    "claude-code": ["identity", "memory", "memo"],
+    "codex": {"exclude": ["ambient", "affect"]}
+  }
+}
+```
+
+A request that sends `X-Companion-Plugins` overrides the rule for that turn. See [Build context](api.md#2-build-context).
 
 ## Plugins
 

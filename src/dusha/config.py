@@ -16,7 +16,7 @@ from . import emotions as _emotions
 from . import legacy
 from . import providers as _providers
 from .defaults import all_defaults
-from .homes import CONFIG_FILE, locate
+from .homes import COMPANION_NAME, CONFIG_FILE, locate
 from .resources import loads_strict
 
 _DEFAULTS = all_defaults()
@@ -298,6 +298,74 @@ def _plugin_entries(plugins: dict[str, Any]) -> dict[str, PluginEntry]:
     return {**missing, **entries}
 
 
+@dataclass(frozen=True, slots=True)
+class HarnessConfig:
+    include: tuple[str, ...] | None = None
+    exclude: tuple[str, ...] = ()
+
+    def allows(self, plugin: str) -> bool:
+        if self.include is not None:
+            return plugin in self.include
+        return plugin not in self.exclude
+
+
+def _plugin_names(raw: Any, label: str) -> tuple[str, ...]:
+    if not isinstance(raw, list) or not all(
+        isinstance(item, str) and PLUGIN_NAME.fullmatch(item) for item in raw
+    ):
+        raise ValueError(f"{label} must be an array of plugin names")
+    return tuple(dict.fromkeys(raw))
+
+
+def _harness_config(name: str, raw: Any) -> HarnessConfig:
+    label = f"harnesses.{name}"
+    if isinstance(raw, HarnessConfig):
+        return raw
+    if isinstance(raw, list):
+        return HarnessConfig(include=_plugin_names(raw, label))
+    if not isinstance(raw, dict):
+        raise ValueError(f"{label} must be an array or an object")
+    unknown = sorted(set(raw) - {"include", "exclude"})
+    if unknown:
+        raise ValueError(f"unknown field(s) under {label}: {unknown}")
+    if "include" in raw and "exclude" in raw:
+        raise ValueError(f"{label} cannot set both include and exclude")
+    if "include" in raw:
+        return HarnessConfig(include=_plugin_names(raw["include"], f"{label}.include"))
+    if "exclude" in raw:
+        return HarnessConfig(exclude=_plugin_names(raw["exclude"], f"{label}.exclude"))
+    return HarnessConfig()
+
+
+def _harnesses_section(raw: Any) -> dict[str, HarnessConfig]:
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError("harnesses must be an object")
+    rules: dict[str, HarnessConfig] = {}
+    for name, value in raw.items():
+        if not isinstance(name, str) or not COMPANION_NAME.fullmatch(name):
+            raise ValueError(
+                f"harness name must be letters, digits, dot, dash, or underscore, got {name!r}"
+            )
+        rules[name] = _harness_config(name, value)
+    return rules
+
+
+def parse_plugins_header(value: str | None) -> list[str] | None:
+    if value is None or not value.strip():
+        return None
+    items = [part.strip() for part in value.split(",")]
+    if any(not item for item in items):
+        raise ValueError("X-Companion-Plugins must be comma-separated plugin names or 'none'")
+    if [item.casefold() for item in items] == ["none"]:
+        return []
+    for item in items:
+        if item.casefold() == "none" or not PLUGIN_NAME.fullmatch(item):
+            raise ValueError(f"invalid plugin name in X-Companion-Plugins: {item!r}")
+    return list(dict.fromkeys(items))
+
+
 @dataclass(slots=True)
 class PromptsConfig:
     path: str = _PROMPTS["path"]
@@ -316,9 +384,11 @@ class AppConfig:
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     plugins: dict[str, Any] = field(default_factory=dict)
     providers: dict[str, _providers.Provider] = field(default_factory=dict)
+    harnesses: dict[str, HarnessConfig] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.plugins = _plugin_entries(self.plugins)
+        self.harnesses = _harnesses_section(self.harnesses)
         if isinstance(self.port, bool) or not 0 <= self.port <= 65535:
             raise ValueError("port must be at least 0 and at most 65535")
         try:
@@ -507,6 +577,7 @@ def _app_config_from_raw(raw: dict[str, Any], source_dir: Path) -> AppConfig:
         embedding=_strict_section(EmbeddingConfig, raw.get("embedding"), "embedding"),
         plugins=plugins,
         providers=_providers.parse(raw.get("providers"), environ=False),
+        harnesses=_harnesses_section(raw.get("harnesses")),
     )
 
 

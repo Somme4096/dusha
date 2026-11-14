@@ -105,7 +105,7 @@ curl -X POST http://127.0.0.1:8765/state/v1/context \
   -d '{"query":"Hello"}'
 ```
 
-The [proxy](api.md#proxy) sends the header for your harnesses, and the other `dusha` commands send it for you. On another machine, the proxy's first run asks for the token and saves it in `proxy.server.token`. On the same machine, both read `api_token` themselves. An [MCP](api.md#mcp) harness reaches the server directly, so put the header in its MCP config.
+The [proxy](api.md#proxy) checks the token as the harness's API key (`<token>` or `<harness>:<token>`) and sends `X-Companion-Token` to the server for you, as do the other `dusha` commands. On another machine, the proxy's first run asks for the token and saves it in `proxy.server.token`. On the same machine, both read `api_token` themselves. An [MCP](api.md#mcp) harness reaches the server directly, so put the header in its MCP config.
 
 With auth on:
 

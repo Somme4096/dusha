@@ -126,8 +126,10 @@ def load(path: Path, *, environ: bool = True) -> Settings:
     server = _connection(raw)
     proxy = _proxy_section(raw)
     host = _typed(proxy, "host", str, "proxy.host", "127.0.0.1")
-    if host not in LOOPBACK_HOSTS:
-        raise ValueError(f"proxy.host must be one of {sorted(LOOPBACK_HOSTS)}, got {host!r}")
+    if not host.strip():
+        raise ValueError("proxy.host must not be empty")
+    if not server.token and host not in LOOPBACK_HOSTS:
+        raise ValueError(f"proxy.host must be one of {sorted(LOOPBACK_HOSTS)} without a token, got {host!r}")
     return Settings(
         data_dir=_data_dir(raw, path.parent),
         host=host,

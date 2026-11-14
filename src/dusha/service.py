@@ -13,7 +13,7 @@ from . import external as _external
 from . import prompts as _prompts
 from . import providers as _providers
 from .commands import Commands, arg
-from .config import AppConfig
+from .config import PLUGIN_NAME, AppConfig
 from .context import ContextComposer
 from .database import Database
 from .hooks import ContextRequest, Registry
@@ -191,6 +191,19 @@ class CompanionService:
             "query": stored["text"] if stored else "",
         }
 
+    def _context_plugins(
+        self, harness: str, plugins: list[str] | tuple[str, ...] | set[str] | None
+    ) -> set[str] | None:
+        if plugins is not None:
+            for item in plugins:
+                if not isinstance(item, str) or not PLUGIN_NAME.fullmatch(item):
+                    raise ValueError(f"plugin name must be a plain directory name, got {item!r}")
+            return set(plugins)
+        rule = self.config.harnesses.get(harness)
+        if rule is None:
+            return None
+        return {runtime.name for runtime in self.registry.runtimes if rule.allows(runtime.name)}
+
     def build_context(
         self,
         *,
@@ -199,6 +212,7 @@ class CompanionService:
         conversation_id: str = "",
         exclude_message_ids: set[int] | None = None,
         include_recent: bool = True,
+        plugins: list[str] | tuple[str, ...] | set[str] | None = None,
     ) -> dict[str, Any]:
         request = ContextRequest(
             query=query,
@@ -207,7 +221,10 @@ class CompanionService:
             exclude_message_ids=tuple(sorted(exclude_message_ids or ())),
             include_recent=include_recent,
         )
-        composed = self.composer.compose(list(self.registry.collect("context", request).values()))
+        only = self._context_plugins(harness, plugins)
+        composed = self.composer.compose(
+            list(self.registry.collect("context", request, only=only).values())
+        )
         hits: list[Any] = []
         for block in composed["context"]["blocks"].values():
             if isinstance(block, dict) and isinstance(block.get("search_hits"), list):

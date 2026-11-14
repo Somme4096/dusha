@@ -97,6 +97,25 @@ def _prompts_file(tmp_path, mutate, name="prompts.json"):
         ('{"plugins": {"identity": {"path": ""}}}', "plugins.identity.path is empty"),
         ('{"plugins": {"identity": {"bogus": 1}}}', r"unknown field\(s\) under plugins.identity"),
         ('{"plugins": "all"}', "plugins must be an object"),
+        ('{"harnesses": []}', "harnesses must be an object"),
+        ('{"harnesses": "all"}', "harnesses must be an object"),
+        ('{"harnesses": {"bad:name": []}}', "harness name must be letters, digits, dot, dash, or underscore"),
+        ('{"harnesses": {"bad name": []}}', "harness name must be letters, digits, dot, dash, or underscore"),
+        ('{"harnesses": {"coding": {"bogus": []}}}', r"unknown field\(s\) under harnesses.coding"),
+        (
+            '{"harnesses": {"coding": {"include": [], "exclude": []}}}',
+            "harnesses.coding cannot set both include and exclude",
+        ),
+        ('{"harnesses": {"coding": "identity"}}', "harnesses.coding must be an array or an object"),
+        ('{"harnesses": {"coding": ["bad-name"]}}', "harnesses.coding must be an array of plugin names"),
+        (
+            '{"harnesses": {"coding": {"include": [1]}}}',
+            "harnesses.coding.include must be an array of plugin names",
+        ),
+        (
+            '{"harnesses": {"coding": {"exclude": ["bad name"]}}}',
+            "harnesses.coding.exclude must be an array of plugin names",
+        ),
         ('{"storage": {"enabled": true}}', "unknown top-level field"),
     ],
 )

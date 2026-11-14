@@ -180,17 +180,19 @@ class Registry:
     def emit(self, event: str, *args: Any) -> None:
         self._dispatch(event, args)
 
-    def collect(self, event: str, *args: Any) -> dict[str, Any]:
+    def collect(self, event: str, *args: Any, only: set[str] | None = None) -> dict[str, Any]:
         results: dict[str, Any] = {}
-        for name, value in self._dispatch(event, args):
+        for name, value in self._dispatch(event, args, only=only):
             if value is not None and name not in results:
                 results[name] = value
         return results
 
-    def _dispatch(self, event: str, args: tuple[Any, ...]) -> list[tuple[str, Any]]:
+    def _dispatch(
+        self, event: str, args: tuple[Any, ...], *, only: set[str] | None = None
+    ) -> list[tuple[str, Any]]:
         results: list[tuple[str, Any]] = []
         for runtime in self.runtimes:
-            if runtime.state != "active":
+            if runtime.state != "active" or (only is not None and runtime.name not in only):
                 continue
             for listener in list(runtime.listeners.get(event, ())):
                 try:

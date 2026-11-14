@@ -103,8 +103,10 @@ def _proxy_config(tmp_path: Path, proxy: dict, **top):
 
 
 @asynccontextmanager
-async def _proxy(tmp_path, server_url, provider, *, token="", base="v1", headers=None):
+async def _proxy(tmp_path, server_url, provider, *, token="", base="v1", headers=None, key=""):
     upstream = {"base_url": f"http://{provider.host}/{base}".rstrip("/"), "headers": headers or {}}
+    if key:
+        upstream["key"] = key
     cfg = _proxy_config(
         tmp_path, {"server": {"url": server_url, "token": token}}, providers={"stub": upstream}
     )
@@ -163,7 +165,7 @@ async def test_proxy_carries_a_conversation_through_the_server_to_the_profile(
         "/v1/chat/completions",
     ]
     for item in provider.seen:
-        assert item["headers"]["authorization"] == "Bearer caller-token"
+        assert "authorization" not in item["headers"]
         assert item["headers"]["x-session"] == "s-portable-thread"
         assert item["headers"]["x-key"] == "profile-key"
         assert not {name.lower() for name in routing} & set(item["headers"])
@@ -401,7 +403,7 @@ async def test_proxy_passes_other_paths_through_verbatim(tmp_path, server, provi
     assert [item["path"] for item in provider.seen] == [
         "/v1/models?page=2", "/v1/messages/count_tokens", "/v1/responses",
     ]
-    assert provider.seen[0]["headers"]["authorization"] == "Bearer k"
+    assert "authorization" not in provider.seen[0]["headers"]
     assert provider.seen[1]["body"]["messages"] == [{"role": "user", "content": "Raw."}]
     assert provider.seen[2]["body"] == {"input": 42}
     assert _stored(server) == []
@@ -493,21 +495,166 @@ async def test_proxy_queues_turns_while_the_server_is_down_and_sends_them_later(
 
 async def test_proxy_sends_the_server_token_itself(tmp_path, config, provider, run_app):
     config.api_token = "server-secret"
+    caller = {"Authorization": "Bearer server-secret"}
     with run_app(api.create_app(config)) as url:
         async with _proxy(tmp_path, url, provider, token="server-secret") as client:
             health = await client.get("/health")
-            await _chat(client, [{"role": "user", "content": "Authorized."}])
+            await _chat(client, [{"role": "user", "content": "Authorized."}], caller)
+            missing = await _chat(client, [{"role": "user", "content": "Missing."}])
+            wrong = await _chat(
+                client, [{"role": "user", "content": "Wrong."}], {"Authorization": "Bearer nope"}
+            )
         async with _proxy(tmp_path, url, provider, token="wrong") as client:
             denied = await client.get("/health")
-            unauthorized = await _chat(client, [{"role": "user", "content": "Denied."}])
+            await _chat(client, [{"role": "user", "content": "Denied."}], {"Authorization": "Bearer wrong"})
         stored = [message["text"] for message in _stored(url, "server-secret")]
     assert health.json()["server"]["status"] == "ok"
+    assert (missing.status_code, wrong.status_code) == (401, 401)
+    assert {missing.json()["detail"], wrong.json()["detail"]} == {"invalid companion token"}
     assert denied.json()["server"]["status"] == "unauthorized"
-    assert unauthorized.status_code == 200
     assert stored == ["Authorized.", "stub reply"]
     assert "<companion_state>" in provider.seen[0]["body"]["messages"][0]["content"]
     assert provider.seen[1]["body"]["messages"] == [{"role": "user", "content": "Denied."}]
     assert all("x-companion-token" not in item["headers"] for item in provider.seen)
+
+
+@pytest.mark.parametrize(
+    ("headers", "harness"),
+    [
+        ({"Authorization": "Bearer server-secret"}, "stub"),
+        ({"Authorization": "Bearer test-harness:server-secret"}, "test-harness"),
+        ({"x-api-key": "server-secret"}, "stub"),
+        ({"x-api-key": "test-harness:server-secret"}, "test-harness"),
+        ({"api-key": "test-harness:server-secret"}, "test-harness"),
+        ({"X-Companion-Token": "test-harness:server-secret"}, "test-harness"),
+    ],
+)
+async def test_proxy_accepts_the_dusha_token_from_any_caller_header(
+    tmp_path, config, provider, run_app, headers, harness
+):
+    config.api_token = "server-secret"
+    with run_app(api.create_app(config)) as url:
+        async with _proxy(tmp_path, url, provider, token="server-secret", key="provider-key") as client:
+            response = await _chat(client, [{"role": "user", "content": "Hello."}], headers)
+        stored = _stored(url, "server-secret")
+    assert response.status_code == 200
+    assert [message["text"] for message in stored] == ["Hello.", "stub reply"]
+    assert {message["harness"] for message in stored} == {harness}
+    assert "<companion_state>" in provider.seen[0]["body"]["messages"][0]["content"]
+    forwarded = provider.seen[0]["headers"]
+    assert forwarded["authorization"] == "Bearer provider-key"
+    assert not {"x-api-key", "api-key", "x-companion-token"} & set(forwarded)
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {},
+        {"Authorization": "Bearer nope"},
+        {"Authorization": "Bearer not a harness:server-secret"},
+        {"api-key": "server-secret:extra"},
+        {"x-api-key": ""},
+    ],
+)
+async def test_proxy_rejects_a_missing_or_wrong_caller_token(tmp_path, config, provider, run_app, headers):
+    config.api_token = "server-secret"
+    with run_app(api.create_app(config)) as url:
+        async with _proxy(tmp_path, url, provider, token="server-secret") as client:
+            response = await _chat(client, [{"role": "user", "content": "Hello."}], headers)
+    assert response.status_code == 401
+    assert response.json() == {"detail": "invalid companion token"}
+    assert provider.seen == []
+
+
+def _harness_config(tmp_path: Path):
+    path = tmp_path / "harness" / "config.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    raw = {
+        "data_dir": str(tmp_path / "harness" / "data"),
+        "plugins": {"memo": {}, "affect": {}},
+        "harnesses": {"quiet": ["memo"], "loud": {"exclude": ["memo"]}},
+    }
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    return load_config(path)
+
+
+async def test_proxy_uses_the_credential_harness_for_the_server_context(tmp_path, provider, run_app):
+    config = _harness_config(tmp_path)
+    token = {"Authorization": "Bearer quiet:server-secret"}
+    with run_app(api.create_app(config)) as url:
+        httpx.post(f"{url}/state/v1/memo/add", json={"text": "Water the fern."})
+        async with _proxy(tmp_path, url, provider, token="server-secret") as client:
+            await _chat(client, [{"role": "user", "content": "One."}], token)
+            await _chat(
+                client,
+                [{"role": "user", "content": "Two."}],
+                {**token, "X-Harness": "loud"},
+            )
+        stored = _stored(url, "server-secret")
+    assert [message["harness"] for message in stored] == ["quiet", "quiet", "loud", "loud"]
+    quiet, loud = (item["body"]["messages"][0]["content"] for item in provider.seen)
+    assert "<memo_notes>" in quiet and "<affect>" not in quiet
+    assert "<affect>" in loud and "<memo_notes>" not in loud
+
+
+async def test_proxy_plugins_header_filters_the_injected_blocks(tmp_path, server, provider):
+    httpx.post(f"{server}/state/v1/memo/add", json={"text": "Water the fern."})
+    async with _proxy(tmp_path, server, provider) as client:
+        filtered = await _chat(client, [{"role": "user", "content": "Hi."}], {"X-Companion-Plugins": "memo"})
+        skipped = await _chat(client, [{"role": "user", "content": "Hi."}], {"X-Companion-Plugins": "none"})
+    assert (filtered.status_code, skipped.status_code) == (200, 200)
+    memo_only, nothing = (item["body"]["messages"][0]["content"] for item in provider.seen)
+    assert "<memo_notes>" in memo_only and "<affect>" not in memo_only
+    assert "<memo_notes>" not in nothing and "<affect>" not in nothing
+    assert "<companion_state>" in nothing
+    assert all("x-companion-plugins" not in item["headers"] for item in provider.seen)
+
+
+async def test_proxy_keeps_each_plugins_header_turn_apart_in_the_cache(tmp_path, server, provider):
+    httpx.post(f"{server}/state/v1/memo/add", json={"text": "Water the fern."})
+    message = [{"role": "user", "content": "Hi."}]
+    async with _proxy(tmp_path, server, provider) as client:
+        await _chat(client, message, {"X-Companion-Plugins": "memo"})
+        await _chat(client, message, {"X-Companion-Plugins": "none"})
+        await _chat(client, message, {"X-Companion-Plugins": "memo"})
+    first, second, third = (item["body"]["messages"][0]["content"] for item in provider.seen)
+    assert "<memo_notes>" in first and "<memo_notes>" not in second and first == third
+
+
+@pytest.mark.parametrize(
+    ("header", "detail"),
+    [
+        ("memo,,affect", "X-Companion-Plugins must be comma-separated plugin names or 'none'"),
+        ("bad-name", "invalid plugin name in X-Companion-Plugins: 'bad-name'"),
+        ("none,memo", "invalid plugin name in X-Companion-Plugins: 'none'"),
+    ],
+)
+async def test_proxy_rejects_a_malformed_plugins_header(tmp_path, server, provider, header, detail):
+    async with _proxy(tmp_path, server, provider) as client:
+        response = await _chat(client, [{"role": "user", "content": "Hi."}], {"X-Companion-Plugins": header})
+    assert response.status_code == 422
+    assert response.json() == {"detail": detail}
+    assert provider.seen == []
+
+
+def test_proxy_config_allows_a_remote_host_only_with_a_token(tmp_path):
+    remote = {"host": "0.0.0.0", "server": {"url": "http://127.0.0.1:8765", "token": "server-secret"}}
+    assert _proxy_config(tmp_path, remote).host == "0.0.0.0"
+    assert _proxy_config(tmp_path, {"host": "0.0.0.0"}, api_token="local-secret").host == "0.0.0.0"
+    with pytest.raises(ValueError, match="proxy.host must be one of"):
+        _proxy_config(tmp_path, {"host": "0.0.0.0"})
+    with pytest.raises(ValueError, match="proxy.host must not be empty"):
+        _proxy_config(tmp_path, {"host": " "}, api_token="local-secret")
+
+
+async def test_proxy_accepts_a_token_prefixed_harness_when_auth_is_off(tmp_path, server, provider):
+    async with _proxy(tmp_path, server, provider) as client:
+        await _chat(
+            client,
+            [{"role": "user", "content": "Hi."}],
+            {"Authorization": "Bearer any-harness:anything"},
+        )
+    assert {message["harness"] for message in _stored(server)} == {"any-harness"}
 
 
 @pytest.mark.parametrize(

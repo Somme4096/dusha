@@ -3,10 +3,11 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import Field
 
 from . import schema as _schema
+from .config import parse_plugins_header
 from .interfaces import DOCS, GatewayInput, call, errors
 from .service import CompanionService
 
@@ -35,6 +36,7 @@ class ContextInput(GatewayInput):
     conversation_id: str = ""
     exclude_message_ids: list[int] = Field(default_factory=list)
     include_recent: bool = True
+    plugins: list[str] | None = None
 
 
 def create_state_router(service: CompanionService, authorized) -> APIRouter:
@@ -104,15 +106,21 @@ def create_state_router(service: CompanionService, authorized) -> APIRouter:
         summary="Build provider-neutral context",
         responses=errors(422),
     )
-    async def context(body: ContextInput) -> dict[str, Any]:
-        return await call(
-            service.build_context,
-            query=body.query,
-            harness=body.harness,
-            conversation_id=body.conversation_id,
-            exclude_message_ids=set(body.exclude_message_ids),
-            include_recent=body.include_recent,
-        )
+    async def context(
+        body: ContextInput, x_companion_plugins: str | None = Header(default=None)
+    ) -> dict[str, Any]:
+        def build() -> dict[str, Any]:
+            header = parse_plugins_header(x_companion_plugins)
+            return service.build_context(
+                query=body.query,
+                harness=body.harness,
+                conversation_id=body.conversation_id,
+                exclude_message_ids=set(body.exclude_message_ids),
+                include_recent=body.include_recent,
+                plugins=header if header is not None else body.plugins,
+            )
+
+        return await call(build, errors=(ValueError,))
 
     router.include_router(service.router)
     return router

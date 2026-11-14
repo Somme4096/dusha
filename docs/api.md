@@ -64,7 +64,9 @@ The command asks for any values the provider's URL needs, then for the key. Pres
 }
 ```
 
-In the harness, add a custom OpenAI- or Anthropic-compatible provider with the base URL `http://127.0.0.1:8766/opencode-go` and any dummy key. The proxy drops the dummy key and sends its own.
+In the harness, add a custom OpenAI- or Anthropic-compatible provider with the base URL `http://127.0.0.1:8766/opencode-go` and the Dusha token as its key. The proxy drops that key and sends `providers.<profile>.key` instead. With auth off, any value works.
+
+The provider keys live in `config.json` under `providers.<profile>.key`, never in the harness. The proxy always drops the caller's `Authorization`, `X-Api-Key`, and `Api-Key` headers before it forwards, and it sends the profile's key itself. When [auth](guide.md#auth) is on, the caller uses the Dusha token as its API key, either `<token>` or `<harness>:<token>`.
 
 - `dusha provider list` prints each profile with its key masked.
 - `dusha provider remove <profile>` removes one.
@@ -100,23 +102,26 @@ For each request, the proxy:
 
 ### Headers
 
-The proxy forwards the caller's headers and query string, including `Authorization` unless the profile has a `key`. It then sets the profile's `headers` on top. It drops the routing headers, `X-Companion-Token`, and hop-by-hop headers.
+The proxy forwards the caller's headers and query string minus its credentials. It always drops `Authorization`, `X-Api-Key`, and `Api-Key` from the caller, then sends the profile's key from `providers.<profile>.key` as its own auth header. It also drops the routing headers, `X-Companion-Token`, `X-Companion-Plugins`, and hop-by-hop headers, and it sets the profile's `headers` on top.
 
-It sends `X-Companion-Token` to the server itself, so harnesses never need the server token.
+When [auth](guide.md#auth) is on, the caller sends the Dusha token as its API key, either `<token>` or `<harness>:<token>`, in `Authorization: Bearer`, `X-Api-Key`, `Api-Key`, or `X-Companion-Token`. A missing or wrong token returns `401`. With auth off, the proxy accepts any value, and a `<harness>:` prefix still labels the turn.
+
+The proxy sends `proxy.server.token` to the server itself as `X-Companion-Token`, so the harness never calls the server on its own.
 
 Routing headers are optional:
 
 | Header | Default | Purpose |
 | --- | --- | --- |
 | `X-Conversation-Id` | Inferred | Names the conversation. See [conversation matching](#conversation-matching). |
-| `X-Harness` | The profile name | Labels stored messages. |
+| `X-Harness` | The profile name | Labels stored messages. A `<harness>:` prefix on the credential does the same. |
 | `X-Companion-Route` | `""` | Return address for proactive messages. `-` means none. |
+| `X-Companion-Plugins` | All plugins | Comma-separated plugin names to inject for this request, or `none`. See [Build context](#2-build-context). |
 
 ### Failures
 
 If the server is down or rejects the token, the proxy forwards the request without context and logs a warning. The turn and its reply wait in the [outbox](#outbox) until the server is back.
 
-An unknown profile returns `404`. A provider that cannot be reached returns `502`.
+An unknown profile returns `404`. A bad caller token returns `401`. A malformed `X-Companion-Plugins` header returns `422`. A provider that cannot be reached returns `502`.
 
 ### Conversation matching
 
@@ -192,12 +197,15 @@ The response has the stored `id`, a `duplicate` flag, and `conversation_id`. Eac
   "conversation_id": "stable-conversation-id",
   "query": "Remember the amber window.",
   "exclude_message_ids": [1],
-  "include_recent": false
+  "include_recent": false,
+  "plugins": ["memory", "memo"]
 }
 ```
 
 - `include_recent` defaults to `true`. Pass `false` when your provider conversation already holds the recent history.
 - `exclude_message_ids` removes messages you send yourself.
+- `plugins` limits the injection to those plugin names. The `X-Companion-Plugins` header overrides it when both are set, and `none` includes no plugin block. The state block stays either way.
+- Without `plugins` or the header, the [harness rules](configuration.md#harnesses) of `harness` pick the plugins.
 
 The response has `injection`, `records`, `search_hits`, and `context`. Prepend `injection` to your system prompt. `context` holds the same data as fields: `version`, `instructions`, `session`, and `blocks`.
 
