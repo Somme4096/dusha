@@ -105,11 +105,11 @@ curl -X POST http://127.0.0.1:8765/state/v1/context \
   -d '{"query":"Hello"}'
 ```
 
-The [proxy](api.md#proxy) checks the token as the harness's API key (`<token>` or `<harness>:<token>`) and sends `X-Companion-Token` to the server for you, as do the other `dusha` commands. On another machine, the proxy's first run asks for the token and saves it in `proxy.server.token`. On the same machine, both read `api_token` themselves. An [MCP](api.md#mcp) harness reaches the server directly, so put the header in its MCP config.
+In a harness routed through the [proxy](api.md#proxy), put the Dusha token in the harness's provider API key field (`<token>`, or `<harness>:<token>` to also set the harness name and its [context rules](configuration.md#harnesses)). The proxy verifies the Dusha token (`Authorization: Bearer`, `X-Api-Key`, `Api-Key`, or `X-Companion-Token`), strips it before forwarding, and authenticates to the upstream LLM provider using `providers.<profile>.key` from `config.json`. It also sends `X-Companion-Token` to the server for you, as do the other `dusha` commands. On another machine, the proxy's first run asks for the token and saves it in `proxy.server.token`. On the same machine, both read `api_token` themselves. An [MCP](api.md#mcp) harness reaches the server directly, so put the header in its MCP config.
 
 With auth on:
 
-- Every `/state/v1/*`, `/cli/v1/*`, and `/mcp` route needs the header. A wrong token returns `401`.
+- Every `/state/v1/*`, `/cli/v1/*`, `/mcp`, and proxy `/<profile>/*` route needs the token. A wrong token returns `401`.
 - `/health` stays public.
 - `/docs`, `/redoc`, and `/openapi.json` are off.
 - A new token needs a restart.
