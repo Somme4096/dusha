@@ -5,12 +5,14 @@ import importlib
 import json
 import logging
 import os
+import secrets
 import shutil
 import warnings
 from pathlib import Path
 from typing import Any
 
 from .homes import CONFIG_FILE, DOCS
+from .providers import render
 from .resources import loads_strict
 
 # Old layouts that still load during their deprecation. Remove each entry in the version it names.
@@ -134,6 +136,29 @@ def upstreams(settings: Any) -> dict[str, Any]:
 
 def proxy_health(providers: dict[str, Any]) -> dict[str, Any]:
     return {"upstreams": sorted(providers)}
+
+
+# Clients that sent the real provider key to the proxy before the dusha token. Removed in 2.0.21.
+_LEGACY_KEY_WARNED: set[str] = set()
+
+
+def is_legacy_provider_key(raw: str, name: str, provider: Any) -> bool:
+    if not raw or not provider.key:
+        return False
+    try:
+        expected = render(provider.key)
+    except ValueError:
+        return False
+    if not secrets.compare_digest(raw.encode("utf-8"), expected.encode("utf-8")):
+        return False
+    if name not in _LEGACY_KEY_WARNED:
+        _LEGACY_KEY_WARNED.add(name)
+        logging.getLogger("dusha.proxy").warning(
+            "provider %s was called with its provider key instead of the dusha token. "
+            "This still works until 2.0.21. Point clients at the dusha token, see %s",
+            name, f"{DOCS}/blob/main/docs/guide.md#migrating",
+        )
+    return True
 
 
 def create_default_config(home: Path) -> Path:

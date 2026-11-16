@@ -356,7 +356,11 @@ def create_proxy_app(cfg: Settings) -> FastAPI:
     async def forward(name: str, path: str, request: Request) -> Response:
         if name not in cfg.providers:
             raise HTTPException(status_code=404, detail=f"no provider named {name!r}")
-        credential_harness = _credential_harness(_credential(request), cfg.server.token)
+        raw = _credential(request)
+        if _legacy.is_legacy_provider_key(raw, name, cfg.providers[name]):
+            credential_harness = ""
+        else:
+            credential_harness = _credential_harness(raw, cfg.server.token)
         plugins = _plugins_header(request.headers.get("x-companion-plugins"))
         protocol = _protocols.protocol_for(request.method, path)
         if protocol is not None:

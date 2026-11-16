@@ -169,6 +169,10 @@ Since 1.1.21, provider profiles live in the top-level `providers` section, so se
 
 Plugins that used the 1.x Python names keep working with a `DeprecationWarning` until 2.0.21: `Settings.upstreams` is now `Settings.providers`, `dusha.client.settings.Upstream` is now `dusha.providers.Provider`, `save_upstream` is now `save_provider`, and `dusha.config.create_default_config` is now `ensure_server_config`. Reading a 1.x key such as `ctx.prompts["proactive_framing"]` returns the text from its new place under `plugins`. The proxy's `/health` returns `providers` next to the old `upstreams` until then.
 
+### Provider key as the proxy token
+
+Clients that sent the real provider key to the proxy still work until 2.0.21, but only when that key matches the `key` set for the provider in the proxy's config. Each provider logs a warning once. Point clients at the dusha token instead. To keep the old flow, move the provider key into the provider profile so the proxy holds it. A key that does not match is rejected with `401`.
+
 ## Troubleshooting
 
 | Symptom | Fix |

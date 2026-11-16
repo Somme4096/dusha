@@ -566,6 +566,22 @@ async def test_proxy_rejects_a_missing_or_wrong_caller_token(tmp_path, config, p
     assert provider.seen == []
 
 
+async def test_proxy_accepts_the_provider_key_from_legacy_clients(tmp_path, config, provider, run_app):
+    config.api_token = "server-secret"
+    with run_app(api.create_app(config)) as url:
+        async with _proxy(tmp_path, url, provider, token="server-secret", key="provider-key") as client:
+            legacy = await _chat(
+                client, [{"role": "user", "content": "Old."}], {"Authorization": "Bearer provider-key"}
+            )
+            wrong = await _chat(
+                client, [{"role": "user", "content": "Wrong."}], {"Authorization": "Bearer provider-key-x"}
+            )
+    assert legacy.status_code == 200
+    assert wrong.status_code == 401
+    assert provider.seen[0]["headers"]["authorization"] == "Bearer provider-key"
+    assert len(provider.seen) == 1
+
+
 def _harness_config(tmp_path: Path):
     path = tmp_path / "harness" / "config.json"
     path.parent.mkdir(parents=True, exist_ok=True)
