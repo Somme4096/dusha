@@ -411,6 +411,16 @@ def test_help_and_errors_are_colored_only_on_a_terminal(tmp_path, free_port, ser
 
 
 @needs_terminal
+def test_companion_add_skips_connect_prompt_when_creating_both_parts(tmp_path):
+    terminal = Terminal(tmp_path, "companion", "add", "nova")
+    terminal.expect("Saved")
+    assert terminal.close(wait=True) == 0
+    assert b"isn't connected" not in terminal.output and b"Connect to:" not in terminal.output
+    saved = json.loads((tmp_path / "config" / "dusha" / "nova" / "config.json").read_text(encoding="utf-8"))
+    assert saved["proxy"]["server"]["url"] == "http://127.0.0.1:8765"
+
+
+@needs_terminal
 def test_companion_update_offers_the_server_on_this_machine_and_proxy_uses_it(tmp_path, free_port, serving):
     server_port, proxy_port = free_port(), free_port()
     path = _home(tmp_path, "nova", port=server_port, api_token="local-secret", proxy={"port": proxy_port})

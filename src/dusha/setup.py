@@ -29,7 +29,7 @@ def _server(home: Path, path: Path) -> list[Change]:
     return [Change(CREATED if not existed else ADDED_SERVER, path)]
 
 
-def _proxy(path: Path, *, url: str, token: str, interactive: bool) -> list[Change]:
+def _proxy(path: Path, *, server: bool, url: str, token: str, interactive: bool) -> list[Change]:
     saved = settings.saved_server(path)
     if url:
         if saved == (url, token):
@@ -39,10 +39,10 @@ def _proxy(path: Path, *, url: str, token: str, interactive: bool) -> list[Chang
         if not token or saved[1] == token:
             return []
         return [Change(ADDED_PROXY, settings.save_server(path, saved[0], token))]
-    if interactive:
-        return [Change(NEEDS_PROXY, path)]
     local = settings.local_server(path)
-    if local is None:
+    if server and local is not None:
+        return [Change(ADDED_PROXY, settings.save_server(path, local.url, token))]
+    if interactive or local is None:
         return [Change(NEEDS_PROXY, path)]
     return [Change(ADDED_PROXY, settings.save_server(path, local.url, token))]
 
@@ -72,7 +72,7 @@ def ensure_config(
     if server:
         changes += _server(home, path)
     if proxy:
-        changes += _proxy(path, url=url, token=token, interactive=interactive)
+        changes += _proxy(path, server=server, url=url, token=token, interactive=interactive)
     if upgrade and path.exists() and not any(change.kind == NEEDS_PROXY for change in changes):
         changes += upgrade_files(path)
     return changes
