@@ -94,7 +94,7 @@ Auth is off by default, and the service binds to localhost. To turn auth on, put
 }
 ```
 
-`openssl rand -hex 32` makes a good one (I hope you already know it). The config now holds a secret. `dusha serve` writes it with mode `600`, so keep that mode and keep the file out of version control.
+`openssl rand -hex 32` makes a good one (I hope you already know it). The config now holds a secret. `dusha init` writes it with mode `600`, so keep that mode and keep the file out of version control.
 
 Send the same value in the `X-Companion-Token` header:
 
@@ -135,11 +135,11 @@ To restore:
 ## Plugins
 
 ```sh
-dusha plugins
+dusha plugin list
 dusha memory reindex
 ```
 
-`plugins` prints each plugin's `state`, `error`, `inject`, `provides`, and `events`. Each plugin adds its own commands, such as `memory`, `evergreen`, `memo`, `affect`, and `proactive`. `memory reindex` rebuilds the built-in search index. Plugin commands run on the server, so it must be up. `dusha --help` lists them, from the last list it saw while the server is down.
+`plugin list` prints each plugin's `state`, `error`, `inject`, `provides`, and `events`. Each plugin adds its own commands, such as `memory`, `evergreen`, `memo`, `affect`, and `proactive`. `memory reindex` rebuilds the built-in search index. Plugin commands run on the server, so it must be up. `dusha --help` lists them, from the last list it saw while the server is down.
 
 See [plugins.md](plugins.md) for the built-in plugins, the commands and tools each one adds, and the [Plugin API](plugins.md#plugin-api) for writing your own.
 
@@ -165,7 +165,7 @@ Since 1.1.21, prompt text lives under `plugins`, keyed by the plugin that reads 
 
 ### proxy.upstreams to providers
 
-Since 1.1.21, provider profiles live in the top-level `providers` section, so server plugins can use them too. `proxy.upstreams` still loads with a warning until 2.0.21. `dusha init <name>` moves it and keeps the original as `config.json.bak`, or move the section by hand. `dusha proxy <name> auth login`, `status`, and `logout` became `dusha provider add`, `list`, and `remove`.
+Since 1.1.21, provider profiles live in the top-level `providers` section, so server plugins can use them too. `proxy.upstreams` still loads with a warning until 2.0.21. `dusha init <name>` moves it and keeps the original as `config.json.bak`, or move the section by hand. `dusha proxy <name> auth login`, `status`, and `logout` became `dusha provider` (`--add`, `--list`, and `--remove`).
 
 Plugins that used the 1.x Python names keep working with a `DeprecationWarning` until 2.0.21: `Settings.upstreams` is now `Settings.providers`, `dusha.client.settings.Upstream` is now `dusha.providers.Provider`, `save_upstream` is now `save_provider`, and `dusha.config.create_default_config` is now `ensure_server_config`. Reading a 1.x key such as `ctx.prompts["proactive_framing"]` returns the text from its new place under `plugins`. The proxy's `/health` returns `providers` next to the old `upstreams` until then.
 
@@ -177,7 +177,7 @@ Clients that sent the real provider key to the proxy still work until 2.0.21, bu
 
 | Symptom | Fix |
 | --- | --- |
-| Startup fails on a missing config file | The selected home needs a `config.json`. Run `dusha list` to see your companions, or `dusha init <name>` to write one. |
+| Startup fails on a missing config file | The selected home needs a `config.json`. Run `dusha companion list` to see your companions, or `dusha init <name>` to write one. |
 | Startup fails on a missing identity file | Fix `plugins.identity.path` or remove the key. The file must be UTF-8. |
 | Startup fails on an empty `plugins.identity.path` | Remove the key to use `identity.md`, or set `plugins.identity.disabled` to `true`. |
 | Startup fails on an unknown `features`, `memory`, `evergreen`, `memo`, `affect`, `proactive`, `emotions`, or `identity_prompt` field, or on a section from an earlier release | Move the section under [`plugins`](configuration.md#plugins). A `features` entry set to `false` becomes `"disabled": true`, entries of the earlier section become external plugins, its directory key becomes `plugins_dir`, `emotions` moves to `plugins.affect.emotions`, and `identity_prompt` becomes `plugins.identity`. |
@@ -185,10 +185,10 @@ Clients that sent the real provider key to the proxy still work until 2.0.21, bu
 | Startup fails on an unknown `memory_plugin` or `decision` field | Move the external plugin under [`plugins`](configuration.md#external-plugins) and `decision.increment` to `plugins.affect.increment`. |
 | Requests return `401` | Send `X-Companion-Token` with the token value. |
 | A command fails with `cannot connect to the server` | Start `dusha serve <name>`, or check `proxy.server.url` and `port` in the companion's `config.json`. |
-| A plugin's command ends in `No such command` | The plugin is disabled or inactive, see `dusha plugins`. |
-| `provider add` fails with `cannot load the models.dev catalog` | The machine is offline and has no cached catalog. Connect once, or add the profile to `providers` by hand. |
-| The provider rejects the harness's key | With a `key` in the profile, the proxy sends that key instead. Check it with `dusha provider list` and add it again. |
-| `dusha proxy <name>` asks for the server again | That name has no saved `proxy.server.url`. Pick the server once and it is saved. Check the name with `dusha list`. |
+| A plugin's command ends in `No such command` | The plugin is disabled or inactive, see `dusha plugin list`. |
+| `provider --add` fails with `cannot load the models.dev catalog` | The machine is offline and has no cached catalog. Connect once, or add the profile to `providers` by hand. |
+| The provider rejects the harness's key | With a `key` in the profile, the proxy sends that key instead. Check it with `dusha provider --list` and add it again. |
+| `dusha proxy <name>` fails with `Configuration file not found` | Run `dusha init <name> --proxy` to save `proxy.server.url`. Check existing names with `dusha companion list`. |
 | Startup fails on `upstream` or `api_openai` moved to `providers` | Delete them and add a [profile](configuration.md#providers) under `providers` instead. Clients that used `/v1/...` on the server now use `http://127.0.0.1:8766/<profile>`. |
 | The proxy returns `502` | The provider is unreachable or timed out. Read the `detail`, then check the profile's `base_url`. |
 | The proxy forwards but nothing is stored | `GET /health` on the proxy shows `server.status`. Check `proxy.server.url` and `proxy.server.token`. |

@@ -15,13 +15,13 @@ Your harness only needs a base URL. The proxy forwards model requests to your pr
 
 ### Start the proxy
 
-Run `dusha proxy <name>` on the machine with your harness. If no server is saved for `<name>`, a run in a terminal asks which one to use:
+Initialize the proxy with `dusha init <name> --proxy` on the machine with your harness, then run `dusha proxy <name>`. When no server is saved for `<name>`, `dusha init <name> --proxy` in a terminal asks which one to use:
 
 1. Pick this machine's server, if it has one, or enter another server's URL and token.
-2. The proxy checks the connection. If the check fails, it offers to try again.
-3. It saves the choice to `config.json` with mode `600`, then starts.
+2. It checks the connection. If the check fails, it offers to try again.
+3. It saves the choice to `config.json` with mode `600`.
 
-Later runs start straight away. Outside a terminal, a missing file is asked for line by line. A server's own `config.json` without a saved server uses that server.
+Later `dusha proxy <name>` runs start straight away. Outside a terminal, `dusha init <name> --proxy` reads the server URL and token line by line or from `--server-url` and `--token`. A server's own `config.json` without a saved server uses that server.
 
 Check the proxy with `GET /health`. It reports `server.status` as `ok`, `unauthorized`, `unreachable`, or `http <status>`, and it lists the profile names.
 
@@ -42,10 +42,10 @@ Each entry under `providers` is a profile:
 }
 ```
 
-`dusha provider add` adds a profile from the [models.dev](https://models.dev) catalog, with the provider's key, endpoints, and required headers. It edits the `config.json` of the companion you pick with `-c <name>`, or the file picked by the usual [order](configuration.md#which-file-loads). In a terminal, it opens a menu you can filter by typing, including a `Custom` option. The `Custom` option asks for a profile name, a base URL, optional alternative URLs for each protocol, the auth header type, an optional key, and extra headers. Otherwise, name the provider:
+`dusha provider <name>` opens an interactive menu to add, list, or remove profiles in that companion's `config.json` (or omit `<name>` when only one companion exists, or pass `-c <name>`). Choosing **Add a provider** opens a filterable menu from the [models.dev](https://models.dev) catalog, including a `Custom` option. The `Custom` option asks for a profile name, a base URL, optional alternative URLs for each protocol, the auth header type, an optional key, and extra headers. Non-interactively, use `--add`:
 
 ```sh
-dusha -c <name> provider add deepseek
+dusha provider <name> --add deepseek
 ```
 
 The command asks for any values the provider's URL needs, then for the key. Press Enter at the key prompt to store no key, or type the key directly. To use an environment variable, type `{env:NAME}` explicitly. The profile is named after the provider unless you pass `--profile`. The file keeps mode `600`. Replacing an existing profile asks first. Restart the proxy and the server to use it.
@@ -68,9 +68,9 @@ In the harness, add a custom OpenAI- or Anthropic-compatible provider with the b
 
 The provider keys live in `config.json` under `providers.<profile>.key`, never in the harness. The proxy always drops the caller's `Authorization`, `X-Api-Key`, and `Api-Key` headers before it forwards, and it sends the profile's key itself. When [auth](guide.md#auth) is on, the caller uses the Dusha token as its API key, either `<token>` or `<harness>:<token>`.
 
-- `dusha provider list` prints each profile with its key masked.
-- `dusha provider remove <profile>` removes one.
-- The catalog is cached in `$XDG_CACHE_HOME/dusha/models-dev.json`, which is `~/.cache` by default, for a day. `--refresh` fetches it again. Offline, `add` uses the stale copy.
+- `dusha provider <name> --list` prints each profile with its key masked.
+- `dusha provider <name> --remove <profile>` removes one.
+- The catalog is cached in `$XDG_CACHE_HOME/dusha/models-dev.json`, which is `~/.cache` by default, for a day. `--refresh` fetches it again. Offline, `--add` uses the stale copy.
 - Providers that need cloud credentials rather than a key, such as Bedrock, Vertex, Azure, and Copilot, are not offered. Gemini's native protocol is not routed, but Google is offered through its OpenAI-compatible endpoint.
 
 ### Routing

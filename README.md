@@ -39,9 +39,9 @@ dusha serve <name>
 Then on the same or another device, run:
 
 ```console
-$ dusha proxy <name>
+$ dusha init <name> --proxy
 
-<name> isn't connected to a server yet.
+Companion <name> isn't connected to a server yet.
 ? Connect to: (Use arrow keys)
    The server on this machine (http://127.0.0.1:8765)
  » Another server
@@ -49,6 +49,7 @@ $ dusha proxy <name>
 ? Server URL http://100.145.95.87:8765
 ? Server token, empty for none **********
 
+Success!
 Connected to http://100.145.95.87:8765.
 Saved ~/.config/dusha/<name>/config.json.
 ```
@@ -56,7 +57,11 @@ Saved ~/.config/dusha/<name>/config.json.
 Add a custom provider:
 
 ```console
-$ dusha -c <name> provider add # Add a provider profile from the models.dev catalog
+$ dusha provider <name>
+
+? Providers for <name> (Use arrow keys)
+ » Add a provider
+   List providers
 
 ? Provider (Use arrow keys, type to filter)
  » 302.AI (302ai)
@@ -77,7 +82,7 @@ INFO:     Application startup complete.
 INFO:     Uvicorn running on http://127.0.0.1:8766 (Press CTRL+C to quit)
 ```
 
-Now in your harness or app, point your endpoint at the URL `provider add` gave you: in this case, `http://127.0.0.1:8766/302ai` and you're good to go. Now every request routes through dusha proxy.
+Now in your harness or app, point your endpoint at the URL `dusha provider` gave you: in this case, `http://127.0.0.1:8766/302ai` and you're good to go. Now every request routes through dusha proxy.
 
 Optionally (highly recommended), add [MCP](https://github.com/Somme4096/dusha/blob/main/docs/api.md#mcp).
 
