@@ -96,18 +96,18 @@ def stub():
     server.server_close()
 
 
-async def test_provider_add_saves_a_preset_the_proxy_then_uses(tmp_path, stub):
+async def test_provider_flags_manage_profiles_the_proxy_then_uses(tmp_path, stub):
     url, seen = stub
     _catalog(tmp_path, url)
     path = _home(tmp_path, "nova", port=8765, api_token="local", proxy={"server": {"url": DEAD_SERVER}})
-    added = _cli(tmp_path, "-c", "nova", "provider", "add", "stubai", stdin="sk-real-12345678\n")
-    vault = _cli(tmp_path, "provider", "add", "vaultai", "--profile", "vault", stdin="acct\n\n")
+    added = _cli(tmp_path, "provider", "nova", "--add", "stubai", stdin="sk-real-12345678\n")
+    vault = _cli(tmp_path, "provider", "--add", "vaultai", "--profile", "vault", stdin="acct\n\n")
     kept = path.read_text(encoding="utf-8")
-    declined = _cli(tmp_path, "provider", "add", "stubai", stdin="n\n")
+    declined = _cli(tmp_path, "provider", "--add", "stubai", stdin="n\n")
     unchanged = path.read_text(encoding="utf-8")
-    listed = _cli(tmp_path, "provider", "list")
-    removed = _cli(tmp_path, "provider", "remove", "vault")
-    absent = _cli(tmp_path, "provider", "remove", "vault")
+    listed = _cli(tmp_path, "provider", "nova", "--list")
+    removed = _cli(tmp_path, "provider", "--remove", "vault")
+    absent = _cli(tmp_path, "provider", "--remove", "vault")
     saved = json.loads(path.read_text(encoding="utf-8"))
     assert added.returncode == 0, added.stderr
     assert (
@@ -150,8 +150,8 @@ async def test_provider_add_saves_a_preset_the_proxy_then_uses(tmp_path, stub):
 def test_provider_add_stores_a_typed_env_reference_and_no_key_on_enter(tmp_path, stub):
     _catalog(tmp_path, stub[0])
     path = _home(tmp_path, "nova", proxy={"server": {"url": DEAD_SERVER}})
-    typed = _cli(tmp_path, "provider", "add", "stubai", "--profile", "ref", stdin="{env:STUB_KEY}\n")
-    blank = _cli(tmp_path, "provider", "add", "stubai", "--profile", "bare", stdin="\n")
+    typed = _cli(tmp_path, "provider", "--add", "stubai", "--profile", "ref", stdin="{env:STUB_KEY}\n")
+    blank = _cli(tmp_path, "provider", "--add", "stubai", "--profile", "bare", stdin="\n")
     saved = json.loads(path.read_text(encoding="utf-8"))["providers"]
     endpoints = {"messages": f"{stub[0]}/anthropic/v1"}
     assert typed.returncode == blank.returncode == 0
@@ -161,26 +161,30 @@ def test_provider_add_stores_a_typed_env_reference_and_no_key_on_enter(tmp_path,
     assert saved["bare"] == {"base_url": f"{stub[0]}/openai/v1", "endpoints": endpoints}
 
 
-def test_provider_add_without_a_terminal_needs_a_known_provider(tmp_path, stub):
+def test_provider_without_a_terminal_needs_an_action_flag(tmp_path, stub):
     _catalog(tmp_path, stub[0])
     _home(tmp_path, "nova", proxy={"server": {"url": DEAD_SERVER}})
-    unnamed = _cli(tmp_path, "provider", "add")
-    unknown = _cli(tmp_path, "provider", "add", "nope")
-    blocked = _cli(tmp_path, "provider", "add", "bedrocky")
-    missing = _cli(tmp_path, "-c", "luna", "provider", "add", "stubai")
-    assert unnamed.returncode == 2 and "Error!\nAdd a provider" in unnamed.stderr
+    no_action = _cli(tmp_path, "provider", "nova")
+    conflict = _cli(tmp_path, "provider", "nova", "--list", "--add", "stubai")
+    unknown = _cli(tmp_path, "provider", "--add", "nope")
+    blocked = _cli(tmp_path, "provider", "--add", "bedrocky")
+    missing = _cli(tmp_path, "provider", "luna", "--add", "stubai")
+    assert no_action.returncode == 2 and "Error!\nSpecify --list, --add" in no_action.stderr
+    assert conflict.returncode == 2 and "Use only one of --list, --add, or --remove." in conflict.stderr
     assert unknown.returncode == 2 and "Error!\nUnknown provider 'nope'" in unknown.stderr
     assert blocked.returncode == 2
     assert missing.returncode == 2 and "Error!\nConfiguration file not found" in missing.stderr
+    assert "Run dusha init luna first." in missing.stderr
 
 
 def test_deprecated_proxy_auth_login_and_status_still_work(tmp_path, stub):
     _catalog(tmp_path, stub[0])
-    first = _cli(tmp_path, "proxy", "luna", "auth", "login", "stubai", stdin=f"{DEAD_SERVER}\n\nsk-luna\n")
+    _home(tmp_path, "luna", proxy={"server": {"url": DEAD_SERVER}})
+    first = _cli(tmp_path, "proxy", "luna", "auth", "login", "stubai", stdin="sk-luna\n")
     status = _cli(tmp_path, "proxy", "luna", "auth", "status")
     luna = json.loads((tmp_path / "config" / "dusha" / "luna" / "config.json").read_text(encoding="utf-8"))
     assert first.returncode == 0, first.stderr
-    assert "Server URL" in first.stderr and "Use dusha provider" in first.stderr
+    assert "Use dusha provider" in first.stderr
     assert "Use dusha provider" in status.stderr and json.loads(status.stdout)["stubai"]["key"] == "..."
     assert luna["proxy"]["server"]["url"] == DEAD_SERVER
     assert luna["providers"]["stubai"]["key"] == "sk-luna"
@@ -247,10 +251,13 @@ needs_terminal = pytest.mark.skipif(sys.platform == "win32", reason="needs a pse
 
 
 @needs_terminal
-def test_provider_add_offers_a_searchable_menu_in_a_terminal(tmp_path, stub):
+def test_provider_menu_offers_add_and_remove_in_a_terminal(tmp_path, stub):
     _catalog(tmp_path, stub[0])
     path = _home(tmp_path, "nova", proxy={"server": {"url": DEAD_SERVER}})
-    terminal = Terminal(tmp_path, "provider", "add")
+    terminal = Terminal(tmp_path, "provider", "nova")
+    terminal.expect("Providers for nova")
+    terminal.expect("Add a provider")
+    terminal.send("\r")
     terminal.expect("Stub AI")
     terminal.settle()
     terminal.send("vault")
@@ -267,17 +274,23 @@ def test_provider_add_offers_a_searchable_menu_in_a_terminal(tmp_path, stub):
     assert code == 0 and hidden
     assert profile == {"base_url": "https://team.vault.invalid/v1", "key": "sk-typed", "auth": "bearer"}
 
+    removing = Terminal(tmp_path, "provider", "nova")
+    removing.expect("Remove a provider")
+    removing.send("\x1b[B\x1b[B\r")
+    removing.expect("Provider to remove")
+    removing.expect("vaultai")
+    removing.send("\r")
+    removing.expect("Removed vaultai from nova.")
+    assert removing.close(wait=True) == 0
+    assert json.loads(path.read_text(encoding="utf-8"))["providers"] == {}
+
 
 @needs_terminal
 async def test_provider_add_custom_writes_a_profile_the_proxy_then_uses(tmp_path, stub):
     url, seen = stub
     _catalog(tmp_path, url)
     path = _home(tmp_path, "nova", proxy={"server": {"url": DEAD_SERVER}})
-    terminal = Terminal(tmp_path, "provider", "add")
-    terminal.expect("Custom")
-    terminal.send("custom")
-    terminal.expect("Custom")
-    terminal.send("\r")
+    terminal = Terminal(tmp_path, "provider", "nova", "--add", "custom")
     terminal.expect("Profile name")
     terminal.send("mine\r")
     terminal.expect("Base URL")
@@ -326,7 +339,9 @@ def test_prompts_share_one_palette_and_no_color_turns_it_off(tmp_path, stub):
     _home(tmp_path, "nova", proxy={"server": {"url": DEAD_SERVER}})
 
     def add(*, replace: bool, **env: str) -> bytes:
-        terminal = Terminal(tmp_path, "provider", "add", "--profile", "shared", **env)
+        terminal = Terminal(tmp_path, "provider", "--profile", "shared", **env)
+        terminal.expect("Add a provider")
+        terminal.send("\r")
         terminal.expect("Stub AI")
         terminal.settle()
         terminal.send("stub\r")
@@ -396,36 +411,34 @@ def test_help_and_errors_are_colored_only_on_a_terminal(tmp_path, free_port, ser
 
 
 @needs_terminal
-def test_proxy_offers_the_server_on_this_machine_when_none_is_saved(tmp_path, free_port, serving):
+def test_init_offers_the_server_on_this_machine_and_proxy_uses_it(tmp_path, free_port, serving):
     server_port, proxy_port = free_port(), free_port()
     path = _home(tmp_path, "nova", port=server_port, api_token="local-secret", proxy={"port": proxy_port})
     with serving(path) as url:
-        terminal = Terminal(tmp_path, "proxy", "nova")
+        terminal = Terminal(tmp_path, "init", "nova", "--proxy")
         terminal.expect("nova isn't connected to a server yet")
         terminal.expect(f"The server on this machine ({url})")
         terminal.send("\r")
         terminal.expect(f"Connected to {url}.")
+        assert terminal.close(wait=True) == 0
+        proxy = Terminal(tmp_path, "proxy", "nova")
+        proxy.expect("Application startup complete")
         health = _health(proxy_port)
-        terminal.close()
-        again = Terminal(tmp_path, "proxy", "nova")
-        again.expect("Application startup complete")
-        rerun = _health(proxy_port)
-        quiet = b"isn't connected" not in again.output
-        again.close()
+        quiet = b"isn't connected" not in proxy.output
+        proxy.close()
     saved = json.loads(path.read_text(encoding="utf-8"))
-    assert health["server"] == {"url": url, "status": "ok"}
-    assert rerun["server"]["status"] == "ok" and quiet
+    assert health["server"] == {"url": url, "status": "ok"} and quiet
     assert saved["proxy"]["server"] == {"url": url, "token": ""}
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
 @needs_terminal
-def test_proxy_asks_for_another_server_until_it_answers(tmp_path, free_port, serving):
+def test_init_asks_for_another_server_until_it_answers(tmp_path, free_port, serving):
     server_port, proxy_port = free_port(), free_port()
     server = _home(tmp_path, "home", port=server_port, api_token="server-secret")
     path = _home(tmp_path, "edge", proxy={"port": proxy_port})
     with serving(server) as url:
-        terminal = Terminal(tmp_path, "proxy", "edge")
+        terminal = Terminal(tmp_path, "init", "edge", "--proxy")
         terminal.expect("edge isn't connected to a server yet")
         terminal.expect("Server URL")
         terminal.send("\x15" + url + "\r")
@@ -438,9 +451,12 @@ def test_proxy_asks_for_another_server_until_it_answers(tmp_path, free_port, ser
         terminal.expect("Server token")
         terminal.send("server-secret\r")
         terminal.expect(f"Connected to {url}.")
-        health = _health(proxy_port)
         hidden = b"server-secret" not in terminal.output
-        terminal.close()
+        assert terminal.close(wait=True) == 0
+        proxy = Terminal(tmp_path, "proxy", "edge")
+        proxy.expect("Application startup complete")
+        health = _health(proxy_port)
+        proxy.close()
     saved = json.loads(path.read_text(encoding="utf-8"))
     assert health["server"] == {"url": url, "status": "ok"}
     assert hidden

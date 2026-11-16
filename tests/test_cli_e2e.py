@@ -108,11 +108,12 @@ def test_cli_sends_the_token_and_prefers_the_saved_server(tmp_path, free_port, s
     with serving(server):
         local = _json(_cli(tmp_path, "-c", "nova", "memo", "add", "From the server machine."))
         remote = _json(_cli(tmp_path, "-c", "client", "memo", "list"))
-        plugins = _json(_cli(tmp_path, "-c", "client", "plugins"))
+        plugins = _json(_cli(tmp_path, "-c", "client", "plugin", "list"))
+        direct_plugins = _json(_cli(tmp_path, "plugin", "list", "client"))
         denied = _cli(tmp_path, "-c", "stale", "memo", "list")
-        denied_plugins = _cli(tmp_path, "-c", "stale", "plugins")
+        denied_plugins = _cli(tmp_path, "plugin", "list", "stale")
     assert [memo["id"] for memo in remote["memos"]] == [local["memo"]["id"]]
-    assert plugins["memo"]["state"] == "active"
+    assert plugins["memo"]["state"] == "active" and direct_plugins == plugins
     assert denied.returncode == 1 and "Invalid companion token." in denied.stderr
     assert denied_plugins.returncode == 1 and "Invalid companion token." in denied_plugins.stderr
 
@@ -124,14 +125,15 @@ def test_cli_hides_the_commands_of_disabled_plugins(tmp_path, free_port, serving
     )
     with serving(path):
         listed = _cli(tmp_path, "--help")
-        plugins = _json(_cli(tmp_path, "plugins"))
+        plugins = _json(_cli(tmp_path, "plugin", "list", "nova"))
         memos = _json(_cli(tmp_path, "memo", "list"))
         refused = [_cli(tmp_path, *args) for args in (("memory", "recent"), ("evergreen", "list"))]
     static, plugin = listed.stdout.split("Core commands:")[1].split("Plugin commands:")
     commands = re.findall(r"^  (\S+)", static, re.MULTILINE)
     plugin_commands = re.findall(r"^  (\S+)", plugin, re.MULTILINE)
     assert listed.returncode == 0
-    assert set(commands) == {"init", "serve", "proxy", "provider", "list", "plugins", "health", "backup"}
+    expected = {"init", "serve", "proxy", "provider", "companion", "plugin", "health", "backup"}
+    assert set(commands) == expected
     assert "memo" in plugin_commands
     assert "memory" not in plugin_commands and "evergreen" not in plugin_commands
     assert plugins["memory"]["state"] == plugins["evergreen"]["state"] == "disabled"
@@ -213,7 +215,10 @@ def test_cli_resolves_companions_in_the_documented_order(tmp_path, free_port):
     assert escaped.returncode == 2 and "Companion name" in escaped.stderr
     assert absent.returncode == 2 and "Configuration file not found" in absent.stderr
     assert yaml.returncode == 2 and "Unsupported configuration format" in yaml.stderr
-    assert _json(_cli(tmp_path, "list")) == {"root": str(tmp_path / "dusha"), "companions": ["dusha", "luna"]}
+    assert _json(_cli(tmp_path, "companion", "list")) == {
+        "root": str(tmp_path / "dusha"),
+        "companions": ["dusha", "luna"],
+    }
 
 
 def test_cli_talks_to_the_only_companion_without_a_selection(tmp_path, free_port, serving):
@@ -258,27 +263,24 @@ def _get_json(url: str):
         return None
 
 
-def test_cli_serve_creates_the_config_once_and_serves_it_after_restart(tmp_path, free_port):
+def test_cli_serve_requires_init_and_serves_initialized_config(tmp_path, free_port):
     config = tmp_path / "dusha" / "nova" / "config.json"
-    example = json.loads((Path(__file__).parents[1] / "config.example.json").read_text(encoding="utf-8"))
+    missing = _cli(tmp_path, "serve", "nova")
+    assert missing.returncode == 2
+    assert "Configuration file not found" in missing.stderr
+    assert "Run dusha init nova first." in missing.stderr
+    assert not (tmp_path / "dusha").exists()
 
-    first = _start(tmp_path, "serve", "nova")
-    try:
-        _wait_for(config.is_file)
-    finally:
-        stderr = _stop(first)
-    assert f"Success!\nCreated {config}." in stderr
-    assert stat.S_IMODE(config.stat().st_mode) == 0o600
+    init = _cli(tmp_path, "init", "nova", "--serve")
+    assert init.returncode == 0 and f"Success!\nCreated {config}." in init.stderr
     generated = json.loads(config.read_text(encoding="utf-8"))
-    assert generated == example
-
     port = free_port()
     config.write_text(json.dumps({**generated, "port": port}), encoding="utf-8")
-    second = _start(tmp_path, "serve", "nova")
+    server = _start(tmp_path, "serve", "nova")
     try:
         health = _wait_for(lambda: _get_json(f"http://127.0.0.1:{port}/health"))
     finally:
-        stderr = _stop(second)
+        stderr = _stop(server)
     assert health["status"] == "ok" and health["companion"] == "nova"
     assert "Created" not in stderr
 
@@ -315,18 +317,21 @@ def test_cli_serve_rejects_a_bad_companion_name_without_creating_anything(tmp_pa
     assert not (tmp_path / "dusha").exists()
 
 
-def test_cli_proxy_asks_for_the_server_once_and_saves_it(tmp_path, free_port, serving):
+def test_cli_init_prompts_for_server_and_proxy_runs_without_creating(tmp_path, free_port, serving):
     server = _home(tmp_path, "nova", port=free_port(), api_token="server-secret")
     url = f"http://127.0.0.1:{json.loads(server.read_text())['port']}"
     config = tmp_path / "dusha" / "edge" / "config.json"
 
-    first = _start(tmp_path, "proxy", "edge", stdin=f"ftp://nowhere\n{url}/\nserver-secret\n")
-    try:
-        _wait_for(config.is_file)
-    finally:
-        stderr = _stop(first)
-    assert "Server URL" in stderr and "must be an http or https URL" in stderr
-    assert f"Success!\nCreated {config}." in stderr
+    missing = _cli(tmp_path, "proxy", "edge")
+    assert missing.returncode == 2
+    assert "Configuration file not found" in missing.stderr
+    assert "Run dusha init edge first." in missing.stderr
+    assert not config.exists()
+
+    init = _cli(tmp_path, "init", "edge", "--proxy", stdin=f"ftp://nowhere\n{url}/\nserver-secret\n")
+    assert init.returncode == 0
+    assert "Server URL" in init.stderr and "must be an http or https URL" in init.stderr
+    assert f"Success!\nCreated {config}." in init.stderr
     assert stat.S_IMODE(config.stat().st_mode) == 0o600
     saved = json.loads(config.read_text(encoding="utf-8"))
     assert saved["proxy"]["server"] == {"url": url, "token": "server-secret", "timeout_seconds": 10}
@@ -413,25 +418,18 @@ def test_cli_init_adds_each_part_without_touching_the_other(tmp_path):
     assert json.loads(config.read_text(encoding="utf-8"))["proxy"]["server"]["token"] == "t2"
 
 
-def test_cli_serve_adds_the_server_keys_to_a_proxy_only_home(tmp_path, free_port):
+def test_cli_serve_serves_a_proxy_only_home_without_modifying_config(tmp_path, free_port):
     port = free_port()
-    config = _home(tmp_path, "edge", proxy={"server": {"url": "http://10.0.0.2:8765", "token": ""}})
-    original = json.loads(config.read_text(encoding="utf-8"))
+    proxy_cfg = {"server": {"url": "http://10.0.0.2:8765", "token": ""}}
+    config = _home(tmp_path, "edge", port=port, proxy=proxy_cfg)
+    before = config.read_bytes()
     server = _start(tmp_path, "serve", "edge")
-    try:
-        _wait_for(lambda: "plugins" in json.loads(config.read_text(encoding="utf-8")))
-    finally:
-        stderr = _stop(server)
-    saved = json.loads(config.read_text(encoding="utf-8"))
-    assert f"Success!\nAdded the server keys to {config}." in stderr
-    assert saved["proxy"] == original["proxy"] and saved["port"] == 8765
-    config.write_text(json.dumps({**saved, "port": port}), encoding="utf-8")
-    again = _start(tmp_path, "serve", "edge")
     try:
         health = _wait_for(lambda: _get_json(f"http://127.0.0.1:{port}/health"))
     finally:
-        stderr = _stop(again)
-    assert health["status"] == "ok" and "Added" not in stderr
+        stderr = _stop(server)
+    assert health["status"] == "ok" and config.read_bytes() == before
+    assert "Added" not in stderr
 
 
 def test_cli_init_upgrades_a_schema_3_prompts_file_and_keeps_a_backup(tmp_path):
@@ -484,6 +482,8 @@ def test_cli_help_uses_imperative_phrases_and_documents_every_plugin_option(tmp_
     path = _home(tmp_path, "nova", port=free_port(), plugins={"relay": {}})
     with serving(path):
         root = _cli(tmp_path, "--help")
+        companion_help = _cli(tmp_path, "companion", "--help")
+        plugin_help = _cli(tmp_path, "plugin", "--help")
         provider_help = _cli(tmp_path, "provider", "--help")
         manifest = httpx.get(f"http://127.0.0.1:{json.loads(path.read_text())['port']}/cli/v1/commands").json()
         groups = manifest["groups"]
@@ -494,8 +494,10 @@ def test_cli_help_uses_imperative_phrases_and_documents_every_plugin_option(tmp_
         ack_help = _cli(tmp_path, "proactive", "ack", "--help")
         memo_help = _cli(tmp_path, "memo", "list", "--help")
         evergreen_help = _cli(tmp_path, "evergreen", "remember", "--help")
-    assert root.returncode == 0 and provider_help.returncode == 0
-    for line in re.findall(r"^  [^-\s]\S*\s{2,}(.+)$", root.stdout + provider_help.stdout, re.MULTILINE):
+    assert root.returncode == companion_help.returncode == 0
+    assert plugin_help.returncode == provider_help.returncode == 0
+    combined = root.stdout + companion_help.stdout + plugin_help.stdout
+    for line in re.findall(r"^  [^-\s]\S*\s{2,}(.+)$", combined, re.MULTILINE):
         assert not line.endswith("."), line
     for name, text in groups.items():
         assert text and not text.endswith("."), (name, text)

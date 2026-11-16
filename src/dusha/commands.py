@@ -6,7 +6,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
 
-RESERVED = frozenset({"serve", "proxy", "list", "plugins"})
+RESERVED = frozenset({"init", "serve", "proxy", "provider", "companion", "plugin"})
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
 _TYPES = {str: "str", int: "int", float: "float", bool: "bool"}
 _SCHEMA = {"str": "string", "int": "integer", "float": "number", "bool": "boolean", "choice": "string"}

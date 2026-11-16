@@ -15,7 +15,7 @@ from . import homes, providers
 from .client import catalog, presets, remote, settings
 from .providers import PLACEHOLDER, http_url
 
-STATIC = frozenset({"init", "serve", "proxy", "provider", "list", "plugins"})
+STATIC = frozenset({"init", "serve", "proxy", "provider", "companion", "plugin"})
 _TYPES = {"str": click.STRING, "int": click.INT, "float": click.FLOAT}
 _BUILT = "dusha.commands"
 _CORE = "dusha.core"
@@ -107,11 +107,22 @@ def _print(value: Any) -> None:
     click.echo(json.dumps(value, ensure_ascii=False, indent=2, default=str))
 
 
-def _config(resolve: Callable[[], Any]) -> Any:
+def _config(resolve: Callable[[], Any], *, hint: str = "") -> Any:
     try:
         return resolve()
-    except (FileNotFoundError, ValueError) as error:
+    except FileNotFoundError as error:
+        message = _sentence(str(error))
+        raise ConfigError(f"{message}\n{_sentence(hint)}" if hint else message) from error
+    except ValueError as error:
         raise ConfigError(_sentence(str(error))) from error
+
+
+def _init_hint(companion: str | None, home: str | None) -> str:
+    if companion:
+        return f"Run dusha init {companion} first."
+    if home:
+        return f"Run dusha init --home {home} first."
+    return "Run dusha init <name> first."
 
 
 def _remote(call: Callable[..., Any], *args: Any) -> Any:
@@ -125,11 +136,15 @@ def _selection(ctx: click.Context) -> dict[str, Any]:
     return ctx.find_root().params
 
 
-def _client(ctx: click.Context) -> tuple[settings.Connection, Path | None]:
+def _client(ctx: click.Context, companion: str | None = None) -> tuple[settings.Connection, Path | None]:
     params = _selection(ctx)
     return _config(
         lambda: settings.connection(
-            homes.locate(params.get("config"), home=params.get("home"), companion=params.get("companion"))
+            homes.locate(
+                params.get("config"),
+                home=params.get("home"),
+                companion=params.get("companion") or companion,
+            )
         )
     )
 
@@ -251,11 +266,13 @@ def serve(ctx: click.Context, name: str | None) -> None:
     companion = params.get("companion") or name
 
     def resolve() -> Any:
-        if params.get("config") is None and (home := homes.named_home(params.get("home"), companion)):
-            _init_serve(home)
-        return load_config(params.get("config"), home=params.get("home"), companion=companion)
+        path = homes.locate(params.get("config"), home=params.get("home"), companion=companion)
+        if path is None:
+            raise ValueError("Specify a companion, such as dusha serve <name>.")
+        return load_config(path)
 
-    cfg = _config(resolve)
+    hint = "" if params.get("config") is not None else _init_hint(companion, params.get("home"))
+    cfg = _config(resolve, hint=hint)
     import uvicorn
 
     from .api import create_app
@@ -305,21 +322,6 @@ def _prompt_proxy(path: Path, interactive: bool) -> None:
         _connect(path)
     else:
         _setup(path)
-
-
-def _init_serve(home: Path) -> bool:
-    from .setup import ensure_config
-
-    return _changes(ensure_config(home, home / homes.CONFIG_FILE, proxy=False, upgrade=False))
-
-
-def _init_proxy(path: Path, *, interactive: bool, url: str = "", token: str = "") -> bool:
-    from .setup import ensure_config
-
-    changes = ensure_config(
-        path.parent, path, server=False, upgrade=False, url=url, token=token, interactive=interactive
-    )
-    return _changes(changes, interactive=interactive)
 
 
 @main.command("init", help="Create or update configuration")
@@ -436,34 +438,29 @@ class Proxy(click.Group):
         return super().parse_args(ctx, args)
 
 
-def _proxy_file(ctx: click.Context, *, setup: bool) -> Path:
+def _proxy_file(ctx: click.Context) -> Path:
     params = _selection(ctx)
     companion = params.get("companion") or ctx.meta.get(_PROXY_NAME)
 
     def resolve() -> Path:
-        interactive = setup and sys.stdin.isatty()
-        if params.get("config") is None and (home := homes.named_home(params.get("home"), companion)):
-            if setup and not (home / homes.CONFIG_FILE).exists():
-                _init_proxy(home / homes.CONFIG_FILE, interactive=interactive)
         path = homes.locate(params.get("config"), home=params.get("home"), companion=companion)
         if path is None:
             raise ValueError("Specify a companion, such as dusha proxy <name>.")
-        if interactive and not settings.server_saved(path):
-            _connect(path)
         return path
 
-    return _config(resolve)
+    hint = "" if params.get("config") is not None else _init_hint(companion, params.get("home"))
+    return _config(resolve, hint=hint)
 
 
 @main.group(
-    "proxy", cls=Proxy, invoke_without_command=True, subcommand_metavar="[NAME] [COMMAND] [ARGS]...",
+    "proxy", cls=Proxy, invoke_without_command=True, subcommand_metavar="[NAME]",
     help="Run or configure the proxy",
 )
 @click.pass_context
 def proxy(ctx: click.Context) -> None:
     if ctx.invoked_subcommand is not None:
         return
-    path = _proxy_file(ctx, setup=True)
+    path = _proxy_file(ctx)
     cfg = _config(lambda: settings.load(path))
     import uvicorn
 
@@ -485,16 +482,18 @@ def _pick(found: dict[str, presets.Preset]) -> str:
     ).unsafe_ask()
 
 
-def _provider_file(ctx: click.Context) -> Path:
+def _provider_file(ctx: click.Context, name: str | None = None) -> Path:
     params = _selection(ctx)
+    companion = params.get("companion") or name
 
     def resolve() -> Path:
-        path = homes.locate(params.get("config"), home=params.get("home"), companion=params.get("companion"))
+        path = homes.locate(params.get("config"), home=params.get("home"), companion=companion)
         if path is None:
-            raise ValueError("Specify a companion, such as dusha -c <name> provider add.")
+            raise ValueError("Specify a companion, such as dusha provider <name>.")
         return path
 
-    return _config(resolve)
+    hint = "" if params.get("config") is not None else _init_hint(companion, params.get("home"))
+    return _config(resolve, hint=hint)
 
 
 def _add(path: Path, provider: str | None, profile: str | None, refresh: bool) -> None:
@@ -508,7 +507,7 @@ def _add(path: Path, provider: str | None, profile: str | None, refresh: bool) -
     interactive = sys.stdin.isatty()
     if provider is None:
         if not interactive:
-            raise ConfigError("Add a provider, such as dusha provider add deepseek.")
+            raise ConfigError("Add a provider, such as dusha provider --add deepseek.")
         provider = _pick(found)
     if provider == CUSTOM:
         _custom(path, profile)
@@ -616,31 +615,72 @@ def _list(path: Path) -> None:
     })
 
 
-@main.group("provider", help="Configure model providers")
-def provider_group() -> None:
-    pass
+def _provider_menu(path: Path, *, profile: str | None, refresh: bool) -> None:
+    import questionary
+
+    cfg = _config(lambda: settings.load(path, environ=False))
+    choices = [
+        questionary.Choice("Add a provider", value="add"),
+        questionary.Choice("List providers", value="list"),
+    ]
+    if cfg.providers:
+        choices.append(questionary.Choice("Remove a provider", value="remove"))
+    action = questionary.select(
+        f"Providers for {path.parent.name}", choices=choices, style=_prompt_style()
+    ).unsafe_ask()
+    if action == "add":
+        _add(path, None, profile, refresh)
+    elif action == "list":
+        _list(path)
+    elif action == "remove":
+        target = questionary.select(
+            "Provider to remove", choices=sorted(cfg.providers), style=_prompt_style()
+        ).unsafe_ask()
+        _remove(path, target)
 
 
-@provider_group.command("add", help="Add a provider from the models.dev catalog")
-@click.argument("provider", required=False)
-@click.option("--profile", help="Profile name, defaults to the provider id.")
+@main.command("provider", help="Configure model providers")
+@click.argument("name", required=False)
+@click.option("--list", "list_only", is_flag=True, help="List configured providers, keys masked.")
+@click.option(
+    "--add", "add_provider", default=None, metavar="PROVIDER",
+    help="Add a provider from the catalog, or custom.",
+)
+@click.option(
+    "--remove", "remove_profile", default=None, metavar="PROFILE", help="Remove a configured provider."
+)
+@click.option("--profile", help="Profile name for --add, defaults to the provider id.")
 @click.option("--refresh", is_flag=True, help="Refetch the models.dev catalog.")
 @click.pass_context
-def provider_add(ctx: click.Context, provider: str | None, profile: str | None, refresh: bool) -> None:
-    _add(_provider_file(ctx), provider, profile, refresh)
-
-
-@provider_group.command("remove", help="Remove a provider")
-@click.argument("profile")
-@click.pass_context
-def provider_remove(ctx: click.Context, profile: str) -> None:
-    _remove(_provider_file(ctx), profile)
-
-
-@provider_group.command("list", help="List configured providers")
-@click.pass_context
-def provider_list(ctx: click.Context) -> None:
-    _list(_provider_file(ctx))
+def provider_cmd(
+    ctx: click.Context,
+    name: str | None,
+    list_only: bool,
+    add_provider: str | None,
+    remove_profile: str | None,
+    profile: str | None,
+    refresh: bool,
+) -> None:
+    actions = int(list_only) + int(add_provider is not None) + int(remove_profile is not None)
+    if actions > 1:
+        raise click.UsageError("Use only one of --list, --add, or --remove.")
+    if (profile is not None or refresh) and (list_only or remove_profile is not None):
+        raise click.UsageError("Options --profile and --refresh only apply to --add or the menu.")
+    if add_provider is not None and not add_provider.strip():
+        raise click.UsageError("Specify a provider id or custom with --add.")
+    if remove_profile is not None and not remove_profile.strip():
+        raise click.UsageError("Specify a profile name with --remove.")
+    path = _provider_file(ctx, name)
+    if list_only:
+        _list(path)
+    elif add_provider is not None:
+        _add(path, add_provider.strip(), profile, refresh)
+    elif remove_profile is not None:
+        _remove(path, remove_profile.strip())
+    elif sys.stdin.isatty():
+        _provider_menu(path, profile=profile, refresh=refresh)
+    else:
+        raise ConfigError("Specify --list, --add <provider>, or --remove <profile>.")
 
 
 # Deprecated dusha proxy <name> auth, removed in 2.0.21.
@@ -658,31 +698,42 @@ def auth() -> None:
 @click.option("--refresh", is_flag=True)
 @click.pass_context
 def login(ctx: click.Context, provider: str | None, profile: str | None, refresh: bool) -> None:
-    _add(_proxy_file(ctx, setup=True), provider, profile, refresh)
+    _add(_proxy_file(ctx), provider, profile, refresh)
 
 
 @auth.command("logout")
 @click.argument("profile")
 @click.pass_context
 def logout(ctx: click.Context, profile: str) -> None:
-    _remove(_proxy_file(ctx, setup=False), profile)
+    _remove(_proxy_file(ctx), profile)
 
 
 @auth.command("status")
 @click.pass_context
 def status(ctx: click.Context) -> None:
-    _list(_proxy_file(ctx, setup=False))
+    _list(_proxy_file(ctx))
 
 
-@main.command("list", help="List companions")
-def list_companions() -> None:
+@main.group("companion", help="Manage companions")
+def companion_group() -> None:
+    pass
+
+
+@companion_group.command("list", help="List companions")
+def companion_list() -> None:
     _print({"root": str(homes.config_root()), "companions": homes.list_companions()})
 
 
-@main.command("plugins", help="List plugin states")
+@main.group("plugin", help="Inspect companion plugins")
+def plugin_group() -> None:
+    pass
+
+
+@plugin_group.command("list", help="List plugin states")
+@click.argument("name", required=False)
 @click.pass_context
-def plugins(ctx: click.Context) -> None:
-    connection, _ = _client(ctx)
+def plugin_list(ctx: click.Context, name: str | None) -> None:
+    connection, _ = _client(ctx, name)
     _print(_remote(remote.plugins, connection))
 
 
