@@ -82,8 +82,7 @@ class MemoStore:
         if len(value) > self.config.reason_max_chars:
             raise ValueError(f"reason exceeds {self.config.reason_max_chars} characters")
         timestamp = isoformat(now or utc_now())
-        with self.database.connect() as db:
-            db.execute("BEGIN IMMEDIATE")
+        with self.database.transaction(immediate=True) as db:
             current = db.execute("SELECT * FROM memo_notes WHERE id=?", (int(note_id),)).fetchone()
             if current is None:
                 raise KeyError(note_id)

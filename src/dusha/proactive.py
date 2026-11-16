@@ -307,8 +307,7 @@ class ProactiveEngine:
         current = now or utc_now()
         lease_until = current + timedelta(seconds=self.rules.lease_seconds)
         results: list[dict[str, Any]] = []
-        with self.database.connect() as db:
-            db.execute("BEGIN IMMEDIATE")
+        with self.database.transaction(immediate=True) as db:
             db.execute(
                 """UPDATE proactive_events SET status='pending', consumer=NULL, lease_until=NULL, updated_at=?
                    WHERE status='leased' AND lease_until<=?""",
@@ -353,7 +352,7 @@ class ProactiveEngine:
         if outcome not in {"sent", "failed", "release"}:
             raise ValueError("outcome must be sent, failed, or release")
         current = now or utc_now()
-        with self.database.connect() as db:
+        with self.database.transaction(immediate=True) as db:
             row = db.execute("SELECT * FROM proactive_events WHERE id=?", (event_id,)).fetchone()
             if not row:
                 raise KeyError(event_id)

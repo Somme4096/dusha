@@ -88,8 +88,7 @@ class EvergreenStore:
         timestamp = isoformat(now or utc_now())
         review = self._optional_time(review_after)
         expiry = self._optional_time(expires_at)
-        with self.database.connect() as db:
-            db.execute("BEGIN IMMEDIATE")
+        with self.database.transaction(immediate=True) as db:
             duplicate = self._active_key_row(db, key)
             if duplicate:
                 state = "expired" if self._is_expired(duplicate["expires_at"], timestamp) else "active"
@@ -141,8 +140,7 @@ class EvergreenStore:
         actor = self._validate_actor(created_by)
         timestamp = isoformat(now or utc_now())
 
-        with self.database.connect() as db:
-            db.execute("BEGIN IMMEDIATE")
+        with self.database.transaction(immediate=True) as db:
             current = self._current_row(db, fact_id)
             if not current:
                 raise KeyError(fact_id)
@@ -200,8 +198,7 @@ class EvergreenStore:
         actor = self._validate_actor(created_by)
         timestamp = isoformat(now or utc_now())
 
-        with self.database.connect() as db:
-            db.execute("BEGIN IMMEDIATE")
+        with self.database.transaction(immediate=True) as db:
             current = self._current_row(db, fact_id)
             if not current:
                 raise KeyError(fact_id)
