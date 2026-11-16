@@ -15,13 +15,13 @@ Your harness only needs a base URL. The proxy forwards model requests to your pr
 
 ### Start the proxy
 
-Initialize the proxy with `dusha init <name> --proxy` on the machine with your harness, then run `dusha proxy <name>`. When no server is saved for `<name>`, `dusha init <name> --proxy` in a terminal asks which one to use:
+Initialize the proxy with `dusha companion add <name> --proxy` on the machine with your harness (or `dusha companion update <name> --proxy` on an existing home), then run `dusha proxy <name>`. When no server is saved for `<name>`, `--proxy` in a terminal asks which one to use:
 
 1. Pick this machine's server, if it has one, or enter another server's URL and token.
 2. It checks the connection. If the check fails, it offers to try again.
 3. It saves the choice to `config.json` with mode `600`.
 
-Later `dusha proxy <name>` runs start straight away. Outside a terminal, `dusha init <name> --proxy` reads the server URL and token line by line or from `--server-url` and `--token`. A server's own `config.json` without a saved server uses that server.
+Later `dusha proxy <name>` runs start straight away. Outside a terminal, `dusha companion add <name> --proxy` reads the server URL and token line by line or from `--server-url` and `--token`. A server's own `config.json` without a saved server uses that server.
 
 Check the proxy with `GET /health`. It reports `server.status` as `ok`, `unauthorized`, `unreachable`, or `http <status>`, and it lists the profile names.
 

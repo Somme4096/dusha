@@ -1,15 +1,15 @@
 # Configuration
 
-Each companion reads one `config.json` from its home directory. `dusha init <name>` writes the file:
+Each companion reads one `config.json` from its home directory. `dusha companion add <name>` writes the file:
 
 ```sh
-dusha init <name>
+dusha companion add <name>
 ${EDITOR:-vi} ~/.config/dusha/<name>/config.json
 ```
 
 The server keys match [config.example.json](../config.example.json), and the `proxy` section points at that server. The mode is `600`, readable only by you. Omit a key to keep its default. Restart the service after an edit.
 
-`dusha init <name> --serve` writes only the server keys, and `--proxy` only the `proxy` section. `--proxy` asks which server to use in a terminal, or takes `--server-url` and `--token`. Each run adds the part that is missing and leaves the other part alone, so you can run it again on an existing home. It also upgrades files in an [old layout](guide.md#migrating) and keeps the original next to it as `<file>.bak`. `dusha serve <name>` and `dusha proxy <name>` read the initialized file and do not create it on their own.
+`dusha companion add <name> --serve` writes only the server keys, and `--proxy` only the `proxy` section. `--proxy` asks which server to use in a terminal, or takes `--server-url` and `--token`. Run `dusha companion update <name>` on an existing home to add a missing section, update `--server-url` or `--token`, or upgrade files in an [old layout](guide.md#migrating) while keeping `<file>.bak`. Run `dusha companion remove <name>` (with confirmation, or `--yes` without a terminal) to delete a companion home. `dusha serve <name>` and `dusha proxy <name>` read the initialized file and do not create it on their own.
 
 ## Which file loads
 
@@ -17,15 +17,15 @@ A companion home is `$XDG_CONFIG_HOME/dusha/<name>/`, or `~/.config/dusha/<name>
 
 1. `--config PATH`. The file's directory becomes the home.
 2. `--home DIR`
-3. `--companion NAME` (`-c NAME`), or the name after `dusha init`, `dusha serve`, `dusha proxy`, `dusha provider`, or `dusha plugin list`
+3. `--companion NAME` (`-c NAME`), or the name after `dusha companion {add|update|remove}`, `dusha serve`, `dusha proxy`, `dusha provider`, or `dusha plugin list`
 4. `DUSHA_HOME`
 5. `DUSHA_COMPANION`
 6. The single companion under the config root
 7. Packaged defaults, when no companion exists. `dusha serve`, `dusha proxy`, and `dusha provider` need an initialized companion instead.
 
-Startup fails when several companions exist and you select none, or when the selected home has no `config.json`. A name holds letters, digits, dots, dashes, and underscores. Only `dusha init <name>` writes a new file.
+Startup fails when several companions exist and you select none, or when the selected home has no `config.json`. A name holds letters, digits, dots, dashes, and underscores. Only `dusha companion add <name>` writes a new file.
 
-Every command other than `init`, `serve`, `proxy`, `provider`, and `companion list` talks to the companion's server over HTTP. It takes `proxy.server` from the selected file, and when `proxy.server.url` is empty, the server keys of the same file: `host`, `port`, and `api_token`.
+Every command other than `companion`, `serve`, `proxy`, and `provider` talks to the companion's server over HTTP. It takes `proxy.server` from the selected file, and when `proxy.server.url` is empty, the server keys of the same file: `host`, `port`, and `api_token`.
 
 Rules for the file:
 
@@ -48,7 +48,7 @@ The `DUSHA_HOST` environment variable overrides `host` for one `dusha serve` run
 
 ## Proxy
 
-`dusha proxy <name>` reads the `proxy` section of the same `config.json`, and `dusha serve` ignores it. Run `dusha init <name> --proxy` first to save the server URL and token with mode `600`. Add your [providers](#providers) afterwards. On the server's own machine, `dusha init <name> --proxy` adds the section pointed at the local server.
+`dusha proxy <name>` reads the `proxy` section of the same `config.json`, and `dusha serve` ignores it. Run `dusha companion add <name> --proxy` first to save the server URL and token with mode `600`. Add your [providers](#providers) afterwards. On the server's own machine, `dusha companion update <name> --proxy` adds the section pointed at the local server.
 
 | Key | Default | Notes |
 | --- | --- | --- |

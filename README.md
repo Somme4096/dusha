@@ -32,14 +32,14 @@ See [dusha-plugin-collections](https://github.com/Somme4096/dusha-plugin-collect
 
 ```sh
 uv tool install dusha # docker image available. See below
-dusha init <name> --serve # Also you can use --proxy for proxy setup, or without flags for generating both
+dusha companion add <name> --serve # Also you can use --proxy for proxy setup, or without flags for generating both
 dusha serve <name>
 ```
 
 Then on the same or another device, run:
 
 ```console
-$ dusha init <name> --proxy
+$ dusha companion add <name> --proxy
 
 Companion <name> isn't connected to a server yet.
 ? Connect to: (Use arrow keys)
