@@ -132,7 +132,7 @@ def test_cli_hides_the_commands_of_disabled_plugins(tmp_path, free_port, serving
     commands = re.findall(r"^  (\S+)", static, re.MULTILINE)
     plugin_commands = re.findall(r"^  (\S+)", plugin, re.MULTILINE)
     assert listed.returncode == 0
-    expected = {"init", "serve", "proxy", "provider", "companion", "plugin", "health", "backup"}
+    expected = {"serve", "proxy", "provider", "companion", "plugin", "health", "backup"}
     assert set(commands) == expected
     assert "memo" in plugin_commands
     assert "memory" not in plugin_commands and "evergreen" not in plugin_commands
@@ -263,16 +263,16 @@ def _get_json(url: str):
         return None
 
 
-def test_cli_serve_requires_init_and_serves_initialized_config(tmp_path, free_port):
+def test_cli_serve_requires_companion_add_and_serves_initialized_config(tmp_path, free_port):
     config = tmp_path / "dusha" / "nova" / "config.json"
     missing = _cli(tmp_path, "serve", "nova")
     assert missing.returncode == 2
     assert "Configuration file not found" in missing.stderr
-    assert "Run dusha init nova first." in missing.stderr
+    assert "Run dusha companion add nova first." in missing.stderr
     assert not (tmp_path / "dusha").exists()
 
-    init = _cli(tmp_path, "init", "nova", "--serve")
-    assert init.returncode == 0 and f"Success!\nCreated {config}." in init.stderr
+    added = _cli(tmp_path, "companion", "add", "nova", "--serve")
+    assert added.returncode == 0 and f"Success!\nCreated {config}." in added.stderr
     generated = json.loads(config.read_text(encoding="utf-8"))
     port = free_port()
     config.write_text(json.dumps({**generated, "port": port}), encoding="utf-8")
@@ -317,7 +317,7 @@ def test_cli_serve_rejects_a_bad_companion_name_without_creating_anything(tmp_pa
     assert not (tmp_path / "dusha").exists()
 
 
-def test_cli_init_prompts_for_server_and_proxy_runs_without_creating(tmp_path, free_port, serving):
+def test_cli_companion_add_prompts_for_server_and_proxy_runs_without_creating(tmp_path, free_port, serving):
     server = _home(tmp_path, "nova", port=free_port(), api_token="server-secret")
     url = f"http://127.0.0.1:{json.loads(server.read_text())['port']}"
     config = tmp_path / "dusha" / "edge" / "config.json"
@@ -325,13 +325,15 @@ def test_cli_init_prompts_for_server_and_proxy_runs_without_creating(tmp_path, f
     missing = _cli(tmp_path, "proxy", "edge")
     assert missing.returncode == 2
     assert "Configuration file not found" in missing.stderr
-    assert "Run dusha init edge first." in missing.stderr
+    assert "Run dusha companion add edge first." in missing.stderr
     assert not config.exists()
 
-    init = _cli(tmp_path, "init", "edge", "--proxy", stdin=f"ftp://nowhere\n{url}/\nserver-secret\n")
-    assert init.returncode == 0
-    assert "Server URL" in init.stderr and "must be an http or https URL" in init.stderr
-    assert f"Success!\nCreated {config}." in init.stderr
+    added = _cli(
+        tmp_path, "companion", "add", "edge", "--proxy", stdin=f"ftp://nowhere\n{url}/\nserver-secret\n"
+    )
+    assert added.returncode == 0
+    assert "Server URL" in added.stderr and "must be an http or https URL" in added.stderr
+    assert f"Success!\nCreated {config}." in added.stderr
     assert stat.S_IMODE(config.stat().st_mode) == 0o600
     saved = json.loads(config.read_text(encoding="utf-8"))
     assert saved["proxy"]["server"] == {"url": url, "token": "server-secret", "timeout_seconds": 10}
@@ -371,42 +373,69 @@ def test_cli_proxy_needs_a_companion_name(tmp_path):
     assert not (tmp_path / "dusha").exists()
 
 
-def test_cli_init_sets_up_both_parts_once(tmp_path):
+def test_cli_companion_add_sets_up_both_parts_and_rejects_duplicate(tmp_path):
     config = tmp_path / "dusha" / "nova" / "config.json"
-    first = _cli(tmp_path, "init", "nova")
+    first = _cli(tmp_path, "companion", "add", "nova")
     created = config.read_text(encoding="utf-8")
-    again = _cli(tmp_path, "init", "nova")
+    duplicate = _cli(tmp_path, "companion", "add", "nova")
+    again = _cli(tmp_path, "companion", "update", "nova")
     saved = json.loads(created)
     assert first.returncode == 0 and f"Success!\nCreated {config}." in first.stderr
     assert stat.S_IMODE(config.stat().st_mode) == 0o600
     assert saved["port"] == 8765 and "plugins" in saved
     assert saved["proxy"]["server"]["url"] == "http://127.0.0.1:8765"
+    assert duplicate.returncode == 2
+    assert "Companion nova already exists." in duplicate.stderr
+    assert "Use dusha companion update nova to update it." in duplicate.stderr
     assert again.returncode == 0 and "Success!\nCompanion nova is up to date." in again.stderr
     assert config.read_text(encoding="utf-8") == created
 
 
-def test_cli_init_twice_keeps_the_config_bytes_and_says_up_to_date(tmp_path):
+def test_cli_companion_update_keeps_config_bytes_and_requires_existing_companion(tmp_path):
     config = tmp_path / "dusha" / "nova" / "config.json"
-    first = _cli(tmp_path, "init", "nova")
+    missing = _cli(tmp_path, "companion", "update", "nova")
+    assert missing.returncode == 2
+    assert "Run dusha companion add nova first." in missing.stderr
+    first = _cli(tmp_path, "companion", "add", "nova")
     created = config.read_bytes()
-    again = _cli(tmp_path, "init", "nova")
-    third = _cli(tmp_path, "init", "nova", "--serve")
+    again = _cli(tmp_path, "companion", "update", "nova")
+    third = _cli(tmp_path, "companion", "update", "nova", "--serve")
     assert first.returncode == 0 and f"Success!\nCreated {config}." in first.stderr
     assert again.returncode == 0 and "Success!\nCompanion nova is up to date." in again.stderr
     assert third.returncode == 0 and "Success!\nCompanion nova is up to date." in third.stderr
     assert config.read_bytes() == created
 
 
-def test_cli_init_adds_each_part_without_touching_the_other(tmp_path):
+def test_cli_companion_add_and_update_modify_each_part_without_touching_the_other(tmp_path):
     config = tmp_path / "dusha" / "edge" / "config.json"
-    proxy = _cli(tmp_path, "init", "edge", "--proxy", "--server-url", "http://10.0.0.2:8765", "--token", "t")
+    proxy = _cli(
+        tmp_path,
+        "companion",
+        "add",
+        "edge",
+        "--proxy",
+        "--server-url",
+        "http://10.0.0.2:8765",
+        "--token",
+        "t",
+    )
     client_only = json.loads(config.read_text(encoding="utf-8"))
-    serve = _cli(tmp_path, "init", "edge", "--serve")
+    serve = _cli(tmp_path, "companion", "update", "edge", "--serve")
     both = json.loads(config.read_text(encoding="utf-8"))
     before = config.read_bytes()
-    same = _cli(tmp_path, "init", "edge", "--proxy", "--server-url", "http://10.0.0.2:8765", "--token", "t")
+    same = _cli(
+        tmp_path,
+        "companion",
+        "update",
+        "edge",
+        "--proxy",
+        "--server-url",
+        "http://10.0.0.2:8765",
+        "--token",
+        "t",
+    )
     after_same = config.read_bytes()
-    rekeyed = _cli(tmp_path, "init", "edge", "--proxy", "--token", "t2")
+    rekeyed = _cli(tmp_path, "companion", "update", "edge", "--proxy", "--token", "t2")
     assert proxy.returncode == 0 and set(client_only) == {"proxy"}
     server = client_only["proxy"]["server"]
     assert server == {"url": "http://10.0.0.2:8765", "token": "t", "timeout_seconds": 10}
@@ -416,6 +445,29 @@ def test_cli_init_adds_each_part_without_touching_the_other(tmp_path):
     assert after_same == before
     assert rekeyed.returncode == 0 and f"Success!\nSaved {config}." in rekeyed.stderr
     assert json.loads(config.read_text(encoding="utf-8"))["proxy"]["server"]["token"] == "t2"
+
+
+def test_cli_companion_remove_requires_yes_without_a_terminal_and_deletes_home(tmp_path):
+    _cli(tmp_path, "companion", "add", "nova")
+    home = tmp_path / "dusha" / "nova"
+    refused = _cli(tmp_path, "companion", "remove", "nova")
+    assert refused.returncode == 2 and "Pass --yes to remove a companion" in refused.stderr
+    assert home.is_dir()
+    removed = _cli(tmp_path, "companion", "remove", "nova", "--yes")
+    missing = _cli(tmp_path, "companion", "remove", "nova", "--yes")
+    assert removed.returncode == 0 and f"Success!\nRemoved companion nova from {home}." in removed.stderr
+    assert not home.exists()
+    assert missing.returncode == 2 and "Run dusha companion add nova first." in missing.stderr
+
+
+def test_cli_deprecated_init_still_creates_and_updates_with_a_warning(tmp_path):
+    config = tmp_path / "dusha" / "nova" / "config.json"
+    created = _cli(tmp_path, "init", "nova", "--serve")
+    updated = _cli(tmp_path, "init", "nova", "--proxy", "--server-url", "http://10.0.0.2:8765")
+    assert created.returncode == 0 and "Command dusha init is deprecated" in created.stderr
+    assert f"Success!\nCreated {config}." in created.stderr
+    assert updated.returncode == 0 and "Use dusha companion add or dusha companion update." in updated.stderr
+    assert f"Success!\nSaved {config}." in updated.stderr
 
 
 def test_cli_serve_serves_a_proxy_only_home_without_modifying_config(tmp_path, free_port):
@@ -432,14 +484,14 @@ def test_cli_serve_serves_a_proxy_only_home_without_modifying_config(tmp_path, f
     assert "Added" not in stderr
 
 
-def test_cli_init_upgrades_a_schema_3_prompts_file_and_keeps_a_backup(tmp_path):
+def test_cli_companion_update_upgrades_schema_3_prompts_file_and_keeps_a_backup(tmp_path):
     state = {"open_delimiter": "<s>", "close_delimiter": "</s>"}
     legacy = {"companion_state": {**state, "memory_instruction": "M"}}
     config = _home(tmp_path, "nova", prompts={"path": "prompts.json"})
     prompts = config.parent / "prompts.json"
     prompts.write_text(json.dumps(legacy), encoding="utf-8")
-    first = _cli(tmp_path, "init", "nova", "--serve")
-    again = _cli(tmp_path, "init", "nova", "--serve")
+    first = _cli(tmp_path, "companion", "update", "nova", "--serve")
+    again = _cli(tmp_path, "companion", "update", "nova", "--serve")
     assert first.returncode == 0 and f"Success!\nUpgraded {prompts}" in first.stderr
     assert json.loads(prompts.read_text(encoding="utf-8")) == {
         "companion_state": state,
@@ -452,24 +504,24 @@ def test_cli_init_upgrades_a_schema_3_prompts_file_and_keeps_a_backup(tmp_path):
 @pytest.mark.parametrize(
     ("args", "message"),
     [
-        (("init",), "Specify a companion"),
-        (("--config", "x.json", "init"), "not --config"),
-        (("init", "nova", "--proxy", "--server-url", "ftp://nowhere"), "http or https URL"),
+        (("companion", "add"), "Specify a companion"),
+        (("--config", "x.json", "companion", "add"), "not --config"),
+        (("companion", "add", "nova", "--proxy", "--server-url", "ftp://nowhere"), "http or https URL"),
     ],
 )
-def test_cli_init_rejects_a_bad_selection_without_creating_anything(tmp_path, args, message):
+def test_cli_companion_add_rejects_a_bad_selection_without_creating_anything(tmp_path, args, message):
     result = _cli(tmp_path, *args)
     assert result.returncode == 2 and message in result.stderr
     assert not (tmp_path / "dusha").exists()
 
 
-def test_cli_init_moves_proxy_upstreams_to_providers_and_keeps_a_backup(tmp_path):
+def test_cli_companion_update_moves_proxy_upstreams_to_providers_and_keeps_a_backup(tmp_path):
     upstream = {"base_url": "https://a.invalid/v1", "key": "sk-a"}
     proxy = {"server": {"url": "http://127.0.0.1:8765"}, "upstreams": {"a": upstream}}
     config = _home(tmp_path, "nova", port=8765, proxy=proxy)
     config.chmod(0o600)
     original = config.read_text(encoding="utf-8")
-    result = _cli(tmp_path, "init", "nova")
+    result = _cli(tmp_path, "companion", "update", "nova")
     saved = json.loads(config.read_text(encoding="utf-8"))
     expected = f"Success!\nMoved proxy.upstreams to providers in {config}"
     assert result.returncode == 0 and expected in result.stderr

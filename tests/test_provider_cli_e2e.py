@@ -174,7 +174,7 @@ def test_provider_without_a_terminal_needs_an_action_flag(tmp_path, stub):
     assert unknown.returncode == 2 and "Error!\nUnknown provider 'nope'" in unknown.stderr
     assert blocked.returncode == 2
     assert missing.returncode == 2 and "Error!\nConfiguration file not found" in missing.stderr
-    assert "Run dusha init luna first." in missing.stderr
+    assert "Run dusha companion add luna first." in missing.stderr
 
 
 def test_deprecated_proxy_auth_login_and_status_still_work(tmp_path, stub):
@@ -411,11 +411,11 @@ def test_help_and_errors_are_colored_only_on_a_terminal(tmp_path, free_port, ser
 
 
 @needs_terminal
-def test_init_offers_the_server_on_this_machine_and_proxy_uses_it(tmp_path, free_port, serving):
+def test_companion_update_offers_the_server_on_this_machine_and_proxy_uses_it(tmp_path, free_port, serving):
     server_port, proxy_port = free_port(), free_port()
     path = _home(tmp_path, "nova", port=server_port, api_token="local-secret", proxy={"port": proxy_port})
     with serving(path) as url:
-        terminal = Terminal(tmp_path, "init", "nova", "--proxy")
+        terminal = Terminal(tmp_path, "companion", "update", "nova", "--proxy")
         terminal.expect("nova isn't connected to a server yet")
         terminal.expect(f"The server on this machine ({url})")
         terminal.send("\r")
@@ -433,12 +433,12 @@ def test_init_offers_the_server_on_this_machine_and_proxy_uses_it(tmp_path, free
 
 
 @needs_terminal
-def test_init_asks_for_another_server_until_it_answers(tmp_path, free_port, serving):
+def test_companion_update_asks_for_another_server_until_it_answers(tmp_path, free_port, serving):
     server_port, proxy_port = free_port(), free_port()
     server = _home(tmp_path, "home", port=server_port, api_token="server-secret")
     path = _home(tmp_path, "edge", proxy={"port": proxy_port})
     with serving(server) as url:
-        terminal = Terminal(tmp_path, "init", "edge", "--proxy")
+        terminal = Terminal(tmp_path, "companion", "update", "edge", "--proxy")
         terminal.expect("edge isn't connected to a server yet")
         terminal.expect("Server URL")
         terminal.send("\x15" + url + "\r")
@@ -461,3 +461,19 @@ def test_init_asks_for_another_server_until_it_answers(tmp_path, free_port, serv
     assert health["server"] == {"url": url, "status": "ok"}
     assert hidden
     assert saved["proxy"]["server"] == {"url": url, "token": "server-secret"}
+
+
+@needs_terminal
+def test_companion_remove_confirms_interactively_before_deleting(tmp_path):
+    _home(tmp_path, "nova", port=8765)
+    home = tmp_path / "config" / "dusha" / "nova"
+    declined = Terminal(tmp_path, "companion", "remove", "nova")
+    declined.expect("Remove companion nova")
+    declined.send("n\r")
+    assert declined.close(wait=True) == 1 and home.is_dir()
+
+    accepted = Terminal(tmp_path, "companion", "remove", "nova")
+    accepted.expect("Remove companion nova")
+    accepted.send("y\r")
+    accepted.expect("Removed companion nova")
+    assert accepted.close(wait=True) == 0 and not home.exists()

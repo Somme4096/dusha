@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import sys
 from collections.abc import Callable
 from gettext import gettext
@@ -117,12 +118,12 @@ def _config(resolve: Callable[[], Any], *, hint: str = "") -> Any:
         raise ConfigError(_sentence(str(error))) from error
 
 
-def _init_hint(companion: str | None, home: str | None) -> str:
+def _add_hint(companion: str | None, home: str | None) -> str:
     if companion:
-        return f"Run dusha init {companion} first."
+        return f"Run dusha companion add {companion} first."
     if home:
-        return f"Run dusha init --home {home} first."
-    return "Run dusha init <name> first."
+        return f"Run dusha companion add --home {home} first."
+    return "Run dusha companion add <name> first."
 
 
 def _remote(call: Callable[..., Any], *args: Any) -> Any:
@@ -271,7 +272,7 @@ def serve(ctx: click.Context, name: str | None) -> None:
             raise ValueError("Specify a companion, such as dusha serve <name>.")
         return load_config(path)
 
-    hint = "" if params.get("config") is not None else _init_hint(companion, params.get("home"))
+    hint = "" if params.get("config") is not None else _add_hint(companion, params.get("home"))
     cfg = _config(resolve, hint=hint)
     import uvicorn
 
@@ -324,29 +325,48 @@ def _prompt_proxy(path: Path, interactive: bool) -> None:
         _setup(path)
 
 
-@main.command("init", help="Create or update configuration")
-@click.argument("name", required=False)
-@click.option("--serve", "serve_part", is_flag=True, help="Set up only the server keys.")
-@click.option("--proxy", "proxy_part", is_flag=True, help="Set up only the proxy keys.")
-@click.option("--server-url", default="", help="Server URL for the proxy, skips the prompt.")
-@click.option("--token", default="", help="Server token for --server-url.")
-@click.pass_context
-def init(
-    ctx: click.Context, name: str | None, serve_part: bool, proxy_part: bool, server_url: str, token: str
-) -> None:
+def _companion_home(
+    ctx: click.Context, name: str | None, command: str
+) -> tuple[Path, str | None, str | None]:
     params = _selection(ctx)
     companion = params.get("companion") or name
+    home_arg = params.get("home")
+    if params.get("config") is not None:
+        raise ConfigError(f"Pass a companion name or --home to dusha {command}, not --config.")
+    home = _config(lambda: homes.named_home(home_arg, companion))
+    if home is None:
+        raise ConfigError(f"Specify a companion, such as dusha {command} <name>.")
+    return home, companion, home_arg
+
+
+def _configure_companion(
+    ctx: click.Context,
+    name: str | None,
+    *,
+    serve_part: bool,
+    proxy_part: bool,
+    server_url: str,
+    token: str,
+    command: str,
+    mode: str,
+) -> None:
+    from .setup import ensure_config
+
+    home, companion, home_arg = _companion_home(ctx, name, command)
+    path = home / homes.CONFIG_FILE
+    target = companion or f"--home {home_arg}"
+    label = companion or str(home_arg)
+    if mode == "add" and path.exists():
+        raise ConfigError(
+            f"Companion {label} already exists.\nUse dusha companion update {target} to update it."
+        )
+    if mode == "update" and not path.exists():
+        raise ConfigError(
+            f"Configuration file not found: {path}.\nRun dusha companion add {target} first."
+        )
     both = not serve_part and not proxy_part
 
     def resolve() -> bool:
-        from .setup import ensure_config
-
-        if params.get("config") is not None:
-            raise ValueError("Pass a companion name or --home to dusha init, not --config.")
-        home = homes.named_home(params.get("home"), companion)
-        if home is None:
-            raise ValueError("Specify a companion, such as dusha init <name>.")
-        path = home / homes.CONFIG_FILE
         url = _url(server_url) if server_url else ""
         interactive = sys.stdin.isatty()
         changes = ensure_config(
@@ -361,12 +381,38 @@ def init(
         return _changes(changes, interactive=interactive, upgrade=True)
 
     if not _config(resolve):
-        note = (
-            f"Companion {companion} is up to date."
-            if companion
-            else f"Home {params.get('home')} is up to date."
-        )
+        note = f"Companion {companion} is up to date." if companion else f"Home {home_arg} is up to date."
         click.echo(_success(note), err=True)
+
+
+# Deprecated dusha init, removed in 2.0.21.
+@main.command("init", hidden=True)
+@click.argument("name", required=False)
+@click.option("--serve", "serve_part", is_flag=True)
+@click.option("--proxy", "proxy_part", is_flag=True)
+@click.option("--server-url", default="")
+@click.option("--token", default="")
+@click.pass_context
+def init(
+    ctx: click.Context, name: str | None, serve_part: bool, proxy_part: bool, server_url: str, token: str
+) -> None:
+    click.echo(
+        _warn(
+            "Command dusha init is deprecated and goes away in 2.0.21.",
+            "Use dusha companion add or dusha companion update.",
+        ),
+        err=True,
+    )
+    _configure_companion(
+        ctx,
+        name,
+        serve_part=serve_part,
+        proxy_part=proxy_part,
+        server_url=server_url,
+        token=token,
+        command="init",
+        mode="either",
+    )
 
 
 def _url(value: str) -> str:
@@ -448,7 +494,7 @@ def _proxy_file(ctx: click.Context) -> Path:
             raise ValueError("Specify a companion, such as dusha proxy <name>.")
         return path
 
-    hint = "" if params.get("config") is not None else _init_hint(companion, params.get("home"))
+    hint = "" if params.get("config") is not None else _add_hint(companion, params.get("home"))
     return _config(resolve, hint=hint)
 
 
@@ -492,7 +538,7 @@ def _provider_file(ctx: click.Context, name: str | None = None) -> Path:
             raise ValueError("Specify a companion, such as dusha provider <name>.")
         return path
 
-    hint = "" if params.get("config") is not None else _init_hint(companion, params.get("home"))
+    hint = "" if params.get("config") is not None else _add_hint(companion, params.get("home"))
     return _config(resolve, hint=hint)
 
 
@@ -717,6 +763,71 @@ def status(ctx: click.Context) -> None:
 @main.group("companion", help="Manage companions")
 def companion_group() -> None:
     pass
+
+
+@companion_group.command("add", help="Add a companion")
+@click.argument("name", required=False)
+@click.option("--serve", "serve_part", is_flag=True, help="Set up only the server keys.")
+@click.option("--proxy", "proxy_part", is_flag=True, help="Set up only the proxy keys.")
+@click.option("--server-url", default="", help="Server URL for the proxy, skips the prompt.")
+@click.option("--token", default="", help="Server token for --server-url.")
+@click.pass_context
+def companion_add(
+    ctx: click.Context, name: str | None, serve_part: bool, proxy_part: bool, server_url: str, token: str
+) -> None:
+    _configure_companion(
+        ctx,
+        name,
+        serve_part=serve_part,
+        proxy_part=proxy_part,
+        server_url=server_url,
+        token=token,
+        command="companion add",
+        mode="add",
+    )
+
+
+@companion_group.command("update", help="Update companion configuration")
+@click.argument("name", required=False)
+@click.option("--serve", "serve_part", is_flag=True, help="Set up only the server keys.")
+@click.option("--proxy", "proxy_part", is_flag=True, help="Set up only the proxy keys.")
+@click.option("--server-url", default="", help="Server URL for the proxy, skips the prompt.")
+@click.option("--token", default="", help="Server token for --server-url.")
+@click.pass_context
+def companion_update(
+    ctx: click.Context, name: str | None, serve_part: bool, proxy_part: bool, server_url: str, token: str
+) -> None:
+    _configure_companion(
+        ctx,
+        name,
+        serve_part=serve_part,
+        proxy_part=proxy_part,
+        server_url=server_url,
+        token=token,
+        command="companion update",
+        mode="update",
+    )
+
+
+@companion_group.command("remove", help="Remove a companion")
+@click.argument("name", required=False)
+@click.option("-y", "--yes", is_flag=True, help="Remove without asking for confirmation.")
+@click.pass_context
+def companion_remove(ctx: click.Context, name: str | None, yes: bool) -> None:
+    home, companion, _ = _companion_home(ctx, name, "companion remove")
+    path = home / homes.CONFIG_FILE
+    if not path.exists():
+        hint = f"Run dusha companion add {companion} first." if companion else ""
+        _config(lambda: homes.config_file(path), hint=hint)
+    label = companion or home.name
+    if not yes:
+        if not sys.stdin.isatty():
+            raise ConfigError("Pass --yes to remove a companion without a terminal.")
+        click.confirm(
+            _ask(f"Remove companion {label} and its data at {home}?"), default=False, abort=True, err=True
+        )
+    shutil.rmtree(home)
+    click.echo(_success(f"Removed companion {label} from {home}."), err=True)
 
 
 @companion_group.command("list", help="List companions")
