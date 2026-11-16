@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 SCHEMA_VERSION = 6
@@ -125,6 +127,28 @@ class Database:
         db.execute("PRAGMA busy_timeout=5000")
         db.execute("PRAGMA foreign_keys=ON")
         return _ClosingConnection(db)
+
+    @contextmanager
+    def transaction(self, immediate: bool = False) -> Iterator[sqlite3.Connection]:
+        db = sqlite3.connect(self.path, timeout=10)
+        db.row_factory = sqlite3.Row
+        try:
+            db.execute("PRAGMA journal_mode=WAL")
+            db.execute("PRAGMA busy_timeout=5000")
+            db.execute("PRAGMA foreign_keys=ON")
+            if db.in_transaction:
+                db.commit()
+            db.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
+            try:
+                yield db
+            except BaseException:
+                if db.in_transaction:
+                    db.rollback()
+                raise
+            if db.in_transaction:
+                db.commit()
+        finally:
+            db.close()
 
     def integrity_check(self) -> str:
         with self.connect() as db:

@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import copy
 import importlib
-import json
 import logging
-import os
 import secrets
 import shutil
 import warnings
@@ -12,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .homes import CONFIG_FILE, DOCS
+from .jsonfile import write_json_atomic
 from .providers import render
 from .resources import loads_strict
 
@@ -61,12 +60,7 @@ def upgrade_prompts(overlay: Any) -> tuple[Any, list[str]]:
 def _rewrite(path: Path, upgraded: dict[str, Any]) -> Path:
     backup = path.with_name(f"{path.name}.bak")
     shutil.copy2(path, backup)
-    temp = path.with_name(f".{path.name}.tmp")
-    temp.unlink(missing_ok=True)
-    with os.fdopen(os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w", encoding="utf-8") as file:
-        file.write(json.dumps(upgraded, indent=2, ensure_ascii=False) + "\n")
-    shutil.copymode(path, temp)
-    os.replace(temp, path)
+    write_json_atomic(path, upgraded, before_replace=lambda temp: shutil.copymode(path, temp))
     return backup
 
 

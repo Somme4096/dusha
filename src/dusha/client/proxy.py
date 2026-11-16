@@ -4,7 +4,6 @@ import asyncio
 import contextlib
 import json
 import logging
-import re
 import secrets
 from collections import OrderedDict
 from collections.abc import AsyncIterator
@@ -21,6 +20,7 @@ from starlette.background import BackgroundTask
 from .. import legacy as _legacy
 from ..homes import COMPANION_NAME
 from ..providers import Provider
+from ..resources import PluginHeaderError, plugins_header
 from . import protocols as _protocols
 from .outbox import Outbox, retryable
 from .settings import Connection, Settings
@@ -44,7 +44,6 @@ _DROPPED_HEADERS = _ROUTING_HEADERS | {
 }
 _KEY_HEADERS = frozenset({"authorization", "x-api-key", "api-key"})
 _METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
-_PLUGIN_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _KEPT = 256
 _FLUSH_SECONDS = 2.0
 
@@ -96,20 +95,11 @@ def _credential_harness(raw: str, expected: str) -> str:
 
 
 def _plugins_header(value: str | None) -> tuple[str, ...] | None:
-    if value is None or not value.strip():
-        return None
-    items = [part.strip() for part in value.split(",")]
-    if any(not item for item in items):
-        raise HTTPException(
-            status_code=422, detail="X-Companion-Plugins must be comma-separated plugin names or 'none'"
-        )
-    if [item.casefold() for item in items] == ["none"]:
-        return ()
-    for item in items:
-        if item.casefold() == "none" or not _PLUGIN_NAME.fullmatch(item):
-            detail = f"invalid plugin name in X-Companion-Plugins: {item!r}"
-            raise HTTPException(status_code=422, detail=detail)
-    return tuple(dict.fromkeys(items))
+    try:
+        items = plugins_header(value)
+    except PluginHeaderError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return tuple(items) if items is not None else None
 
 
 def _remember(cache: OrderedDict, key: Any, value: Any) -> None:
@@ -357,10 +347,12 @@ def create_proxy_app(cfg: Settings) -> FastAPI:
         if name not in cfg.providers:
             raise HTTPException(status_code=404, detail=f"no provider named {name!r}")
         raw = _credential(request)
-        if _legacy.is_legacy_provider_key(raw, name, cfg.providers[name]):
-            credential_harness = ""
-        else:
+        try:
             credential_harness = _credential_harness(raw, cfg.server.token)
+        except HTTPException:
+            if not _legacy.is_legacy_provider_key(raw, name, cfg.providers[name]):
+                raise
+            credential_harness = ""
         plugins = _plugins_header(request.headers.get("x-companion-plugins"))
         protocol = _protocols.protocol_for(request.method, path)
         if protocol is not None:

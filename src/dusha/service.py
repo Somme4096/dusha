@@ -225,27 +225,12 @@ class CompanionService:
         composed = self.composer.compose(
             list(self.registry.collect("context", request, only=only).values())
         )
-        hits: list[Any] = []
-        for block in composed["context"]["blocks"].values():
-            if isinstance(block, dict) and isinstance(block.get("search_hits"), list):
-                hits.extend(block["search_hits"])
-        return {**composed, "search_hits": hits}
+        block = composed["context"]["blocks"].get(memory.name)
+        hits = block.get("search_hits") if isinstance(block, dict) else None
+        return {**composed, "search_hits": list(hits) if isinstance(hits, list) else []}
 
     def latest_route(self, harness: str = "") -> dict[str, Any] | None:
-        clause = "WHERE route != ''"
-        args: list[str] = []
-        if harness:
-            clause += " AND harness=?"
-            args.append(harness)
-        with self.database.connect() as db:
-            row = db.execute(
-                f"""SELECT id, harness, external_id, route
-                   FROM conversations
-                   {clause}
-                   ORDER BY updated_at DESC, id DESC LIMIT 1""",
-                args,
-            ).fetchone()
-        return dict(row) if row else None
+        return self.messages.latest_route(harness)
 
     def plugins_status(self) -> dict[str, Any]:
         return self.registry.status()

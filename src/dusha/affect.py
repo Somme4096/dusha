@@ -85,6 +85,7 @@ class AffectEngine:
             else None
         )
         self._lock = threading.RLock()
+        self._in_flight: list[datetime] = []
         self.emotions = _emotions.resolve_emotions(config, None, config.increment)
         self.emotions_version = str(self.emotions["emotion_version"])
         self.spec = {name: values.copy() for name, values in self.emotions["dimensions"].items()}
@@ -111,8 +112,10 @@ class AffectEngine:
         )
 
     def _load_row(self, db: Any, now: datetime) -> tuple[Any, dict[str, Any]]:
-        self._ensure(db, now)
         row = db.execute("SELECT * FROM affect_state WHERE id=1").fetchone()
+        if row is None:
+            self._ensure(db, now)
+            row = db.execute("SELECT * FROM affect_state WHERE id=1").fetchone()
         stored = json.loads(row["state_json"])
         neutral = self.initial_state()
         return row, {
@@ -215,13 +218,33 @@ class AffectEngine:
                 drifted = current + rule["rate_per_hour"] * silence_hours
                 state["base"][name] = max(current, min(self.spec[name]["neutral"] + rule["cap"], drifted))
 
-    def _save(self, db: Any, state: dict[str, Any], now: datetime, **fields: Any) -> None:
-        assignments = ["state_json=?", "last_updated_at=?", "revision=revision+1"]
-        values: list[Any] = [compact_json(state, ensure_ascii=True), isoformat(now)]
-        for name, value in fields.items():
-            assignments.append(f"{name}=?")
-            values.append(value)
-        db.execute(f"UPDATE affect_state SET {', '.join(assignments)} WHERE id=1", values)
+    def _save(
+        self,
+        db: Any,
+        state: dict[str, Any],
+        now: datetime,
+        *,
+        last_interaction_at: datetime | None = None,
+        last_user_message_at: datetime | None = None,
+        last_proactive_sent_at: datetime | None = None,
+        unanswered_proactive: int | None = None,
+    ) -> None:
+        db.execute(
+            """UPDATE affect_state SET state_json=?, last_updated_at=?, revision=revision+1,
+               last_interaction_at=COALESCE(?, last_interaction_at),
+               last_user_message_at=COALESCE(?, last_user_message_at),
+               last_proactive_sent_at=COALESCE(?, last_proactive_sent_at),
+               unanswered_proactive=COALESCE(?, unanswered_proactive)
+               WHERE id=1""",
+            (
+                compact_json(state, ensure_ascii=True),
+                isoformat(now),
+                isoformat(last_interaction_at) if last_interaction_at is not None else None,
+                isoformat(last_user_message_at) if last_user_message_at is not None else None,
+                isoformat(last_proactive_sent_at) if last_proactive_sent_at is not None else None,
+                unanswered_proactive,
+            ),
+        )
 
     def record_user_message(
         self,
@@ -239,75 +262,70 @@ class AffectEngine:
             row, state = self._load_row(db, requested)
             current = max(requested, parse_time(row["last_updated_at"]))
             self._advance(row, state, current)
-            self._save(db, state, current, last_interaction_at=isoformat(current))
-            db.execute(
-                """UPDATE affect_state SET
-                   last_user_message_at=CASE
-                     WHEN last_user_message_at IS NULL OR last_user_message_at < ? THEN ?
-                     ELSE last_user_message_at END,
-                   unanswered_proactive=0
-                   WHERE id=1""",
-                (isoformat(current), isoformat(current)),
-            )
+            in_flight = current
+            self._in_flight.append(in_flight)
+            snapshot = self._public_state(state, row, current)
 
-            updated = db.execute("SELECT * FROM affect_state WHERE id=1").fetchone()
-            snapshot = self._public_state(state, updated, current)
+        try:
+            request = DecisionRequest(str(message), copy.deepcopy(self.spec), snapshot, instruction)
+            emotion: str | None = None
+            deltas: dict[str, Any] = {}
+            for proposal in (decide or self.proposals)(request):
+                choice = proposal.get("emotion")
+                if emotion is None and choice is not None:
+                    if isinstance(choice, str) and choice in self.spec:
+                        emotion = choice
+                    else:
+                        logger.warning("decision returned invalid emotion: %r", choice)
+                if isinstance(proposal.get("deltas"), dict):
+                    deltas.update(proposal["deltas"])
 
-        request = DecisionRequest(str(message), copy.deepcopy(self.spec), snapshot, instruction)
-        emotion: str | None = None
-        deltas: dict[str, Any] = {}
-        for proposal in (decide or self.proposals)(request):
-            choice = proposal.get("emotion")
-            if emotion is None and choice is not None:
-                if isinstance(choice, str) and choice in self.spec:
-                    emotion = choice
-                else:
-                    logger.warning("decision returned invalid emotion: %r", choice)
-            if isinstance(proposal.get("deltas"), dict):
-                deltas.update(proposal["deltas"])
+            appraised = self._appraise(message)
+            positive = {name: value for name, value in appraised.items() if value > 0}
+            if emotion is None and positive:
+                emotion = max(positive, key=positive.get)
+            # The decision only raises one dimension, so appraisal supplies the decreases.
+            relief = {name: value for name, value in appraised.items() if value < 0 and name != emotion}
+            deltas = {**relief, **deltas}
 
-        appraised = self._appraise(message)
-        positive = {name: value for name, value in appraised.items() if value > 0}
-        if emotion is None and positive:
-            emotion = max(positive, key=positive.get)
-        # The decision only raises one dimension, so appraisal supplies the decreases.
-        relief = {name: value for name, value in appraised.items() if value < 0 and name != emotion}
-        deltas = {**relief, **deltas}
-
-        decision_id = None
-        public = snapshot
-        if emotion is not None:
-            with self._lock, self.database.connect() as db:
+            decision_id = None
+            unknown = sorted(str(name) for name in deltas if name not in self.spec)
+            if unknown:
+                logger.warning("decision deltas name unknown emotion dimension(s): %s", unknown)
+            with self._lock, self.database.transaction(immediate=True) as db:
                 row, state = self._load_row(db, requested)
-                phase_now = now if now is not None else utc_now()
-                current = max(phase_now, parse_time(row["last_updated_at"]))
+                current = max(requested, parse_time(row["last_updated_at"]))
                 self._advance(row, state, current)
-                self._increase(state, emotion)
-                self._save(db, state, current)
-                cursor = db.execute(
-                    """INSERT INTO affect_decisions
-                       (source_message_id, emotion, increment, occurred_at)
-                       VALUES(?,?,?,?)""",
-                    (source_message_id, emotion, self.increment_for(emotion), isoformat(current)),
+                if emotion is not None:
+                    self._increase(state, emotion)
+                if deltas:
+                    self._apply_deltas(state, deltas)
+                answered = isoformat(current)
+                previous = row["last_user_message_at"]
+                self._save(
+                    db,
+                    state,
+                    current,
+                    last_interaction_at=current,
+                    last_user_message_at=(
+                        parse_time(previous) if previous and previous >= answered else current
+                    ),
+                    unanswered_proactive=0,
                 )
-                if cursor.lastrowid is not None:
-                    decision_id = int(cursor.lastrowid)
+                if emotion is not None:
+                    cursor = db.execute(
+                        """INSERT INTO affect_decisions
+                           (source_message_id, emotion, increment, occurred_at)
+                           VALUES(?,?,?,?)""",
+                        (source_message_id, emotion, self.increment_for(emotion), answered),
+                    )
+                    if cursor.lastrowid is not None:
+                        decision_id = int(cursor.lastrowid)
                 updated = db.execute("SELECT * FROM affect_state WHERE id=1").fetchone()
                 public = self._public_state(state, updated, current)
-
-        unknown = sorted(str(name) for name in deltas if name not in self.spec)
-        if unknown:
-            logger.warning("decision deltas name unknown emotion dimension(s): %s", unknown)
-        if deltas:
-            with self._lock, self.database.connect() as db:
-                row, state = self._load_row(db, requested)
-                phase_now = now if now is not None else utc_now()
-                current = max(phase_now, parse_time(row["last_updated_at"]))
-                self._advance(row, state, current)
-                self._apply_deltas(state, deltas)
-                self._save(db, state, current)
-                updated = db.execute("SELECT * FROM affect_state WHERE id=1").fetchone()
-                public = self._public_state(state, updated, current)
+        finally:
+            with self._lock:
+                self._in_flight.remove(in_flight)
         if emotion is None:
             return None
         return {
@@ -345,7 +363,7 @@ class AffectEngine:
 
     def status(self, now: datetime | None = None) -> dict[str, Any]:
         current = now or utc_now()
-        with self._lock, self.database.connect() as db:
+        with self._lock, self.database.transaction(immediate=True) as db:
             row, state = self._load_row(db, current)
             self._advance(row, state, current)
             self._save(db, state, current)
@@ -354,7 +372,7 @@ class AffectEngine:
 
     def on_proactive_sent(self, now: datetime | None = None) -> None:
         current = now or utc_now()
-        with self._lock, self.database.connect() as db:
+        with self._lock, self.database.transaction(immediate=True) as db:
             row, state = self._load_row(db, current)
             self._advance(row, state, current)
             self._apply_deltas(state, self.emotions["proactive_sent_deltas"])
@@ -362,7 +380,7 @@ class AffectEngine:
                 db,
                 state,
                 current,
-                last_proactive_sent_at=isoformat(current),
+                last_proactive_sent_at=current,
                 unanswered_proactive=int(row["unanswered_proactive"]) + 1,
             )
 
@@ -400,17 +418,21 @@ class AffectEngine:
             + presentation["suffix"]
         )
 
-    def prompt_context(self, now: datetime | None = None) -> str:
-        return self.describe(self.status(now))
-
     def _public_state(self, state: dict[str, Any], row: Any, now: datetime) -> dict[str, Any]:
+        last_user = row["last_user_message_at"] if row else None
+        unanswered = int(row["unanswered_proactive"]) if row else 0
+        if self._in_flight:
+            latest = isoformat(max(self._in_flight))
+            if not last_user or last_user < latest:
+                last_user = latest
+            unanswered = 0
         return {
             "base": {key: round(float(value), 4) for key, value in state["base"].items()},
             "mood": {key: round(float(value), 4) for key, value in state["mood"].items()},
             "last_updated_at": isoformat(now),
-            "last_user_message_at": row["last_user_message_at"] if row else None,
+            "last_user_message_at": last_user,
             "last_proactive_sent_at": row["last_proactive_sent_at"] if row else None,
-            "unanswered_proactive": int(row["unanswered_proactive"]) if row else 0,
+            "unanswered_proactive": unanswered,
         }
 
 
@@ -427,7 +449,7 @@ def apply(ctx: Any, config: AffectConfig) -> None:
     ctx.on("context", engine.on_context)
     ctx.on_dispose(engine.close)
     _routes(ctx.api, engine)
-    ctx.cli.group("affect", "List current affect status").command(
+    ctx.cli.group("affect", "Inspect current affect state").command(
         "show", engine.status, help="Show the affect state and advance decay"
     )
     ctx.mcp.tool("affect_status", engine.status, help="Read the companion's current affect state.")

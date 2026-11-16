@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import json
 import logging
 import math
-import os
-import re
 import types as _types
 import typing
 import zoneinfo
@@ -17,7 +14,8 @@ from . import legacy
 from . import providers as _providers
 from .defaults import all_defaults
 from .homes import COMPANION_NAME, CONFIG_FILE, locate
-from .resources import loads_strict
+from .jsonfile import write_json_atomic
+from .resources import PLUGIN_NAME, PluginHeaderError, loads_strict, plugins_header, port_of
 
 _DEFAULTS = all_defaults()
 _EMOTIONS = _emotions.default_emotions()
@@ -34,12 +32,10 @@ _PROMPTS = _DEFAULTS["prompts"]
 IDENTITY_FILE = "identity.md"
 CLIENT_SECTIONS = frozenset({"proxy"})
 SHARED_SECTIONS = frozenset({"providers"})
-PLUGIN_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
 def _write_new(path: Path, raw: dict[str, Any]) -> None:
-    with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w", encoding="utf-8") as file:
-        file.write(json.dumps(raw, indent=2, ensure_ascii=False) + "\n")
+    write_json_atomic(path, raw, exclusive=True)
 
 
 def ensure_server_config(home: Path) -> str:
@@ -52,10 +48,7 @@ def ensure_server_config(home: Path) -> str:
     raw = _read_config_file(path)
     if set(raw) - CLIENT_SECTIONS - SHARED_SECTIONS:
         return ""
-    temp = path.with_name(f".{path.name}.tmp")
-    temp.unlink(missing_ok=True)
-    _write_new(temp, {**defaults, **raw})
-    os.replace(temp, path)
+    write_json_atomic(path, {**defaults, **raw})
     return f"added the server keys to {path}"
 
 
@@ -353,17 +346,10 @@ def _harnesses_section(raw: Any) -> dict[str, HarnessConfig]:
 
 
 def parse_plugins_header(value: str | None) -> list[str] | None:
-    if value is None or not value.strip():
-        return None
-    items = [part.strip() for part in value.split(",")]
-    if any(not item for item in items):
-        raise ValueError("X-Companion-Plugins must be comma-separated plugin names or 'none'")
-    if [item.casefold() for item in items] == ["none"]:
-        return []
-    for item in items:
-        if item.casefold() == "none" or not PLUGIN_NAME.fullmatch(item):
-            raise ValueError(f"invalid plugin name in X-Companion-Plugins: {item!r}")
-    return list(dict.fromkeys(items))
+    try:
+        return plugins_header(value)
+    except PluginHeaderError as error:
+        raise ValueError(str(error)) from error
 
 
 @dataclass(slots=True)
@@ -389,8 +375,7 @@ class AppConfig:
     def __post_init__(self) -> None:
         self.plugins = _plugin_entries(self.plugins)
         self.harnesses = _harnesses_section(self.harnesses)
-        if isinstance(self.port, bool) or not 0 <= self.port <= 65535:
-            raise ValueError("port must be at least 0 and at most 65535")
+        self.port = port_of(self.port, "port")
         try:
             zoneinfo.ZoneInfo(self.timezone)
         except (zoneinfo.ZoneInfoNotFoundError, ValueError) as error:

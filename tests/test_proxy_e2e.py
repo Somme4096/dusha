@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -566,20 +567,42 @@ async def test_proxy_rejects_a_missing_or_wrong_caller_token(tmp_path, config, p
     assert provider.seen == []
 
 
-async def test_proxy_accepts_the_provider_key_from_legacy_clients(tmp_path, config, provider, run_app):
+async def test_proxy_accepts_the_provider_key_from_legacy_clients(
+    tmp_path, config, provider, run_app, caplog
+):
+    caplog.set_level(logging.WARNING, logger="dusha.proxy")
     config.api_token = "server-secret"
     with run_app(api.create_app(config)) as url:
+        async with _proxy(
+            tmp_path / "same", url, provider, token="server-secret", key="server-secret"
+        ) as client:
+            same = await _chat(
+                client, [{"role": "user", "content": "Token."}], {"Authorization": "Bearer server-secret"}
+            )
+            assert "provider key instead of the dusha token" not in caplog.text
         async with _proxy(tmp_path, url, provider, token="server-secret", key="provider-key") as client:
             legacy = await _chat(
                 client, [{"role": "user", "content": "Old."}], {"Authorization": "Bearer provider-key"}
             )
+            again = await _chat(
+                client, [{"role": "user", "content": "Again."}], {"Authorization": "Bearer provider-key"}
+            )
             wrong = await _chat(
                 client, [{"role": "user", "content": "Wrong."}], {"Authorization": "Bearer provider-key-x"}
             )
-    assert legacy.status_code == 200
+    assert same.status_code == legacy.status_code == again.status_code == 200
     assert wrong.status_code == 401
-    assert provider.seen[0]["headers"]["authorization"] == "Bearer provider-key"
-    assert len(provider.seen) == 1
+    assert [item["headers"]["authorization"] for item in provider.seen] == [
+        "Bearer server-secret",
+        "Bearer provider-key",
+        "Bearer provider-key",
+    ]
+    warnings = [
+        record.message
+        for record in caplog.records
+        if "provider key instead of the dusha token" in record.message
+    ]
+    assert len(warnings) == 1
 
 
 def _harness_config(tmp_path: Path):

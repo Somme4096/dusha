@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 import os
 import re
 from dataclasses import dataclass, field
@@ -8,6 +7,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from .homes import COMPANION_NAME
+from .resources import object_of, timeout_of
 
 PLACEHOLDER = re.compile(r"\{([^{}]*)\}")
 PROTOCOLS = frozenset({"chat", "messages", "responses"})
@@ -73,17 +73,6 @@ class Providers:
         return self._providers[name]
 
 
-def _object(value: Any, label: str, allowed: set[str]) -> dict[str, Any]:
-    if value is None:
-        return {}
-    if not isinstance(value, dict):
-        raise ValueError(f"{label} must be an object")
-    unknown = sorted(set(value) - allowed)
-    if unknown:
-        raise ValueError(f"unknown field(s) under {label}: {unknown}")
-    return value
-
-
 def _string(raw: dict[str, Any], key: str, label: str, default: str) -> str:
     value = raw.get(key, default)
     if not isinstance(value, str):
@@ -102,15 +91,6 @@ def _placeholders(value: str, label: str, *, conversation: bool, environ: bool) 
             raise ValueError(f"{label} needs the environment variable {variable}")
 
 
-def _timeout(raw: dict[str, Any], label: str) -> float:
-    value = raw.get("timeout_seconds", 120.0)
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        raise ValueError(f"{label}.timeout_seconds must be float")
-    if not math.isfinite(value) or value <= 0:
-        raise ValueError(f"{label}.timeout_seconds must be above 0")
-    return float(value)
-
-
 def provider(name: str, raw: Any, *, environ: bool = True) -> Provider:
     label = f"providers.{name}"
     if not COMPANION_NAME.fullmatch(name) or name in RESERVED:
@@ -119,7 +99,7 @@ def provider(name: str, raw: Any, *, environ: bool = True) -> Provider:
             f"{sorted(RESERVED)}, got {name!r}"
         )
     allowed = {"base_url", "headers", "timeout_seconds", "endpoints", "key", "auth"}
-    profile = _object(raw, label, allowed)
+    profile = object_of(raw, label, allowed)
     headers = profile.get("headers") or {}
     if not isinstance(headers, dict):
         raise ValueError(f"{label}.headers must be an object")
@@ -127,7 +107,7 @@ def provider(name: str, raw: Any, *, environ: bool = True) -> Provider:
         if not isinstance(value, str):
             raise ValueError(f"{label}.headers.{header} must be str")
         _placeholders(value, f"{label}.headers.{header}", conversation=True, environ=environ)
-    endpoints = _object(profile.get("endpoints"), f"{label}.endpoints", set(PROTOCOLS))
+    endpoints = object_of(profile.get("endpoints"), f"{label}.endpoints", PROTOCOLS)
     key = _string(profile, "key", f"{label}.key", "")
     _placeholders(key, f"{label}.key", conversation=False, environ=environ)
     auth = _string(profile, "auth", f"{label}.auth", "bearer")
@@ -136,7 +116,7 @@ def provider(name: str, raw: Any, *, environ: bool = True) -> Provider:
     return Provider(
         base_url=http_url(profile.get("base_url", ""), f"{label}.base_url"),
         headers=dict(headers),
-        timeout_seconds=_timeout(profile, label),
+        timeout_seconds=timeout_of(profile.get("timeout_seconds", 120.0), f"{label}.timeout_seconds"),
         endpoints={kind: http_url(url, f"{label}.endpoints.{kind}") for kind, url in endpoints.items()},
         key=key,
         auth=auth,

@@ -8,7 +8,7 @@ from typing import Any
 
 from . import legacy
 from .homes import DOCS
-from .resources import loads_strict, read_packaged
+from .resources import loads_strict, object_of, read_packaged
 from .serialization import canonical as _serialization_canonical
 
 SCHEMA_VERSION = 4
@@ -60,15 +60,15 @@ def _value(value: Any, kind: Any, path: str, templates: dict[str, dict[str, Any]
 
 
 def _object(value: Any, spec: dict[str, Any], path: str, templates: dict[str, dict[str, Any]]) -> dict:
-    if not isinstance(value, dict):
-        raise PromptsValidationError(f"{path} must be an object")
-    unknown = sorted(set(value) - set(spec))
-    if unknown:
-        raise PromptsValidationError(f"unknown field(s) under {path}: {unknown}")
-    missing = sorted(set(spec) - set(value))
-    if missing:
-        raise PromptsValidationError(f"{path} is incomplete. Missing field(s): {missing}")
-    return {key: _value(value[key], kind, f"{path}.{key}", templates) for key, kind in spec.items()}
+    checked = object_of(
+        value,
+        path,
+        spec,
+        required=spec,
+        error=PromptsValidationError,
+        none_is_empty=False,
+    )
+    return {key: _value(checked[key], kind, f"{path}.{key}", templates) for key, kind in spec.items()}
 
 
 def section(
