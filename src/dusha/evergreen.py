@@ -15,6 +15,7 @@ from .config import EvergreenConfig
 from .database import Database
 from .hooks import Block, ContextRequest
 from .interfaces import GatewayInput, call, errors
+from .resources import Bounds
 from .serialization import safe_json
 from .timeutil import isoformat, parse_time, utc_now
 
@@ -51,11 +52,13 @@ class EvergreenConflict(ValueError):
 
 class EvergreenStore:
     name = "evergreen"
+    LIST = Bounds(default=100, low=1, high=500)
 
-    def __init__(self, database: Database, config: Any, prompts: dict[str, Any]):
+    def __init__(self, database: Database, config: Any, prompts: dict[str, Any], messages: Any):
         self.database = database
         database.migrate(SCHEMA)
         self.config = config
+        self.messages = messages
         self.delimiters = _prompts.section(prompts, name, {"open_delimiter": str, "close_delimiter": str})
 
     def on_context(self, request: ContextRequest) -> Block | None:
@@ -94,7 +97,7 @@ class EvergreenStore:
                     f"fact key already exists: {duplicate['fact_id']} revision "
                     f"{duplicate['revision']} ({state})"
                 )
-            self._validate_source(db, source_message_id)
+            self._validate_source(source_message_id)
             fact_id = str(uuid.uuid4())
             row_id = self._insert_revision(
                 db,
@@ -152,7 +155,7 @@ class EvergreenStore:
                 raise EvergreenConflict(
                     f"fact key already exists: {duplicate['fact_id']} revision {duplicate['revision']}"
                 )
-            self._validate_source(db, source_message_id)
+            self._validate_source(source_message_id)
             next_priority = (
                 int(current["priority"]) if priority is None else self._validate_priority(priority)
             )
@@ -208,7 +211,7 @@ class EvergreenStore:
                 )
             if current["state"] == "forgotten":
                 raise EvergreenConflict("fact is already forgotten")
-            self._validate_source(db, source_message_id)
+            self._validate_source(source_message_id)
             row_id = self._insert_revision(
                 db,
                 fact_id=fact_id,
@@ -235,10 +238,11 @@ class EvergreenStore:
         *,
         include_inactive: bool = False,
         due_only: bool = False,
-        limit: int = 100,
+        limit: int = LIST.default,
         now: datetime | None = None,
     ) -> list[dict[str, Any]]:
         timestamp = isoformat(now or utc_now())
+        cap = self.LIST.clamp(limit)
         with self.database.connect() as db:
             rows = db.execute(
                 """SELECT e.* FROM evergreen_fact_revisions e
@@ -259,7 +263,7 @@ class EvergreenStore:
                 continue
             item["review_due"] = due
             results.append(item)
-            if len(results) >= max(1, min(limit, 500)):
+            if len(results) >= cap:
                 break
         return results
 
@@ -279,7 +283,7 @@ class EvergreenStore:
         if max_items <= 0 or max_chars <= 0:
             return "", []
         opening, closing = self.delimiters["open_delimiter"], self.delimiters["close_delimiter"]
-        candidates = self.list_current(limit=500)
+        candidates = self.list_current(limit=self.LIST.high)
         selected: list[dict[str, Any]] = []
         for fact in candidates:
             item = {
@@ -322,12 +326,8 @@ class EvergreenStore:
             (key, exclude_fact_id),
         ).fetchone()
 
-    @staticmethod
-    def _validate_source(db: Any, source_message_id: int | None) -> None:
-        if source_message_id is None:
-            return
-        row = db.execute("SELECT 1 FROM messages WHERE id=?", (source_message_id,)).fetchone()
-        if not row:
+    def _validate_source(self, source_message_id: int | None) -> None:
+        if source_message_id is not None and not self.messages.exists(source_message_id):
             raise ValueError("source message does not exist")
 
     @staticmethod
@@ -430,7 +430,7 @@ class EvergreenStore:
 
 
 name = "evergreen"
-inject = ("database", "prompts", "api", "cli", "mcp")
+inject = ("database", "messages", "prompts", "api", "cli", "mcp")
 
 
 class RememberFactInput(GatewayInput):
@@ -460,7 +460,7 @@ class ForgetFactInput(GatewayInput):
 
 
 def apply(ctx: Any, config: EvergreenConfig) -> None:
-    store = EvergreenStore(ctx.database, config, ctx.prompts)
+    store = EvergreenStore(ctx.database, config, ctx.prompts, ctx.messages)
     ctx.provide("evergreen", store)
     ctx.on("context", store.on_context)
     _routes(ctx.api, store)
@@ -501,7 +501,9 @@ def _routes(router: APIRouter, store: EvergreenStore) -> None:
     async def list_facts(
         include_inactive: bool = False,
         due_only: bool = False,
-        limit: int = Query(100, ge=1, le=500),
+        limit: int = Query(
+            EvergreenStore.LIST.default, ge=EvergreenStore.LIST.low, le=EvergreenStore.LIST.high
+        ),
     ) -> dict[str, Any]:
         facts = await call(
             store.list_current, include_inactive=include_inactive, due_only=due_only, limit=limit
@@ -603,7 +605,11 @@ def _commands(cli: Any, store: EvergreenStore) -> None:
         "list",
         lambda **values: {"facts": store.list_current(**values)},
         help="List current facts by priority",
-        args=[option("include_inactive", bool), option("due_only", bool), option("limit", int, default=100)],
+        args=[
+            option("include_inactive", bool, help="Include forgotten and expired facts."),
+            option("due_only", bool, help="Only facts due for review."),
+            option("limit", int, default=EvergreenStore.LIST.default, help="Maximum number of facts."),
+        ],
     )
     evergreen.command(
         "history",
@@ -618,18 +624,21 @@ def _commands(cli: Any, store: EvergreenStore) -> None:
         args=[
             arg("key"),
             arg("text"),
-            option("priority", int, default=50),
-            option("source_message_id", int),
-            option("reason", default=""),
-            option("review_after"),
-            option("expires_at"),
+            option("priority", int, default=50, help="Priority from 0 to 100."),
+            option("source_message_id", int, help="Archive message id that supports the fact."),
+            option("reason", default="", help="Why the fact is stored."),
+            option("review_after", help="ISO timestamp to review the fact after."),
+            option("expires_at", help="ISO timestamp the fact expires at."),
         ],
     )
     evergreen.command(
         "revise",
         lambda **values: {"fact": store.revise(**revision(values), created_by="operator")},
         help="Replace a fact at the revision you last read",
-        args=[*REVISE_ARGS, option("source_message_id", int)],
+        args=[
+            *REVISE_ARGS,
+            option("source_message_id", int, help="Archive message id that supports the revision."),
+        ],
     )
     evergreen.command(
         "forget",
@@ -638,8 +647,8 @@ def _commands(cli: Any, store: EvergreenStore) -> None:
         args=[
             arg("fact_id"),
             arg("expected_revision", int),
-            option("source_message_id", int),
-            option("reason", required=True),
+            option("source_message_id", int, help="Archive message id that supports forgetting the fact."),
+            option("reason", required=True, help="Why the fact is forgotten."),
         ],
     )
 
@@ -652,7 +661,7 @@ def _tools(mcp: Any, store: EvergreenStore) -> None:
         args=[
             option("include_inactive", bool, help="Include forgotten and expired facts."),
             option("due_only", bool, help="Only facts due for review."),
-            option("limit", int, default=100, help="Maximum number of facts."),
+            option("limit", int, default=EvergreenStore.LIST.default, help="Maximum number of facts."),
         ],
     )
     mcp.tool(

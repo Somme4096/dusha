@@ -11,7 +11,7 @@ from typing import Any
 
 import click
 
-from . import homes, legacy, providers
+from . import homes, providers
 from .client import catalog, presets, remote, settings
 from .providers import PLACEHOLDER, http_url
 
@@ -27,16 +27,30 @@ def _paint(text: str, **style: Any) -> str:
     return text if os.environ.get("NO_COLOR") else click.style(text, **style)
 
 
-def _label(word: str, color: str) -> str:
-    return f"{_paint(word, fg=color, bold=True)}{_paint(':', bold=True)}"
+def _sentence(text: str) -> str:
+    text = text.strip()
+    if not text:
+        return text
+    first = text.split(None, 1)[0]
+    if text[0].islower() and "_" not in first and not first.startswith("-"):
+        text = text[0].upper() + text[1:]
+    if text[-1] not in ".!?":
+        text = f"{text}."
+    return text
 
 
-def _warn(text: str) -> str:
-    return f"{_label('warning', _WARNING)} {_paint(text, bold=True)}"
+def _block(title: str, color: str, *lines: str) -> str:
+    header = _paint(title, fg=color, bold=True)
+    body = [_sentence(line) for line in lines if line.strip()]
+    return "\n".join((header, *body)) if body else header
 
 
-def _done(text: str) -> str:
-    return _paint(text, fg=_DONE)
+def _warn(*lines: str) -> str:
+    return _block("Warning!", _WARNING, *lines)
+
+
+def _success(*lines: str) -> str:
+    return _block("Success!", _DONE, *lines)
 
 
 def _ask(text: str) -> str:
@@ -78,7 +92,7 @@ class Styled(click.HelpFormatter):
 
 
 def _translate(text: str) -> str:
-    return gettext(text).replace("Error:", _label("error", _ERROR), 1)
+    return gettext(text).replace("Error: ", f"{_paint('Error!', fg=_ERROR, bold=True)}\n", 1)
 
 
 click.Context.formatter_class = Styled
@@ -97,14 +111,14 @@ def _config(resolve: Callable[[], Any]) -> Any:
     try:
         return resolve()
     except (FileNotFoundError, ValueError) as error:
-        raise ConfigError(str(error)) from error
+        raise ConfigError(_sentence(str(error))) from error
 
 
 def _remote(call: Callable[..., Any], *args: Any) -> Any:
     try:
         return call(*args)
     except remote.RemoteError as error:
-        raise click.ClickException(str(error)) from error
+        raise click.ClickException(_sentence(str(error))) from error
 
 
 def _selection(ctx: click.Context) -> dict[str, Any]:
@@ -145,7 +159,7 @@ def _command(
 
     def callback(**values: Any) -> None:
         if offline:
-            raise click.ClickException(str(offline))
+            raise click.ClickException(_sentence(str(offline)))
         values = {key: list(value) if isinstance(value, tuple) else value for key, value in values.items()}
         _print(_remote(remote.run, connection, path, values))
 
@@ -179,7 +193,7 @@ class Root(click.Group):
                 connection, cache = _client(root)
                 manifest, stale = _remote(remote.manifest, connection, cache)
                 if stale:
-                    click.echo(_warn(f"using the cached command list, {stale}"), err=True)
+                    click.echo(_warn("Using the cached command list.", str(stale)), err=True)
                 offline = stale if isinstance(stale, remote.Unreachable) else None
                 root.meta[_BUILT] = _build(manifest, connection, offline)
                 root.meta[_CORE] = frozenset(manifest.get("core", []))
@@ -205,7 +219,7 @@ class Root(click.Group):
         names = self.list_commands(ctx)
         failed = ctx.find_root().meta.get(_BUILT)
         if isinstance(failed, click.ClickException) and isinstance(failed.__cause__, remote.Unreachable):
-            click.echo(_warn(f"{failed.format_message()} Plugin commands are hidden."), err=True)
+            click.echo(_warn(failed.format_message(), "Plugin commands are hidden."), err=True)
         core = {*self.commands, *ctx.find_root().meta.get(_CORE, ())}
         limit = formatter.width - 6 - max(map(len, names), default=0)
         for name in names:
@@ -227,7 +241,7 @@ def main(companion: str | None, home: str | None, config: str | None) -> None:
     pass
 
 
-@main.command("serve", help="Run the server for one companion")
+@main.command("serve", help="Run the server for a companion")
 @click.argument("name", required=False)
 @click.pass_context
 def serve(ctx: click.Context, name: str | None) -> None:
@@ -250,48 +264,70 @@ def serve(ctx: click.Context, name: str | None) -> None:
     uvicorn.run(create_app(cfg), host=host, port=cfg.port, log_level="info")
 
 
-def _init_serve(home: Path) -> bool:
-    from .config import ensure_server_config
+def _change_text(change: Any) -> str:
+    from . import setup
 
-    if done := ensure_server_config(home):
-        click.echo(_done(done), err=True)
-    return bool(done)
+    templates = {
+        setup.CREATED: f"Created {change.path}.",
+        setup.ADDED_SERVER: f"Added the server keys to {change.path}.",
+        setup.ADDED_PROXY: f"Saved {change.path}.",
+        setup.UPGRADED_CONFIG: (
+            f"Moved proxy.upstreams to providers in {change.path}, the old file is {change.backup}."
+        ),
+        setup.UPGRADED_PROMPTS: (
+            f"Upgraded {change.path} to prompts schema 4, the old file is {change.backup}."
+        ),
+    }
+    return templates[change.kind]
+
+
+def _changes(changes: list[Any], *, interactive: bool = False, upgrade: bool = False) -> bool:
+    from . import setup
+
+    notes: list[str] = []
+    for change in changes:
+        if change.kind == setup.NEEDS_PROXY:
+            if notes:
+                click.echo(_success(*notes), err=True)
+                notes.clear()
+            _prompt_proxy(change.path, interactive)
+            if upgrade and change.path.exists():
+                notes.extend(_change_text(item) for item in setup.upgrade_files(change.path))
+        else:
+            notes.append(_change_text(change))
+    if notes:
+        click.echo(_success(*notes), err=True)
+    return bool(changes)
+
+
+def _prompt_proxy(path: Path, interactive: bool) -> None:
+    if interactive:
+        _connect(path)
+    else:
+        _setup(path)
+
+
+def _init_serve(home: Path) -> bool:
+    from .setup import ensure_config
+
+    return _changes(ensure_config(home, home / homes.CONFIG_FILE, proxy=False, upgrade=False))
 
 
 def _init_proxy(path: Path, *, interactive: bool, url: str = "", token: str = "") -> bool:
-    if url:
-        click.echo(_done(f"Saved {settings.save_server(path, url, token)}."), err=True)
-    elif path.exists() and settings.server_saved(path):
-        return False
-    elif interactive:
-        _connect(path)
-    elif (local := settings.local_server(path)) is not None:
-        click.echo(_done(f"Saved {settings.save_server(path, local.url, '')}."), err=True)
-    else:
-        _setup(path)
-    return True
+    from .setup import ensure_config
 
-
-def _upgrade(path: Path) -> bool:
-    from .config import load_config
-
-    changed = False
-    if backup := legacy.upgrade_config_file(path):
-        click.echo(_done(f"moved proxy.upstreams to providers in {path}, the old file is {backup}"), err=True)
-        changed = True
-    prompts = load_config(path).prompts.path if settings.local_server(path) is not None else ""
-    if prompts and (backup := legacy.upgrade_prompts_file(Path(prompts))):
-        click.echo(_done(f"upgraded {prompts} to prompts schema 4, the old file is {backup}"), err=True)
-        changed = True
-    return changed
+    changes = ensure_config(
+        path.parent, path, server=False, upgrade=False, url=url, token=token, interactive=interactive
+    )
+    return _changes(changes, interactive=interactive)
 
 
 @main.command("init", help="Create or update configuration")
 @click.argument("name", required=False)
 @click.option("--serve", "serve_part", is_flag=True, help="Set up only the server keys.")
 @click.option("--proxy", "proxy_part", is_flag=True, help="Set up only the proxy keys.")
-@click.option("--server-url", default="", help="Server for the proxy, skips the prompt.")
-@click.option("--token", default="", help="Token for --server-url.")
+@click.option("--server-url", default="", help="Server URL for the proxy, skips the prompt.")
+@click.option("--token", default="", help="Server token for --server-url.")
 @click.pass_context
 def init(
     ctx: click.Context, name: str | None, serve_part: bool, proxy_part: bool, server_url: str, token: str
@@ -301,29 +337,41 @@ def init(
     both = not serve_part and not proxy_part
 
     def resolve() -> bool:
+        from .setup import ensure_config
+
         if params.get("config") is not None:
-            raise ValueError("dusha init takes a companion name or --home, not --config")
+            raise ValueError("Pass a companion name or --home to dusha init, not --config.")
         home = homes.named_home(params.get("home"), companion)
         if home is None:
-            raise ValueError("name a companion, such as dusha init <name>")
+            raise ValueError("Specify a companion, such as dusha init <name>.")
         path = home / homes.CONFIG_FILE
         url = _url(server_url) if server_url else ""
-        changed = _init_serve(home) if serve_part or both else False
-        if proxy_part or both:
-            changed = _init_proxy(path, interactive=sys.stdin.isatty(), url=url, token=token) or changed
-        if path.exists():
-            changed = _upgrade(path) or changed
-        return changed
+        interactive = sys.stdin.isatty()
+        changes = ensure_config(
+            home,
+            path,
+            server=serve_part or both,
+            proxy=proxy_part or both,
+            url=url,
+            token=token,
+            interactive=interactive,
+        )
+        return _changes(changes, interactive=interactive, upgrade=True)
 
     if not _config(resolve):
-        click.echo(f"{companion or params.get('home')} is up to date.", err=True)
+        note = (
+            f"Companion {companion} is up to date."
+            if companion
+            else f"Home {params.get('home')} is up to date."
+        )
+        click.echo(_success(note), err=True)
 
 
 def _url(value: str) -> str:
     try:
         return http_url(value, "the server URL")
     except ValueError as error:
-        raise click.BadParameter(str(error)) from error
+        raise click.BadParameter(_sentence(str(error))) from error
 
 
 def _setup(path: Path) -> None:
@@ -333,14 +381,14 @@ def _setup(path: Path) -> None:
     token = click.prompt(
         _ask("Server token, empty for none"), default="", show_default=False, hide_input=hidden, err=True
     )
-    click.echo(_done(f"created {settings.create(path, url, token)}"), err=True)
+    click.echo(_success(f"Created {settings.create(path, url, token)}."), err=True)
 
 
 def _checked(value: str) -> bool | str:
     try:
         http_url(value.strip(), "the server URL")
     except ValueError as error:
-        return str(error)
+        return _sentence(str(error))
     return True
 
 
@@ -350,7 +398,8 @@ def _connect(path: Path) -> None:
     local = settings.local_server(path)
     url = settings.SERVER_URL
     style = _prompt_style()
-    click.echo(f"{path.parent.name} isn't connected to a server yet.", err=True)
+    click.echo(f"Companion {path.parent.name} isn't connected to a server yet.", err=True)
+    connected = False
     while True:
         here = local is not None and questionary.select("Connect to:", choices=[
             questionary.Choice(f"The server on this machine ({local.url})", value=True),
@@ -373,9 +422,11 @@ def _connect(path: Path) -> None:
             if choice == "Try again":
                 continue
         else:
-            click.echo(_done(f"Connected to {url}."), err=True)
+            connected = True
         break
-    click.echo(_done(f"Saved {settings.save_server(path, url, token)}."), err=True)
+    lines = [f"Connected to {url}."] if connected else []
+    lines.append(f"Saved {settings.save_server(path, url, token)}.")
+    click.echo(_success(*lines), err=True)
 
 
 class Proxy(click.Group):
@@ -396,7 +447,7 @@ def _proxy_file(ctx: click.Context, *, setup: bool) -> Path:
                 _init_proxy(home / homes.CONFIG_FILE, interactive=interactive)
         path = homes.locate(params.get("config"), home=params.get("home"), companion=companion)
         if path is None:
-            raise ValueError("name a companion, such as dusha proxy <name>")
+            raise ValueError("Specify a companion, such as dusha proxy <name>.")
         if interactive and not settings.server_saved(path):
             _connect(path)
         return path
@@ -406,7 +457,7 @@ def _proxy_file(ctx: click.Context, *, setup: bool) -> Path:
 
 @main.group(
     "proxy", cls=Proxy, invoke_without_command=True, subcommand_metavar="[NAME] [COMMAND] [ARGS]...",
-    help="Run or configure the client proxy",
+    help="Run or configure the proxy",
 )
 @click.pass_context
 def proxy(ctx: click.Context) -> None:
@@ -440,7 +491,7 @@ def _provider_file(ctx: click.Context) -> Path:
     def resolve() -> Path:
         path = homes.locate(params.get("config"), home=params.get("home"), companion=params.get("companion"))
         if path is None:
-            raise ValueError("name a companion, such as dusha -c <name> provider add")
+            raise ValueError("Specify a companion, such as dusha -c <name> provider add.")
         return path
 
     return _config(resolve)
@@ -450,20 +501,20 @@ def _add(path: Path, provider: str | None, profile: str | None, refresh: bool) -
     try:
         data, warning = catalog.load(refresh=refresh)
     except catalog.CatalogError as error:
-        raise click.ClickException(str(error)) from error
+        raise click.ClickException(_sentence(str(error))) from error
     if warning:
         click.echo(_warn(warning), err=True)
     found = presets.build(data)
     interactive = sys.stdin.isatty()
     if provider is None:
         if not interactive:
-            raise ConfigError("Name a provider, such as dusha provider add deepseek")
+            raise ConfigError("Add a provider, such as dusha provider add deepseek.")
         provider = _pick(found)
     if provider == CUSTOM:
         _custom(path, profile)
         return
     if provider not in found:
-        raise ConfigError(f"Unknown provider {provider!r}, see https://models.dev for the ids")
+        raise ConfigError(f"Unknown provider {provider!r}, see https://models.dev for the ids.")
     preset, name = found[provider], profile or provider
     _replaceable(path, name)
     values = {variable: click.prompt(_ask(variable), err=True) for variable in preset.variables}
@@ -484,8 +535,13 @@ def _save(path: Path, name: str, raw: dict[str, Any]) -> None:
     _config(lambda: settings.save_provider(path, name, raw))
     companion, host = path.parent.name, f"[{current.host}]" if ":" in current.host else current.host
     harness = f"http://{host}:{current.port}/{name}"
-    click.echo(_done(f"Success!\nNew provider {name} added to {companion} at {harness}."), err=True)
-    click.echo(f"Restart dusha proxy {companion} and dusha serve {companion} to use it.", err=True)
+    click.echo(
+        _success(
+            f"New provider {name} added to {companion} at {harness}.",
+            f"Restart dusha proxy {companion} and dusha serve {companion} to use it.",
+        ),
+        err=True,
+    )
 
 
 def _custom(path: Path, profile: str | None) -> None:
@@ -513,7 +569,7 @@ def _custom(path: Path, profile: str | None) -> None:
     try:
         providers.provider(name, raw)
     except ValueError as error:
-        raise click.ClickException(str(error)) from error
+        raise click.ClickException(_sentence(str(error))) from error
     _save(path, name, raw)
 
 
@@ -521,7 +577,7 @@ def _upstream(value: str) -> str:
     try:
         return http_url(value.strip(), "the base URL")
     except ValueError as error:
-        raise click.BadParameter(str(error)) from error
+        raise click.BadParameter(_sentence(str(error))) from error
 
 
 def _optional_url(kind: str) -> Callable[[str], str]:
@@ -531,16 +587,16 @@ def _optional_url(kind: str) -> Callable[[str], str]:
         try:
             return http_url(value.strip(), f"the {kind} endpoint")
         except ValueError as error:
-            raise click.BadParameter(str(error)) from error
+            raise click.BadParameter(_sentence(str(error))) from error
 
     return check
 
 
 def _remove(path: Path, profile: str) -> None:
     if profile not in _config(lambda: settings.load(path, environ=False)).providers:
-        raise click.ClickException(f"No provider named {profile!r}")
+        raise click.ClickException(f"No provider named {profile!r}.")
     _config(lambda: settings.save_provider(path, profile, None))
-    click.echo(_done(f"Removed {profile} from {path.parent.name}"), err=True)
+    click.echo(_success(f"Removed {profile} from {path.parent.name}."), err=True)
 
 
 def _masked(key: str) -> str:
@@ -560,14 +616,14 @@ def _list(path: Path) -> None:
     })
 
 
-@main.group("provider", help="Configure model provider")
+@main.group("provider", help="Configure model providers")
 def provider_group() -> None:
     pass
 
 
 @provider_group.command("add", help="Add a provider from the models.dev catalog")
 @click.argument("provider", required=False)
-@click.option("--profile", help="Profile name, the provider id by default.")
+@click.option("--profile", help="Profile name, defaults to the provider id.")
 @click.option("--refresh", is_flag=True, help="Refetch the models.dev catalog.")
 @click.pass_context
 def provider_add(ctx: click.Context, provider: str | None, profile: str | None, refresh: bool) -> None:
@@ -581,7 +637,7 @@ def provider_remove(ctx: click.Context, profile: str) -> None:
     _remove(_provider_file(ctx), profile)
 
 
-@provider_group.command("list", help="Show the providers, keys masked")
+@provider_group.command("list", help="List configured providers")
 @click.pass_context
 def provider_list(ctx: click.Context) -> None:
     _list(_provider_file(ctx))
@@ -590,7 +646,10 @@ def provider_list(ctx: click.Context) -> None:
 # Deprecated dusha proxy <name> auth, removed in 2.0.21.
 @proxy.group("auth", hidden=True)
 def auth() -> None:
-    click.echo(_warn("dusha proxy auth is deprecated and goes away in 2.0.21. Use dusha provider."), err=True)
+    click.echo(
+        _warn("Command dusha proxy auth is deprecated and goes away in 2.0.21.", "Use dusha provider."),
+        err=True,
+    )
 
 
 @auth.command("login")

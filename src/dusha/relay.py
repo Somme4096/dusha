@@ -333,12 +333,85 @@ def apply(ctx: Any, config: RelayConfig) -> None:
     ]
     for name, handler, text, tool_args in hand_tools:
         ctx.mcp.tool(name, handler, help=text, args=tool_args)
-    group = ctx.cli.group("relay", "Reach their other devices")
-    group.command("look", relay.look, help=look_help, args=[device_arg])
-    group.command("notify", relay.notify, help=notify_help, args=notify_args)
-    group.command("spawn", relay.spawn, help=spawn_help, args=spawn_args)
-    group.command("spawn-status", relay.spawn_status, help=status_help, args=status_args)
-    group.command("spawn-wait", relay.spawn_wait, help="Wait for a spawn job", args=wait_args)
-    group.command("music", relay.music, help=music_help, args=music_args)
-    for name, handler, text, tool_args in hand_tools:
-        group.command(name.replace("_", "-"), handler, help=text, args=tool_args)
+    _commands(ctx.cli, relay)
+
+
+def _commands(cli: Any, relay: Relay) -> None:
+    device = option(
+        "device", default="auto", help="Device name from presence, or auto for the active device."
+    )
+    job_device = option("device", default="", help="Device name when omitted from the job id.")
+    cwd = option("cwd", default="", help="Working directory on the device.")
+    group = cli.group("relay", "Reach connected devices")
+    group.command("look", relay.look, help="Capture the screen of a connected device", args=[device])
+    group.command(
+        "notify",
+        relay.notify,
+        help="Send a notification to a connected device",
+        args=[
+            arg("title"),
+            option("body", default="", help="Notification body text."),
+            device,
+            option("urgency", default="normal", choices=URGENCIES, help="Notification urgency level."),
+        ],
+    )
+    group.command(
+        "spawn",
+        relay.spawn,
+        help="Start a coding agent on a connected device",
+        args=[arg("prompt"), device, option("agent", default="", help="Coding agent to launch."), cwd],
+    )
+    group.command(
+        "spawn-status", relay.spawn_status, help="Fetch a spawn job result", args=[arg("job"), job_device]
+    )
+    group.command(
+        "spawn-wait",
+        relay.spawn_wait,
+        help="Wait for a spawn job",
+        args=[
+            arg("job"),
+            job_device,
+            option(
+                "timeout_seconds",
+                float,
+                default=0,
+                help="Seconds to wait before returning, 0 for default.",
+            ),
+        ],
+    )
+    group.command(
+        "music",
+        relay.music,
+        help="See or control music playback",
+        args=[
+            option(
+                "action", default="status", help="Playback action, such as status, play, pause, or volume."
+            ),
+            option("query", default="", help="Song, album, or volume value for the action."),
+            device,
+            option("player", default="", help="Target media player name."),
+        ],
+    )
+    group.command(
+        "shell",
+        relay.shell,
+        help="Run a shell command on a connected device",
+        args=[
+            arg("command"),
+            device,
+            cwd,
+            option("timeout_seconds", float, default=60, help="Seconds before the command times out."),
+        ],
+    )
+    group.command(
+        "type-text", relay.type_text, help="Type text on a connected device", args=[arg("text"), device]
+    )
+    group.command(
+        "press-key", relay.press_key, help="Press a key on a connected device", args=[arg("key"), device]
+    )
+    group.command(
+        "list-windows", relay.list_windows, help="List open windows on a connected device", args=[device]
+    )
+    group.command(
+        "speak", relay.speak, help="Speak text out loud on a connected device", args=[arg("text"), device]
+    )

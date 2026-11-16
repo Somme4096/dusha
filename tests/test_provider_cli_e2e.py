@@ -110,8 +110,10 @@ async def test_provider_add_saves_a_preset_the_proxy_then_uses(tmp_path, stub):
     absent = _cli(tmp_path, "provider", "remove", "vault")
     saved = json.loads(path.read_text(encoding="utf-8"))
     assert added.returncode == 0, added.stderr
-    assert "New provider stubai added to nova at http://127.0.0.1:8766/stubai." in added.stderr
-    assert "Restart dusha proxy nova and dusha serve nova" in added.stderr
+    assert (
+        "Success!\nNew provider stubai added to nova at http://127.0.0.1:8766/stubai.\n"
+        "Restart dusha proxy nova and dusha serve nova to use it."
+    ) in added.stderr
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert vault.returncode == 0, vault.stderr
     assert json.loads(kept)["providers"]["vault"] == {"base_url": "https://acct.vault.invalid/v1"}
@@ -121,7 +123,8 @@ async def test_provider_add_saves_a_preset_the_proxy_then_uses(tmp_path, stub):
         "key": "...5678",
     }
     assert json.loads(listed.stdout)["vault"]["key"] == ""
-    assert removed.returncode == 0 and absent.returncode == 1 and "No provider named 'vault'" in absent.stderr
+    assert removed.returncode == 0 and "Success!\nRemoved vault from nova." in removed.stderr
+    assert absent.returncode == 1 and "Error!\nNo provider named 'vault'." in absent.stderr
     assert (saved["port"], saved["api_token"]) == (8765, "local")
     assert list(saved["providers"]) == ["stubai"] and "upstreams" not in saved["proxy"]
 
@@ -165,10 +168,10 @@ def test_provider_add_without_a_terminal_needs_a_known_provider(tmp_path, stub):
     unknown = _cli(tmp_path, "provider", "add", "nope")
     blocked = _cli(tmp_path, "provider", "add", "bedrocky")
     missing = _cli(tmp_path, "-c", "luna", "provider", "add", "stubai")
-    assert unnamed.returncode == 2 and "Name a provider" in unnamed.stderr
-    assert unknown.returncode == 2 and "Unknown provider 'nope'" in unknown.stderr
+    assert unnamed.returncode == 2 and "Error!\nAdd a provider" in unnamed.stderr
+    assert unknown.returncode == 2 and "Error!\nUnknown provider 'nope'" in unknown.stderr
     assert blocked.returncode == 2
-    assert missing.returncode == 2 and "configuration file not found" in missing.stderr
+    assert missing.returncode == 2 and "Error!\nConfiguration file not found" in missing.stderr
 
 
 def test_deprecated_proxy_auth_login_and_status_still_work(tmp_path, stub):
@@ -338,7 +341,8 @@ def test_prompts_share_one_palette_and_no_color_turns_it_off(tmp_path, stub):
 
     plain, colored = add(replace=False, NO_COLOR="1"), add(replace=True)
     assert b"\x1b[0;33;1m?" in colored and b"\x1b[33m\x1b[1m?" in colored
-    assert b"\x1b[0;36;1m" in colored and b"\x1b[32mSuccess!" in colored and b"38;5" not in colored
+    expected_success = b"\x1b[32m\x1b[1mSuccess!\x1b[0m"
+    assert b"\x1b[0;36;1m" in colored and expected_success in colored and b"38;5" not in colored
     assert not any(code in plain for code in (b"[33m", b"[36m", b"[32m", b";33", b";36", b"38;5"))
     assert b"\x1b[33m\x1b[1m?\x1b[0m \x1b[1mReplace the provider shared?" in colored
     assert b"sk-typed" not in colored + plain
@@ -380,12 +384,14 @@ def test_help_and_errors_are_colored_only_on_a_terminal(tmp_path, free_port, ser
         blank = shown("--help", until="Plugin commands", NO_COLOR="1")
         missing = shown("no-such-command", until="No such command")
         piped = _cli(tmp_path, "memory", "--help")
+    offline = shown("memory", "--help", until="recent")
     assert b"\x1b[32m\x1b[1mCore commands:\x1b[0m" in root and b"\x1b[36m\x1b[1mhealth\x1b[0m" in root
     assert b"\x1b[32m\x1b[1mPlugin commands:\x1b[0m" in root
     assert b"\x1b[36m\x1b[1m--companion\x1b[0m \x1b[36mTEXT\x1b[0m" in root
     assert b"\x1b[32m\x1b[1mUsage: \x1b[0m\x1b[36m\x1b[1m" in remote and b"\x1b[36m\x1b[1mrecent" in remote
     assert b"\x1b[" not in blank and b"Core commands:" in blank
-    assert b"\x1b[31m\x1b[1merror\x1b[0m\x1b[1m:\x1b[0m No such command" in missing
+    assert b"\x1b[31m\x1b[1mError!\x1b[0m\r\nNo such command" in missing
+    assert b"\x1b[33m\x1b[1mWarning!\x1b[0m\r\nUsing the cached command list." in offline
     assert piped.returncode == 0 and "\x1b[" not in piped.stdout + piped.stderr and "Usage: " in piped.stdout
 
 

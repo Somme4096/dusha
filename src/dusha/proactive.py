@@ -160,12 +160,7 @@ class ProactiveEngine:
             return self.companion.latest_route()
         if not chosen.get("conversation_id"):
             return self.companion.latest_route(chosen["harness"])
-        with self.database.connect() as db:
-            row = db.execute(
-                "SELECT * FROM conversations WHERE harness=? AND external_id=? AND route != ''",
-                (chosen["harness"], chosen["conversation_id"]),
-            ).fetchone()
-        return dict(row) if row else None
+        return self.companion.messages.route(chosen["harness"], chosen["conversation_id"])
 
     def _quiet(self, now: datetime) -> bool:
         hour = now.astimezone(self.timezone).hour
@@ -382,10 +377,7 @@ class ProactiveEngine:
         if outcome == "sent":
             self.affect.on_proactive_sent(current)
             if text.strip():
-                with self.database.connect() as db:
-                    conversation = db.execute(
-                        "SELECT * FROM conversations WHERE id=?", (row["conversation_id"],)
-                    ).fetchone()
+                conversation = self.companion.messages.route_by_id(row["conversation_id"])
                 if conversation:
                     self.companion.ingest_message(
                         harness=str(conversation["harness"]),
@@ -462,7 +454,10 @@ def _commands(cli: Any, engine: ProactiveEngine) -> None:
         "poll",
         lambda consumer, limit: {"events": engine.poll(consumer, limit)},
         help="Lease pending events",
-        args=[option("consumer", default="cli"), option("limit", int, default=1)],
+        args=[
+            option("consumer", default="cli", help="Consumer name leasing the events."),
+            option("limit", int, default=1, help="Maximum number of events to lease."),
+        ],
     )
     proactive.command(
         "ack",
@@ -473,8 +468,8 @@ def _commands(cli: Any, engine: ProactiveEngine) -> None:
         args=[
             arg("event_id"),
             arg("outcome", choices=("sent", "failed", "release")),
-            option("consumer", default="cli"),
-            option("text", default=""),
-            option("error", default=""),
+            option("consumer", default="cli", help="Consumer name that leased the event."),
+            option("text", default="", help="Delivered message text."),
+            option("error", default="", help="Failure reason when outcome is failed."),
         ],
     )

@@ -53,7 +53,7 @@ def resolve_home(home: str | Path | None = None, companion: str | None = None) -
         return companion_home(os.environ[COMPANION_ENV])
     names = list_companions()
     if len(names) > 1:
-        raise ValueError(f"several companions exist: {names}. Name one")
+        raise ValueError(f"several companions exist: {names}. Specify one")
     return companion_home(names[0]) if names else None
 
 

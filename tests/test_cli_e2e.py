@@ -88,7 +88,7 @@ def test_cli_runs_plugin_commands_on_the_server_and_state_survives_a_restart(tmp
     assert revised["fact"]["text"] == "black tea" and revised["fact"]["revision"] == 2
     assert blank.returncode == 1 and blank.stderr.strip()
     assert done["memo"]["status"] == "archived"
-    assert missing.returncode == 1 and missing.stderr.rstrip().endswith("message not found")
+    assert missing.returncode == 1 and missing.stderr.rstrip().endswith("Message not found.")
     assert bad_type.returncode == 2 and "not-a-number" in bad_type.stderr
     assert bad_choice.returncode == 2 and "lost" in bad_choice.stderr
     assert health == {"database": "ok"}
@@ -113,8 +113,8 @@ def test_cli_sends_the_token_and_prefers_the_saved_server(tmp_path, free_port, s
         denied_plugins = _cli(tmp_path, "-c", "stale", "plugins")
     assert [memo["id"] for memo in remote["memos"]] == [local["memo"]["id"]]
     assert plugins["memo"]["state"] == "active"
-    assert denied.returncode == 1 and "invalid companion token" in denied.stderr
-    assert denied_plugins.returncode == 1 and "invalid companion token" in denied_plugins.stderr
+    assert denied.returncode == 1 and "Invalid companion token." in denied.stderr
+    assert denied_plugins.returncode == 1 and "Invalid companion token." in denied_plugins.stderr
 
 
 def test_cli_hides_the_commands_of_disabled_plugins(tmp_path, free_port, serving):
@@ -151,11 +151,11 @@ def test_cli_help_works_offline_from_the_cached_command_list(tmp_path, free_port
     moved = _cli(tmp_path, "--help")
     assert online.returncode == offline.returncode == 0
     assert offline.stdout == online.stdout and "done" in offline.stdout
-    assert "using the cached command list" in offline.stderr
+    assert "Warning!\nUsing the cached command list." in offline.stderr
     assert run.returncode == 1
-    assert re.search(r"error: cannot connect to .*127\.0\.0\.1:\d+ \(refused\)\.", run.stderr)
+    assert re.search(r"Error!\nCannot connect to .*127\.0\.0\.1:\d+ \(refused\)\.", run.stderr)
     assert moved.returncode == 0 and "memo" not in moved.stdout and "serve" in moved.stdout
-    assert "Plugin commands are hidden." in moved.stderr
+    assert "Warning!" in moved.stderr and "Plugin commands are hidden." in moved.stderr
 
 
 def test_cli_gives_up_quickly_on_a_server_that_drops_packets(tmp_path):
@@ -168,7 +168,7 @@ def test_cli_gives_up_quickly_on_a_server_that_drops_packets(tmp_path):
     started = time.monotonic()
     result = _cli(tmp_path, "memo", "list")
     assert time.monotonic() - started < 5.5
-    assert result.returncode == 1 and "cannot connect to the server at" in result.stderr
+    assert result.returncode == 1 and "Cannot connect to the server at" in result.stderr
 
 
 def test_cli_names_a_host_that_does_not_exist(tmp_path):
@@ -208,11 +208,11 @@ def test_cli_resolves_companions_in_the_documented_order(tmp_path, free_port):
     absent = _cli(tmp_path, "--config", str(tmp_path / "missing.json"), "memo", "list")
     (tmp_path / "config.yaml").write_text("host: example-host\n", encoding="utf-8")
     yaml = _cli(tmp_path, "--config", str(tmp_path / "config.yaml"), "health")
-    assert ambiguous.returncode == 2 and "several companions exist" in ambiguous.stderr
-    assert unknown.returncode == 2 and "configuration file not found" in unknown.stderr
-    assert escaped.returncode == 2 and "companion name" in escaped.stderr
-    assert absent.returncode == 2 and "configuration file not found" in absent.stderr
-    assert yaml.returncode == 2 and "unsupported configuration format" in yaml.stderr
+    assert ambiguous.returncode == 2 and "Several companions exist" in ambiguous.stderr
+    assert unknown.returncode == 2 and "Configuration file not found" in unknown.stderr
+    assert escaped.returncode == 2 and "Companion name" in escaped.stderr
+    assert absent.returncode == 2 and "Configuration file not found" in absent.stderr
+    assert yaml.returncode == 2 and "Unsupported configuration format" in yaml.stderr
     assert _json(_cli(tmp_path, "list")) == {"root": str(tmp_path / "dusha"), "companions": ["dusha", "luna"]}
 
 
@@ -267,7 +267,7 @@ def test_cli_serve_creates_the_config_once_and_serves_it_after_restart(tmp_path,
         _wait_for(config.is_file)
     finally:
         stderr = _stop(first)
-    assert f"created {config}" in stderr
+    assert f"Success!\nCreated {config}." in stderr
     assert stat.S_IMODE(config.stat().st_mode) == 0o600
     generated = json.loads(config.read_text(encoding="utf-8"))
     assert generated == example
@@ -280,7 +280,7 @@ def test_cli_serve_creates_the_config_once_and_serves_it_after_restart(tmp_path,
     finally:
         stderr = _stop(second)
     assert health["status"] == "ok" and health["companion"] == "nova"
-    assert "created" not in stderr
+    assert "Created" not in stderr
 
 
 def test_cli_serve_follows_the_selection_order(tmp_path, free_port):
@@ -294,7 +294,7 @@ def test_cli_serve_follows_the_selection_order(tmp_path, free_port):
         _stop(server)
     ambiguous = _cli(tmp_path, "serve")
     assert health["companion"] == "luna"
-    assert ambiguous.returncode == 2 and "several companions exist" in ambiguous.stderr
+    assert ambiguous.returncode == 2 and "Several companions exist" in ambiguous.stderr
 
 
 def test_cli_serve_binds_the_dusha_host_override(tmp_path, free_port):
@@ -311,7 +311,7 @@ def test_cli_serve_binds_the_dusha_host_override(tmp_path, free_port):
 def test_cli_serve_rejects_a_bad_companion_name_without_creating_anything(tmp_path):
     result = _cli(tmp_path, "serve", "../escape")
     assert result.returncode == 2
-    assert "companion name" in result.stderr
+    assert "Companion name" in result.stderr
     assert not (tmp_path / "dusha").exists()
 
 
@@ -326,7 +326,7 @@ def test_cli_proxy_asks_for_the_server_once_and_saves_it(tmp_path, free_port, se
     finally:
         stderr = _stop(first)
     assert "Server URL" in stderr and "must be an http or https URL" in stderr
-    assert f"created {config}" in stderr
+    assert f"Success!\nCreated {config}." in stderr
     assert stat.S_IMODE(config.stat().st_mode) == 0o600
     saved = json.loads(config.read_text(encoding="utf-8"))
     assert saved["proxy"]["server"] == {"url": url, "token": "server-secret", "timeout_seconds": 10}
@@ -343,7 +343,7 @@ def test_cli_proxy_asks_for_the_server_once_and_saves_it(tmp_path, free_port, se
             stderr = _stop(again)
         memo = _json(_cli(tmp_path, "-c", "edge", "memo", "add", "Through the saved server."))
     assert health["server"] == {"url": url, "status": "ok"}
-    assert "Server URL" not in stderr and "created" not in stderr
+    assert "Server URL" not in stderr and "Created" not in stderr
     assert memo["memo"]["text"] == "Through the saved server."
 
 
@@ -362,7 +362,7 @@ def test_cli_proxy_reaches_the_server_in_the_same_config(tmp_path, free_port, se
 
 def test_cli_proxy_needs_a_companion_name(tmp_path):
     result = _cli(tmp_path, "proxy")
-    assert result.returncode == 2 and "name a companion" in result.stderr
+    assert result.returncode == 2 and "Specify a companion" in result.stderr
     assert not (tmp_path / "dusha").exists()
 
 
@@ -372,12 +372,24 @@ def test_cli_init_sets_up_both_parts_once(tmp_path):
     created = config.read_text(encoding="utf-8")
     again = _cli(tmp_path, "init", "nova")
     saved = json.loads(created)
-    assert first.returncode == 0 and f"created {config}" in first.stderr
+    assert first.returncode == 0 and f"Success!\nCreated {config}." in first.stderr
     assert stat.S_IMODE(config.stat().st_mode) == 0o600
     assert saved["port"] == 8765 and "plugins" in saved
     assert saved["proxy"]["server"]["url"] == "http://127.0.0.1:8765"
-    assert again.returncode == 0 and "nova is up to date" in again.stderr
+    assert again.returncode == 0 and "Success!\nCompanion nova is up to date." in again.stderr
     assert config.read_text(encoding="utf-8") == created
+
+
+def test_cli_init_twice_keeps_the_config_bytes_and_says_up_to_date(tmp_path):
+    config = tmp_path / "dusha" / "nova" / "config.json"
+    first = _cli(tmp_path, "init", "nova")
+    created = config.read_bytes()
+    again = _cli(tmp_path, "init", "nova")
+    third = _cli(tmp_path, "init", "nova", "--serve")
+    assert first.returncode == 0 and f"Success!\nCreated {config}." in first.stderr
+    assert again.returncode == 0 and "Success!\nCompanion nova is up to date." in again.stderr
+    assert third.returncode == 0 and "Success!\nCompanion nova is up to date." in third.stderr
+    assert config.read_bytes() == created
 
 
 def test_cli_init_adds_each_part_without_touching_the_other(tmp_path):
@@ -386,11 +398,19 @@ def test_cli_init_adds_each_part_without_touching_the_other(tmp_path):
     client_only = json.loads(config.read_text(encoding="utf-8"))
     serve = _cli(tmp_path, "init", "edge", "--serve")
     both = json.loads(config.read_text(encoding="utf-8"))
+    before = config.read_bytes()
+    same = _cli(tmp_path, "init", "edge", "--proxy", "--server-url", "http://10.0.0.2:8765", "--token", "t")
+    after_same = config.read_bytes()
+    rekeyed = _cli(tmp_path, "init", "edge", "--proxy", "--token", "t2")
     assert proxy.returncode == 0 and set(client_only) == {"proxy"}
     server = client_only["proxy"]["server"]
     assert server == {"url": "http://10.0.0.2:8765", "token": "t", "timeout_seconds": 10}
-    assert serve.returncode == 0 and f"added the server keys to {config}" in serve.stderr
+    assert serve.returncode == 0 and f"Success!\nAdded the server keys to {config}." in serve.stderr
     assert both["proxy"] == client_only["proxy"] and both["port"] == 8765
+    assert same.returncode == 0 and "Companion edge is up to date." in same.stderr
+    assert after_same == before
+    assert rekeyed.returncode == 0 and f"Success!\nSaved {config}." in rekeyed.stderr
+    assert json.loads(config.read_text(encoding="utf-8"))["proxy"]["server"]["token"] == "t2"
 
 
 def test_cli_serve_adds_the_server_keys_to_a_proxy_only_home(tmp_path, free_port):
@@ -403,7 +423,7 @@ def test_cli_serve_adds_the_server_keys_to_a_proxy_only_home(tmp_path, free_port
     finally:
         stderr = _stop(server)
     saved = json.loads(config.read_text(encoding="utf-8"))
-    assert f"added the server keys to {config}" in stderr
+    assert f"Success!\nAdded the server keys to {config}." in stderr
     assert saved["proxy"] == original["proxy"] and saved["port"] == 8765
     config.write_text(json.dumps({**saved, "port": port}), encoding="utf-8")
     again = _start(tmp_path, "serve", "edge")
@@ -411,7 +431,7 @@ def test_cli_serve_adds_the_server_keys_to_a_proxy_only_home(tmp_path, free_port
         health = _wait_for(lambda: _get_json(f"http://127.0.0.1:{port}/health"))
     finally:
         stderr = _stop(again)
-    assert health["status"] == "ok" and "added" not in stderr
+    assert health["status"] == "ok" and "Added" not in stderr
 
 
 def test_cli_init_upgrades_a_schema_3_prompts_file_and_keeps_a_backup(tmp_path):
@@ -422,19 +442,19 @@ def test_cli_init_upgrades_a_schema_3_prompts_file_and_keeps_a_backup(tmp_path):
     prompts.write_text(json.dumps(legacy), encoding="utf-8")
     first = _cli(tmp_path, "init", "nova", "--serve")
     again = _cli(tmp_path, "init", "nova", "--serve")
-    assert first.returncode == 0 and f"upgraded {prompts}" in first.stderr
+    assert first.returncode == 0 and f"Success!\nUpgraded {prompts}" in first.stderr
     assert json.loads(prompts.read_text(encoding="utf-8")) == {
         "companion_state": state,
         "plugins": {"memory": {"instruction": "M"}},
     }
     assert json.loads((config.parent / "prompts.json.bak").read_text(encoding="utf-8")) == legacy
-    assert "upgraded" not in again.stderr and "nova is up to date" in again.stderr
+    assert "Upgraded" not in again.stderr and "Success!\nCompanion nova is up to date." in again.stderr
 
 
 @pytest.mark.parametrize(
     ("args", "message"),
     [
-        (("init",), "name a companion"),
+        (("init",), "Specify a companion"),
         (("--config", "x.json", "init"), "not --config"),
         (("init", "nova", "--proxy", "--server-url", "ftp://nowhere"), "http or https URL"),
     ],
@@ -453,7 +473,43 @@ def test_cli_init_moves_proxy_upstreams_to_providers_and_keeps_a_backup(tmp_path
     original = config.read_text(encoding="utf-8")
     result = _cli(tmp_path, "init", "nova")
     saved = json.loads(config.read_text(encoding="utf-8"))
-    assert result.returncode == 0 and f"moved proxy.upstreams to providers in {config}" in result.stderr
+    expected = f"Success!\nMoved proxy.upstreams to providers in {config}"
+    assert result.returncode == 0 and expected in result.stderr
     assert saved["providers"] == {"a": upstream} and "upstreams" not in saved["proxy"]
     assert (config.parent / "config.json.bak").read_text(encoding="utf-8") == original
     assert stat.S_IMODE(config.stat().st_mode) == 0o600
+
+
+def test_cli_help_uses_imperative_phrases_and_documents_every_plugin_option(tmp_path, free_port, serving):
+    path = _home(tmp_path, "nova", port=free_port(), plugins={"relay": {}})
+    with serving(path):
+        root = _cli(tmp_path, "--help")
+        provider_help = _cli(tmp_path, "provider", "--help")
+        manifest = httpx.get(f"http://127.0.0.1:{json.loads(path.read_text())['port']}/cli/v1/commands").json()
+        groups = manifest["groups"]
+        commands = manifest["commands"]
+        relay_help = _cli(tmp_path, "relay", "--help")
+        speak_help = _cli(tmp_path, "relay", "speak", "--help")
+        poll_help = _cli(tmp_path, "proactive", "poll", "--help")
+        ack_help = _cli(tmp_path, "proactive", "ack", "--help")
+        memo_help = _cli(tmp_path, "memo", "list", "--help")
+        evergreen_help = _cli(tmp_path, "evergreen", "remember", "--help")
+    assert root.returncode == 0 and provider_help.returncode == 0
+    for line in re.findall(r"^  [^-\s]\S*\s{2,}(.+)$", root.stdout + provider_help.stdout, re.MULTILINE):
+        assert not line.endswith("."), line
+    for name, text in groups.items():
+        assert text and not text.endswith("."), (name, text)
+    for spec in commands:
+        label = f"{spec['group']} {spec['name']}".strip()
+        assert spec["help"] and not spec["help"].endswith("."), (label, spec["help"])
+        for param in spec["args"]:
+            if param["option"]:
+                assert param["help"] and param["help"].endswith("."), (label, param["name"], param["help"])
+    assert relay_help.returncode == 0 and "Reach connected devices" in relay_help.stdout
+    assert "their other devices" not in relay_help.stdout and "spawn_status" not in relay_help.stdout
+    assert speak_help.returncode == 0 and "irodori-emoji" not in speak_help.stdout
+    assert "<local_time>" not in speak_help.stdout and "--device" in speak_help.stdout
+    assert poll_help.returncode == 0 and "Consumer name leasing the events." in poll_help.stdout
+    assert ack_help.returncode == 0 and "Failure reason when outcome is failed." in ack_help.stdout
+    assert memo_help.returncode == 0 and "Which memos to list." in memo_help.stdout
+    assert evergreen_help.returncode == 0 and "Priority from 0 to 100." in evergreen_help.stdout

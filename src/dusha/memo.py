@@ -12,6 +12,7 @@ from .config import MemoConfig
 from .database import Database
 from .hooks import Block, ContextRequest, render
 from .interfaces import GatewayInput, call, errors
+from .resources import Bounds
 from .serialization import safe_json
 from .timeutil import isoformat, utc_now
 
@@ -43,6 +44,7 @@ class MemoDoneInput(GatewayInput):
 
 class MemoStore:
     name = name
+    LIST = Bounds(default=20, low=1, high=500)
 
     def __init__(self, database: Database, config: MemoConfig, prompts: dict[str, Any]):
         self.database = database
@@ -62,9 +64,9 @@ class MemoStore:
             row = db.execute("SELECT * FROM memo_notes WHERE id=?", (cursor.lastrowid,)).fetchone()
         return dict(row)
 
-    def list(self, status: str = "active", limit: int = 20) -> list[dict[str, Any]]:
+    def list(self, status: str = "active", limit: int = LIST.default) -> list[dict[str, Any]]:
         state = self._validate_status(status)
-        capped = max(1, min(int(limit), 500))
+        capped = self.LIST.clamp(limit)
         with self.database.connect() as db:
             rows = db.execute(
                 """SELECT * FROM memo_notes
@@ -152,7 +154,10 @@ def _routes(router: APIRouter, store: MemoStore) -> None:
         response_model=_schema.MemosEnvelope,
         responses=errors(422, 503),
     )
-    async def memo_list(status: str = "active", limit: int = Query(20, ge=1, le=500)) -> dict[str, Any]:
+    async def memo_list(
+        status: str = "active",
+        limit: int = Query(MemoStore.LIST.default, ge=MemoStore.LIST.low, le=MemoStore.LIST.high),
+    ) -> dict[str, Any]:
         return {"memos": await call(store.list, status=status, limit=limit, errors=(ValueError,))}
 
     @router.post(
@@ -170,15 +175,15 @@ def _routes(router: APIRouter, store: MemoStore) -> None:
 
 
 def _commands(cli: Any, store: MemoStore) -> None:
-    memo = cli.group("memo", "Manage agent memos")
+    memo = cli.group("memo", "Manage memos")
     memo.command("add", lambda text: {"memo": store.add(text)}, help="Add a memo", args=[arg("text")])
     memo.command(
         "list",
         lambda status, limit: {"memos": store.list(status, limit)},
         help="List memos, oldest first",
         args=[
-            option("status", choices=("active", "archived"), default="active"),
-            option("limit", int, default=20),
+            option("status", choices=("active", "archived"), default="active", help="Which memos to list."),
+            option("limit", int, default=MemoStore.LIST.default, help="Maximum number of memos."),
         ],
     )
     memo.command(
@@ -202,7 +207,7 @@ def _tools(mcp: Any, store: MemoStore) -> None:
         help="List memos, oldest first.",
         args=[
             option("status", choices=("active", "archived"), default="active", help="Which memos to list."),
-            option("limit", int, default=20, help="Maximum number of memos."),
+            option("limit", int, default=MemoStore.LIST.default, help="Maximum number of memos."),
         ],
     )
     mcp.tool(

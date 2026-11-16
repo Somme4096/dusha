@@ -15,6 +15,7 @@ from .config import MemoryConfig
 from .database import Database
 from .hooks import Block, ContextRequest
 from .interfaces import GatewayInput, call, errors
+from .resources import Bounds
 from .serialization import compact_json
 from .timeutil import isoformat, parse_time, utc_now
 
@@ -47,6 +48,8 @@ class StoredMessage:
 
 
 class MemoryStore:
+    SEARCH = Bounds(default=8, low=1, high=50)
+    CONTEXT = Bounds(default=1, low=0, high=10)
 
     def __init__(self, database: Database):
         self.database = database
@@ -140,11 +143,45 @@ class MemoryStore:
             ).fetchone()
             return int(row["id"]) if row else None
 
-    def context(self, message_id: int, radius: int = 1) -> list[dict[str, Any]]:
+    def exists(self, message_id: int) -> bool:
+        with self.database.connect() as db:
+            row = db.execute("SELECT 1 FROM messages WHERE id=?", (message_id,)).fetchone()
+        return row is not None
+
+    def route(self, harness: str, external_id: str) -> dict[str, Any] | None:
+        with self.database.connect() as db:
+            row = db.execute(
+                """SELECT * FROM conversations
+                   WHERE harness=? AND external_id=? AND route != ''""",
+                (harness, external_id),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def route_by_id(self, conversation_id: int) -> dict[str, Any] | None:
+        with self.database.connect() as db:
+            row = db.execute("SELECT * FROM conversations WHERE id=?", (conversation_id,)).fetchone()
+        return dict(row) if row else None
+
+    def latest_route(self, harness: str = "") -> dict[str, Any] | None:
+        clause = "WHERE route != ''"
+        args: list[str] = []
+        if harness:
+            clause += " AND harness=?"
+            args.append(harness)
+        with self.database.connect() as db:
+            row = db.execute(
+                f"""SELECT id, harness, external_id, route
+                    FROM conversations {clause}
+                    ORDER BY updated_at DESC, id DESC LIMIT 1""",
+                args,
+            ).fetchone()
+        return dict(row) if row else None
+
+    def context(self, message_id: int, radius: int = CONTEXT.default) -> list[dict[str, Any]]:
         message = self.get(message_id)
         if not message:
             return []
-        return self._surrounding(message["conversation_id"], message_id, max(0, min(radius, 10)))
+        return self._surrounding(message["conversation_id"], message_id, self.CONTEXT.clamp(radius))
 
     def recent(
         self,
@@ -184,10 +221,12 @@ class MemoryStore:
     def search(
         self,
         query: str,
-        limit: int = 8,
-        context_messages: int = 1,
+        limit: int = SEARCH.default,
+        context_messages: int = CONTEXT.default,
         exclude_ids: set[int] | None = None,
     ) -> list[dict[str, Any]]:
+        limit = self.SEARCH.clamp(limit)
+        context_messages = self.CONTEXT.clamp(context_messages)
         exclude_ids = exclude_ids or set()
         rows = self._lexical_candidates(query, limit + len(exclude_ids) + 8)
         rows = [row for row in rows if int(row["id"]) not in exclude_ids][:limit]
@@ -292,8 +331,8 @@ inject = ("messages", "prompts", "api", "cli", "mcp")
 
 class SearchInput(GatewayInput):
     query: str
-    limit: int = 8
-    context_messages: int = 1
+    limit: int = MemoryStore.SEARCH.default
+    context_messages: int = MemoryStore.CONTEXT.default
 
 
 def _record(message: dict[str, Any], source: str) -> dict[str, Any]:
@@ -356,12 +395,7 @@ def _routes(router: APIRouter, store: MemoryStore) -> None:
         responses=errors(503),
     )
     async def search_memory(body: SearchInput) -> dict[str, Any]:
-        results = await call(
-            store.search,
-            body.query,
-            max(1, min(body.limit, 50)),
-            max(0, min(body.context_messages, 10)),
-        )
+        results = await call(store.search, body.query, body.limit, body.context_messages)
         return {"results": results}
 
     @router.get(
@@ -371,7 +405,12 @@ def _routes(router: APIRouter, store: MemoryStore) -> None:
         responses=errors(404, 503),
     )
     async def memory_context(
-        message_id: int, context_messages: int = Query(1, ge=0, le=10)
+        message_id: int,
+        context_messages: int = Query(
+            MemoryStore.CONTEXT.default,
+            ge=MemoryStore.CONTEXT.low,
+            le=MemoryStore.CONTEXT.high,
+        ),
     ) -> dict[str, Any]:
         messages = await call(store.context, message_id, context_messages)
         if not messages:
@@ -380,12 +419,15 @@ def _routes(router: APIRouter, store: MemoryStore) -> None:
 
 
 def _commands(cli: Any, store: MemoryStore) -> None:
-    memory = cli.group("memory", "Inspect default memory store")
+    memory = cli.group("memory", "Inspect memory store")
     memory.command(
         "search",
         lambda query, limit: {"results": store.search(query, limit)},
         help="Search the archive",
-        args=[arg("query"), option("limit", int, default=8)],
+        args=[
+            arg("query"),
+            option("limit", int, default=MemoryStore.SEARCH.default, help="Maximum number of hits."),
+        ],
     )
     memory.command(
         "show",
@@ -397,7 +439,7 @@ def _commands(cli: Any, store: MemoryStore) -> None:
         "recent",
         lambda limit: {"messages": store.recent(limit=limit)},
         help="Show the latest messages",
-        args=[option("limit", int, default=20)],
+        args=[option("limit", int, default=20, help="Maximum number of messages.")],
     )
     memory.command("reindex", lambda: _reindex(store), help="Rebuild the search index")
 
@@ -406,13 +448,18 @@ def _tools(mcp: Any, store: MemoryStore) -> None:
     mcp.tool(
         "memory_search",
         lambda query, limit, context_messages: {
-            "results": store.search(query, max(1, min(limit, 50)), max(0, min(context_messages, 10)))
+            "results": store.search(query, limit, context_messages)
         },
         help="Search the companion's conversation archive for past exchanges.",
         args=[
             arg("query", help="Search text."),
-            option("limit", int, default=8, help="Maximum number of hits."),
-            option("context_messages", int, default=1, help="Neighbor messages to include with each hit."),
+            option("limit", int, default=MemoryStore.SEARCH.default, help="Maximum number of hits."),
+            option(
+                "context_messages",
+                int,
+                default=MemoryStore.CONTEXT.default,
+                help="Neighbor messages to include with each hit.",
+            ),
         ],
     )
     mcp.tool(
@@ -421,14 +468,19 @@ def _tools(mcp: Any, store: MemoryStore) -> None:
         help="Read one archived message with its neighbors.",
         args=[
             arg("message_id", int, help="Message id from a search hit."),
-            option("context_messages", int, default=1, help="Neighbor messages on each side."),
+            option(
+                "context_messages",
+                int,
+                default=MemoryStore.CONTEXT.default,
+                help="Neighbor messages on each side.",
+            ),
         ],
         not_found="memory record not found",
     )
 
 
 def _context(store: MemoryStore, message_id: int, context_messages: int) -> dict[str, Any]:
-    messages = store.context(message_id, max(0, min(context_messages, 10)))
+    messages = store.context(message_id, context_messages)
     if not messages:
         raise KeyError(message_id)
     return {"messages": messages}
