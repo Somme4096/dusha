@@ -5,3 +5,11 @@
 - Write E2E tests only, no unit tests. 
 - Commit all completed task changes using semantic commits (`type(scope): summary`, such as `refactor(api): unify error handling`), exclude unrelated edits and secrets.
 - Do NOT EVER use SHA-256 check for ANYTHING unless user explicitly stated so.
+
+## CLI writing convention
+
+- Format status, warning, and error output in two lines, a bold colored headline (`Success!`, `Warning!`, or `Error!`) followed by sentence-case, period-terminated body lines with manual line breaks.
+- Emit one `Success!` header per completed operation or setup phase, placing each outcome or follow-up hint on its own line.
+- Write command and group `--help` descriptions as short imperative phrases without a trailing period, and keep CLI `help=` separate from companion MCP tool prompts.
+- Document every CLI option with sentence-case `help=` text ending in a period.
+- Use consistent CLI terminology (`companion`, `proxy`, `server`, `provider`, `profile`), avoid aliases like `client proxy` or `agent`, and use regular English verbs such as `Specify a companion` or `Add a provider` instead of `Name a ...`.
