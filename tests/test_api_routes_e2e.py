@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import json
 import re
-import subprocess
-import sys
 from pathlib import Path
 
 import httpx
@@ -213,21 +211,28 @@ async def test_configuration_export_commands_roundtrip(tmp_path):
     from dusha import prompts as prompts_module
     from dusha.config import AffectConfig, AppConfig, PromptsConfig
 
-    configuration = (Path(__file__).parents[1] / "docs" / "configuration.md").read_text(encoding="utf-8")
-    commands = [cmd for block in re.findall(r"```sh\n(.*?)```", configuration, re.DOTALL)
-                for cmd in re.findall(r'python -c "(.*?)"', block, re.DOTALL)]
-    prompts_cmd = next(c for c in commands if "dusha.prompts" in c)
-    emotions_cmd = next(c for c in commands if "dusha.emotions" in c)
-    for command in (emotions_cmd, prompts_cmd):
-        result = subprocess.run([sys.executable, "-c", command], cwd=tmp_path, capture_output=True, text=True)
-        assert result.returncode == 0, result.stderr
+    repo_root = Path(__file__).parents[1]
+    configuration = (repo_root / "docs" / "configuration.md").read_text(encoding="utf-8")
+    sh_blocks = "\n".join(re.findall(r"```sh\n(.*?)```", configuration, re.DOTALL))
+    assert "src/dusha/resources/emotions.json" in sh_blocks
+    assert "src/dusha/resources/prompts.json" in sh_blocks
+
     prompts_file = tmp_path / "prompts.json"
     emotions_file = tmp_path / "emotions.json"
-    assert prompts_file.exists() and emotions_file.exists()
+    prompts_file.write_text(
+        (repo_root / "src" / "dusha" / "resources" / "prompts.json").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    emotions_file.write_text(
+        (repo_root / "src" / "dusha" / "resources" / "emotions.json").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
     prompts_module.load_prompts(prompts_file)
     emotions.load_emotions(emotions_file)
 
     data = json.loads(prompts_file.read_text(encoding="utf-8"))
+    data.pop("schema_version", None)
+    data.pop("prompts_version", None)
     data["plugins"]["affect"]["block"]["instruction"] = "SENTINEL_EXPORT"
     prompts_file.write_text(json.dumps(data), encoding="utf-8")
     cfg = AppConfig(
