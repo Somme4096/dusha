@@ -1,87 +1,91 @@
 # Configuration
 
-Each companion reads one `config.json` from its home directory. `dusha companion add <name>` writes the file:
+Each companion reads a single `config.json` from its home directory (`~/.config/dusha/<name>/config.json` by default). 
 
-```sh
-dusha companion add <name>
-${EDITOR:-vi} ~/.config/dusha/<name>/config.json
-```
+General rules:
 
-The server keys match [config.example.json](../config.example.json), and the `proxy` section points at that server. The mode is `600`, readable only by you. Omit a key to keep its default. Restart the service after an edit.
-
-`dusha companion add <name> --serve` writes only the server keys, and `--proxy` only the `proxy` section. `--proxy` asks which server to use in a terminal, or takes `--server-url` and `--token`. Run `dusha companion update <name>` on an existing home to add a missing section, update `--server-url` or `--token`, or upgrade files in an [old layout](guide.md#migrating) while keeping `<file>.bak`. Run `dusha companion remove <name>` (with confirmation, or `--yes` without a terminal) to delete a companion home. `dusha serve <name>` and `dusha proxy <name>` read the initialized file and do not create it on their own.
-
-## Which file loads
-
-A companion home is `$XDG_CONFIG_HOME/dusha/<name>/`, or `~/.config/dusha/<name>/` when `XDG_CONFIG_HOME` is unset. `dusha serve`, `dusha proxy`, and every other command take the first match:
-
-1. `--config PATH`. The file's directory becomes the home.
-2. `--home DIR`
-3. `--companion NAME` (`-c NAME`), or the name after `dusha companion {add|update|remove}`, `dusha serve`, `dusha proxy`, `dusha provider`, or `dusha plugin list`
-4. `DUSHA_HOME`
-5. `DUSHA_COMPANION`
-6. The single companion under the config root
-7. Packaged defaults, when no companion exists. `dusha serve`, `dusha proxy`, and `dusha provider` need an initialized companion instead.
-
-Startup fails when several companions exist and you select none, or when the selected home has no `config.json`. A name holds letters, digits, dots, dashes, and underscores. Only `dusha companion add <name>` writes a new file.
-
-Every command other than `companion`, `serve`, `proxy`, and `provider` talks to the companion's server over HTTP. It takes `proxy.server` from the selected file, and when `proxy.server.url` is empty, the server keys of the same file: `host`, `port`, and `api_token`.
-
-Rules for the file:
-
-- Plain JSON. The parser rejects comments, unknown keys, duplicate keys, wrong types, and out-of-range numbers.
-- Relative paths resolve against the config file's directory.
+- **Strict JSON**: Comments, trailing commas, unknown keys, duplicate keys, wrong value types, and out-of-range numbers fail startup.
+- **Defaults**: Omit any key to keep its packaged default.
+- **Relative paths**: Paths in `config.json`  resolve relative to the directory containing `config.json`.
+- **Permissions**: Keep `config.json` at mode `600` whenever it stores tokens or API keys.
+- **Reload after change**: Restart `dusha serve` and `dusha proxy` after editing configuration files.
 
 ## Server
 
-| Key | Default | Notes |
+Top-level keys configure `dusha serve`:
+
+| Key | Default | Description |
 | --- | --- | --- |
-| `host` | `127.0.0.1` | |
-| `port` | `8765` | |
-| `data_dir` | `data` | Holds `state.sqlite3`. |
-| `timezone` | `Asia/Taipei` | IANA zone for quiet hours and the daily limit. |
-| `api_token` | `""` | The API token. Empty turns auth off. See [Auth](guide.md#auth). |
-
-The `DUSHA_HOST` environment variable overrides `host` for one `dusha serve` run, so a container can bind all interfaces. The proxy ignores it and keeps its loopback rule.
-
-`upstream` and `api_openai` moved to [providers](#providers). Startup rejects them.
+| `host` | `"127.0.0.1"` | Bind address for the HTTP server. Overridden by the `DUSHA_HOST`.|
+| `port` | `8765` | TCP port (`1` to `65535`). |
+| `data_dir` | `"data"` | Directory storing `state.sqlite3`, `outbox.sqlite3`, `cli-manifest.json`, and (optional) `plugins/<name>/`. |
+| `timezone` | `"Asia/Taipei"` | IANA timezone used for plugins and message timestamp. |
+| `api_token` | `""` | Shared secret token for `/state/v1/*`, `/cli/v1/*`, `/mcp`, and proxy requests. Empty disables authentication, see [guide.md](guide.md#auth). |
+| `plugins_dir` | `""` | Directory containing [external plugins](#external-plugins). Empty defaults to `plugins/` inside the companion home. Overridden by `DUSHA_PLUGINS_DIR`. |
+| `prompts.path` | `""` | Path to a [`prompts.json`](#promptsjson). Empty uses packaged prompts. |
 
 ## Proxy
 
-`dusha proxy <name>` reads the `proxy` section of the same `config.json`, and `dusha serve` ignores it. Run `dusha companion add <name> --proxy` first to save the server URL and token with mode `600`. Add your [providers](#providers) afterwards. On the server's own machine, `dusha companion update <name> --proxy` adds the section pointed at the local server.
+`dusha proxy` reads the `proxy` section from the same `config.json`:
 
-| Key | Default | Notes |
+| Key | Default | Description |
 | --- | --- | --- |
-| `proxy.host` | `127.0.0.1` | Must be a loopback address unless a server token is set. Without a token the proxy has no auth of its own. |
-| `proxy.port` | `8766` | |
-| `proxy.server.url` | `""` | The server's base URL. Empty, or the URL of the server in the same file, uses that server's `host`, `port`, and `api_token`. The other `dusha` commands use it too. |
-| `proxy.server.token` | `""` | The server's `api_token`. The file then holds a secret. The first run writes it with mode `600`, and a file you edit by hand needs `chmod 600`. |
-| `proxy.server.timeout_seconds` | `10` | |
+| `proxy.host` | `"127.0.0.1"` | Bind address for the proxy. Must be `127.0.0.1`, `::1`, or `localhost` unless a server token is configured. |
+| `proxy.port` | `8766` | TCP port (`1` to `65535`). |
+| `proxy.server.url` | `""` | Base URL of the Dusha server. When empty (or matching the local server in the same file), uses `host`, `port`, and `api_token` from the same `config.json`. Remote CLI commands use this connection as well. |
+| `proxy.server.token` | `""` | The server's `api_token`. Sent by the proxy and CLI as `X-Companion-Token`. |
+| `proxy.server.timeout_seconds` | `10` | HTTP timeout in seconds (`> 0`) for calls from the proxy or CLI to the server. |
 
 ## Providers
 
-`providers` holds the model providers of this machine, keyed by profile name. The proxy serves every one at `http://127.0.0.1:8766/<profile>`, and plugins on the server reach them through the `providers` service. Each machine keeps its own list. `dusha provider` (`--add`, `--remove`, `--list`) edits it, see [Provider commands](api.md#provider-commands).
+`providers` defines upstream model provider profiles, keyed by `<profile>`. Manage them with `dusha provider <name>` (see [guide.md](guide.md#managing-providers)) or edit `config.json` directly.
 
-| Key | Default | Notes |
+- The proxy exposes each profile at `http://127.0.0.1:8766/<profile>`.
+- Server plugins can access configured profiles through the `providers` service.
+- Profile names **CAN** contain letters, digits, dots, dashes, and underscores, but **CAN NOT** be `health`.
+
+```json
+{
+  "providers": {
+    "openai": {
+      "base_url": "https://api.openai.com/v1",
+      "key": "{env:OPENAI_API_KEY}"
+    },
+    "opencode-go": {
+      "base_url": "https://opencode.ai/inference/go/openai/v1",
+      "endpoints": {
+        "messages": "https://opencode.ai/inference/go/anthropic/v1"
+      },
+      "key": "{env:OPENCODE_API_KEY}",
+      "auth": "bearer",
+      "headers": {
+        "x-opencode-session": "{conversation_id}"
+      }
+    }
+  }
+}
+```
+
+| Key | Default | Description |
 | --- | --- | --- |
-| `providers.<profile>.base_url` | | Provider base URL, exactly as the harness would use it. |
-| `providers.<profile>.headers` | `{}` | Headers set on every request. Values can hold `{conversation_id}`, the matched conversation's name, and `{env:NAME}`. A missing variable fails proxy startup. |
-| `providers.<profile>.timeout_seconds` | `120` | |
-| `providers.<profile>.key` | `""` | The provider key. The proxy always drops the harness's `authorization`, `x-api-key`, and `api-key` headers and sends this key itself, so the harness uses the Dusha token as its API key instead. Can hold `{env:NAME}`. The file then holds a secret, so keep it at mode `600`. |
-| `providers.<profile>.auth` | `bearer` | How `key` is sent: `bearer` as `Authorization: Bearer`, or `x-api-key`. |
-| `providers.<profile>.endpoints` | `{}` | A base URL per protocol, keyed `chat`, `messages`, or `responses`. A protocol it leaves out goes to `base_url`. |
-
-A profile name holds letters, digits, dots, dashes, and underscores, and cannot be `health`. `proxy.upstreams` from earlier releases still loads with a warning, see [Migrating](guide.md#migrating). See [Proxy](api.md#proxy) for how requests are routed.
+| `providers.<profile>.base_url` | *(required)* | Upstream `http://` or `https://` base URL without query parameters or embedded credentials. |
+| `providers.<profile>.endpoints` | `{}` | Optional per-protocol base URL overrides, keyed by `chat`, `messages`, or `responses`. Unlisted protocols use `base_url`. |
+| `providers.<profile>.key` | `""` | Upstream provider API key. Supports `{env:VAR_NAME}`. The proxy strips caller credential headers and sends this key instead. |
+| `providers.<profile>.auth` | `"bearer"` | Upstream authentication header format: `"bearer"` (`Authorization: Bearer <key>`) or `"x-api-key"` (`x-api-key: <key>`). |
+| `providers.<profile>.headers` | `{}` | Additional HTTP headers attached to every upstream request. Values support `{env:VAR_NAME}` and `{conversation_id}`. Missing environment variables fail proxy startup. |
+| `providers.<profile>.timeout_seconds` | `120` | Upstream request timeout in seconds (`> 0`). |
 
 ## Harnesses
 
-`harnesses` narrows the plugins that go into the context of one harness, keyed by harness name. A harness name holds letters, digits, dots, dashes, and underscores. The keys are the harness names the [proxy](api.md#headers) sends, which are `X-Harness`, a `<harness>:` prefix on the Dusha token, or the profile name.
+`harnesses` define per-harness context injection, keyed by harness name. To set a harness name, see [Connect a harness](guide.md#connect-a-harness).
 
-| Value | Meaning |
+Harness names **CAN** contain letters, digits, dots, dashes, and underscores.
+
+| Value | Effect |
 | --- | --- |
-| `["identity", "memory"]` | Include only the listed plugins. |
-| `{"include": ["identity", "memory"]}` | Same as the list. |
-| `{"exclude": ["ambient", "affect"]}` | Include every plugin except the listed ones. |
+| `["identity", "memory"]` | Inject only the listed plugins. |
+| `{"include": ["identity", "memory"]}` | Same as the array form. |
+| `{"exclude": ["ambient", "affect"]}` | Inject all active plugins except the listed ones. |
 
 ```json
 {
@@ -92,77 +96,162 @@ A profile name holds letters, digits, dots, dashes, and underscores, and cannot 
 }
 ```
 
-A request that sends `X-Companion-Plugins` overrides the rule for that turn. See [Build context](api.md#2-build-context).
+An explicit `X-Companion-Plugins` header or `plugins` field in `POST /state/v1/context` overrides the harness rule for that single request.
+
+## Embedding
+
+Optional. Setting both `embedding.base_url` and `embedding.model` enables semantic affect appraisal when no external `decide` plugin selects an emotion. Archive message search remains lexical (SQLite FTS5).
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `embedding.base_url` | `""` | OpenAI-compatible base URL. The server appends `/embeddings`. |
+| `embedding.api_key_env` | `"EMBEDDING_API_KEY"` | Environment variable name read for the Bearer token. |
+| `embedding.model` | `""` | Embedding model identifier. |
+| `embedding.dimensions` | `null` | Optional output vector dimension (`>= 1`) passed to the endpoint. |
+| `embedding.timeout_seconds` | `10` | Request timeout in seconds (`> 0`). |
+| `embedding.batch_size` | `32` | Maximum inputs per embedding request (`>= 1`). |
+| `embedding.failure_cooldown_seconds` | `60` | Seconds (`>= 0`) to pause semantic appraisal after an endpoint failure. |
 
 ## Plugins
 
-Every part of the companion is a plugin under `plugins`, keyed by name. The built-in plugins are `identity`, `memory`, `evergreen`, `memo`, `affect`, `proactive`, and `relay`. `relay` stays off until `plugins` lists it. See [plugins.md](plugins.md) for what each one does. Any other name is an [external plugin](#external-plugins), which lives in a directory under `plugins_dir` and is imported into the gateway process. Messages are always stored. 
+Every companion feature is a plugin configured under `plugins.<name>`. See [plugins.md](plugins.md) for details.
 
-> [!WARNING] 
-> Earlier releases called these mods, and the old `mods_dir` key and `DUSHA_MODS_DIR` variable are no longer accepted.
-
-- Plugins run in the order you list them, which is also the order of their blocks in the injection. Built-in plugins you leave out keep their packaged order ahead of the ones you list.
-- `"disabled": true` turns a plugin off and keeps the rest of its settings. A plugin that is off leaves the injection, its routes return `503`, and its commands disappear from `dusha --help`. Stored rows stay on disk.
-- A plugin that needs a service another plugin provides stays inactive while that plugin is off. `proactive` needs `affect`.
+- Only plugins listed under `plugins` in `config.json` are loaded (both built-in and external). 
+- Plugins run and inject their context blocks in the **EXACT** order they appear in `plugins`.
+- Remove a plugin from `plugins` to skip loading it altogether, or set `"disabled": true` inside `plugins.<name>` (or `"plugins": {"<name>": false}`) to turn it off while keeping its settings in `config.json`. 
+- Disabled plugins are excluded from context injection, their `/state/v1/<name>/*` routes return `503`, and their CLI commands are hidden, while existing database rows remain intact on disk.
+- A plugin whose required `inject` service is unavailable will be automatically disabled.
+  -  i.e., `proactive` requires `affect`. Without `affect`, `proactive` will be disabled even with configuration set and `"disabled": false`.
 
 ```json
 {
   "plugins": {
     "memo": {"disabled": true},
+    "relay": {"token": "device-secret"},
     "system_one": {"options": {"base_url": "http://127.0.0.1:8000"}}
   }
 }
 ```
 
-## Identity, emotions, and prompts
+### `identity`
 
-| Key | Default | Notes |
+| Key | Default | Description |
 | --- | --- | --- |
-| `plugins.identity.path` | unset | Markdown file. The service prepends it verbatim to every context. Leave the key out to use `identity.md` next to `config.json`, when that file exists. An empty value fails startup unless `plugins.identity.disabled` is `true`. |
-| `plugins.affect.emotions.path` | `""` | Custom emotions file. Empty uses the packaged one. |
-| `plugins.affect.emotions.expected_version` | `""` | Startup fails unless the file's `emotion_version` matches. Empty accepts any version. |
-| `prompts.path` | `""` | Overlay for the packaged prompt text. |
+| `plugins.identity.path` | *(unset)* | Path to a UTF-8 Markdown file prepended verbatim to every context build. Omit `path` to use `identity.md` in the companion home when present. Setting `"path": ""` fails startup unless `"disabled": true` is set. |
 
-A path that points at a missing file fails startup.
+### `memory`
 
-Export the packaged files, then edit the copies:
+| Key | Default | Description |
+| --- | --- | --- |
+| `plugins.memory.recent_messages` | `8` | Number of recent conversation messages (`>= 0`) included in context when `include_recent` is `true`. |
+| `plugins.memory.search_hits` | `4` | Maximum lexical search hits (`>= 0`) included in each context build. |
+| `plugins.memory.context_messages` | `1` | Neighboring messages (`>= 0`) included before and after each search hit. |
+
+### `evergreen`
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `plugins.evergreen.max_items` | `32` | Maximum active facts (`>= 0`) injected into context, ordered by priority. |
+| `plugins.evergreen.max_chars` | `4000` | Maximum character budget (`>= 0`) for the `<evergreen_facts>` block. |
+
+### `memo`
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `plugins.memo.max_items` | `10` | Maximum active memos (`0` to `500`) injected into context, oldest first. |
+| `plugins.memo.max_chars` | `2000` | Maximum character budget (`>= 0`) for the `<memo_notes>` block. |
+| `plugins.memo.text_max_chars` | `4000` | Maximum characters (`>= 1`) accepted when creating a memo. |
+| `plugins.memo.reason_max_chars` | `1000` | Maximum characters (`>= 1`) accepted when archiving a memo. |
+
+### `affect`
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `plugins.affect.emotions.path` | `""` | Path to a custom [`emotions.json`](#emotionsjson) file. Empty uses the packaged file. |
+| `plugins.affect.emotions.expected_version` | `""` | Required `emotion_version` string in the emotions file. Empty accepts any version. |
+| `plugins.affect.increment` | `null` | Overrides `decision.increment` (`> 0`). Per-dimension `increment` values still take precedence. |
+| `plugins.affect.mood_follow_hours` | `12.0` | Overrides `affect.mood_follow_hours` (`> 0`). |
+| `plugins.affect.mood_return_hours` | `72.0` | Overrides `affect.mood_return_hours` (`> 0`). |
+| `plugins.affect.dimensions` | `{}` | Per-dimension overrides for existing dimensions (`neutral`, `floor`, `tau`, `increment`). |
+| `plugins.affect.silence` | `{}` | Per-dimension overrides for `silence.rules` (`rate_per_hour`, `cap`, `gate_hours`). |
+
+### `proactive`
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `plugins.proactive.poll_interval_seconds` | `60` | Background evaluation interval in seconds (`>= 1`). |
+| `plugins.proactive.min_silence_minutes` | `180` | Minimum minutes (`>= 0`) since the last user message before a proactive event can trigger. |
+| `plugins.proactive.cooldown_minutes` | `360` | Minimum minutes (`>= 0`) between proactive sends. |
+| `plugins.proactive.max_per_day` | `2` | Maximum proactive messages (`>= 0`) sent per local calendar day in `timezone`. |
+| `plugins.proactive.max_unanswered` | `2` | Maximum consecutive unanswered proactive messages (`>= 0`) before evaluation pauses. |
+| `plugins.proactive.quiet_start_hour` | `1` | Local hour (`0` to `23`) when quiet hours begin. |
+| `plugins.proactive.quiet_end_hour` | `8` | Local hour (`0` to `23`) when quiet hours end. |
+| `plugins.proactive.lease_seconds` | `120` | Seconds (`>= 1`) a polled event stays leased to a consumer before returning to pending. |
+| `plugins.proactive.retry_delay_minutes` | `15` | Minutes (`>= 0`) to wait before re-queuing an event acknowledged as `failed`. |
+| `plugins.proactive.thresholds` | `{}` | Overrides trigger thresholds in `emotions.json`, keyed by dimension name. |
+| `plugins.proactive.target` | `"latest"` | Target conversation for proactive events: `"latest"`, `{"harness": "<name>"}`, or `{"harness": "<name>", "conversation_id": "<id>"}`. |
+
+### `relay`
+
+`relay` is opt-in. Include `"relay": {}` (or set any key below) under `plugins` to enable it.
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `plugins.relay.token` | `""` | Shared `X-Companion-Token` sent to remote device servers. |
+| `plugins.relay.tokens` | `{}` | Per-device tokens keyed by device name, overriding `token`. |
+| `plugins.relay.timeout_seconds` | `60` | HTTP request timeout in seconds (`> 0`) for device calls. |
+| `plugins.relay.mirror_proactive` | `true` | Mirror sent proactive messages as notifications on the active device. |
+| `plugins.relay.mirror_title` | `"dusha"` | Notification title used when mirroring proactive messages. |
+| `plugins.relay.mirror_voice` | `false` | Read mirrored proactive messages aloud on the active device. |
+| `plugins.relay.spawn_timeout_seconds` | `1800` | Timeout in seconds (`> 0`) for spawned coding agents. |
+| `plugins.relay.spawn_poll_seconds` | `2` | Poll interval in seconds (`> 0`) for `spawn_wait`. |
+| `plugins.relay.speak_order` | `["presence", "discord"]` | Delivery route priority when `speak` is called with `device: "auto"`. Allowed entries: `"presence"`, `"discord"`. |
+| `plugins.relay.speak_route` | `""` | Fixed Discord route for voice clips. Empty uses the latest conversation route. |
+| `plugins.relay.speak_timeout_seconds` | `180` | Timeout in seconds (`> 0`) for TTS synthesis and playback. |
+| `plugins.relay.speak_help` | `""` | Custom description replacing the default `speak` MCP tool prompt. |
+
+### External plugins
+
+Any key under `plugins` that is not a built-in plugin name loads the external plugin directory `<plugins_dir>/<name>/`. The directory name must start with a letter or underscore and contain only letters, digits, and underscores. See [plugins.md](plugins.md#make-your-own-plugin) for creating external plugins.
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `plugins.<name>.disabled` | `false` | Disable the plugin when `true`. |
+| `plugins.<name>.options` | `{}` | Arbitrary JSON object passed as `config` to the plugin's `apply(ctx, config)` function. |
+
+> [!WARNING]
+> External plugins execute inside the `dusha serve` Python process with full server permissions. Only load plugins you trust.
+
+## `emotions.json`
+
+The default `affect` plugin loads its emotion dimensions, decay constants, silence rules, and proactive triggers from [`src/dusha/resources/emotions.json`](../src/dusha/resources/emotions.json) (16 dimensions by default).
+
+To inspect and/or customize the full file, download the default emotions.json, and set `plugins.affect.emotions.path` in `config.json`:
 
 ```sh
-python -c "import json, dusha.emotions as e; json.dump(e.default_emotions(), open('emotions.json','w'), ensure_ascii=False, indent=2)"
-python -c "import json, dusha.prompts as p; d=p.default_prompts(); d.pop('schema_version'); d.pop('prompts_version'); json.dump(d, open('prompts.json','w'), ensure_ascii=False, indent=2)"
+curl -fsSL -O https://raw.githubusercontent.com/Somme4096/dusha/main/src/dusha/resources/emotions.json
 ```
 
-```json
-{
-  "plugins": {
-    "identity": {"path": "identity.md"},
-    "affect": {"emotions": {"path": "emotions.json", "expected_version": "0.4.0"}}
-  },
-  "prompts": {"path": "prompts.json"}
-}
-```
-
-### emotions.json
-
-The file defines the emotion dimensions and the rules that name them. Rename, add, or remove dimensions as you like. By default, it comes with 16 emotions. See the packaged [emotions.json](https://github.com/Somme4096/dusha/blob/main/src/dusha/resources/emotions.json).
-
-| Section | Controls |
+| Section | Description |
 | --- | --- |
-| `value_range` | `min` and `max` for every value. |
-| `dimensions` | One entry per dimension: `neutral`, `floor`, `tau` in hours, plus optional `description` and `increment`. |
-| `decision` | `increment`, the step added to the dimension a decision picks. |
-| `negative_dimensions` | Dimensions a negative delta cannot pull below the current mood. |
-| `silence.rules` | Drift while the user stays silent, keyed by dimension: `rate_per_hour`, `cap`, optional `gate_hours`. |
-| `proactive_sent_deltas` | Deltas applied after a proactive message goes out. |
-| `impact_scale`, `mood_follow_gain`, `affect` | Delta strength and mood timing. |
-| `prompt` | Feelings shown on the Affect line: `top_n`, `deviation_threshold`, `level_high`, `level_elevated`, `always_show`. |
-| `proactive.triggers` | Ordered list of `dimension`, `threshold`, and `reason`. The first trigger at or above its threshold starts a proactive message. |
-| `appraisal` | Prototype sentences for [embedding](#embedding) appraisal: `prototypes`, `min_similarity`, `fallback_label`. |
+| `schema_version` | Must be `3`. |
+| `emotion_version` | Non-empty version string checked against `plugins.affect.emotions.expected_version`. |
+| `value_range` | Global `min` and `max` bounds for all emotion values (`min < max`). |
+| `dimensions` | Map of dimension names to `{neutral, floor, tau, description?, increment?}` (`floor <= neutral`, `tau > 0` in hours). |
+| `decision` | `{"increment": <float>}`, the default step added when a decision selects a dimension. |
+| `negative_dimensions` | Array of dimension names that negative deltas cannot push below their current `mood`. |
+| `silence.rules` | Drift rules during user silence, keyed by dimension: `{rate_per_hour, cap, gate_hours?}`. |
+| `proactive_sent_deltas` | Map of dimension deltas applied immediately after a proactive message is sent. |
+| `impact_scale` | Positive multiplier applied to incoming `deltas`. |
+| `mood_follow_gain` | `{min, max, factor}` controlling how fast `mood` tracks `base`. |
+| `affect` | `{mood_follow_hours, mood_return_hours}` time constants (`> 0`). |
+| `prompt` | Controls which feelings appear on the injected Affect line: `{top_n, deviation_threshold, level_high, level_elevated, always_show}`. |
+| `proactive.triggers` | Ordered list of `{dimension, threshold, reason}`. The first trigger at or above `threshold` initiates a proactive event. |
+| `appraisal` | Semantic appraisal settings used when [`embedding`](#embedding) is enabled: `{min_similarity, fallback_label, prototypes}`. |
 
+### Override in `config.json`
 
-#### Overrides in config.json
-
-Patch single values without a custom emotions file:
+You can patch individual parameters in `config.json` under [`plugins.affect`](#affect) and [`plugins.proactive.thresholds`](#proactive) without maintaining a separate `emotions.json` file:
 
 ```json
 {
@@ -172,151 +261,84 @@ Patch single values without a custom emotions file:
       "mood_return_hours": 72,
       "increment": 0.1,
       "dimensions": {"fear": {"neutral": 0.05}},
-      "silence": {"longing": {"rate_per_hour": 0.02}}
+      "silence": {"longing": {"rate_per_hour": 0.02, "cap": 0.5}}
     },
-    "proactive": {"thresholds": {"longing": 0.4}}
+    "proactive": {
+      "thresholds": {"longing": 0.4}
+    }
   }
 }
 ```
 
-| Key | Patches |
-| --- | --- |
-| `plugins.affect.increment` | `decision.increment`, the step a decision adds. A per-dimension `increment` still wins. |
-| `plugins.affect.dimensions` | `neutral`, `floor`, `tau`, or `increment` of an existing dimension. |
-| `plugins.affect.silence` | A silence rule. An existing dimension without a rule gets one if you set both `rate_per_hour` and `cap`. |
-| `plugins.affect.mood_follow_hours`, `plugins.affect.mood_return_hours` | `affect.mood_follow_hours` and `affect.mood_return_hours`. |
-| `plugins.proactive.thresholds` | The trigger threshold for that dimension. The dimension needs a trigger in the file. |
+### Precedence for affect overrides
 
-An override beats `plugins.affect.emotions.path`, and that file beats the packaged one.
+Precedence from highest to lowest:
 
-### prompts.json
+1. `config.json` overrides (`plugins.affect.*` and `plugins.proactive.thresholds`)
+2. Custom file at `plugins.affect.emotions.path`
+3. Packaged `emotions.json`
 
-`companion_state` holds the delimiters of the state block. Every other slot lives under `plugins`, keyed by plugin name:
+## `prompts.json`
+
+All prompts and XML-style block delimiters can be configured in [`src/dusha/resources/prompts.json`](../src/dusha/resources/prompts.json). This includes both built-in plugins. External plugins are not required to follow this convention, but they are strongly encouraged to do so. To override specific slots, set `prompts.path` in `config.json` to another JSON file.
+
+> [!NOTE]
+> Prompt overrides for disabled or unconfigured plugins **CAN** remain in `prompts.json`.
+
+You may download default prompts.json for built-in plugins as a reference:
+
+```sh
+curl -fsSL -O https://raw.githubusercontent.com/Somme4096/dusha/main/src/dusha/resources/prompts.json
+```
+
+Remove `schema_version` and `prompts_version` when using the file as an overlay, and include only the slots you want to replace:
 
 ```json
 {
-  "companion_state": {"open_delimiter": "<companion_state>\n", "close_delimiter": "\n</companion_state>"},
+  "companion_state": {
+    "open_delimiter": "<companion_state>\n",
+    "close_delimiter": "\n</companion_state>"
+  },
   "plugins": {
-    "affect": {"decision_instruction": "Pick the one feeling the message stirs."},
-    "memo": {"open_delimiter": "<memo_notes>", "close_delimiter": "</memo_notes>"}
+    "affect": {
+      "decision_instruction": "Pick the single emotion the message stirs."
+    },
+    "memo": {
+      "open_delimiter": "<memo_notes>",
+      "close_delimiter": "</memo_notes>"
+    }
   }
 }
 ```
 
-The overlay replaces `companion_state` whole, and each `plugins.<name>.<slot>` on its own. A slot you include must carry every key of that slot. Omitted slots keep the packaged text. A plugin name must be built-in or listed under [`plugins`](#plugins) in `config.json`.
+Overlay rules:
 
-| Slot | Holds |
+- `companion_state` and each `plugins.<name>.<slot>` are replaced as complete units.
+-  Any slot included in the overlay must contain all required keys of that slot.
+- Omitted slots keep their defaults.
+
+
+| Slot | Description |
 | --- | --- |
-| `memory.instruction` | Memory instruction in the state block. |
-| `evergreen.open_delimiter`, `evergreen.close_delimiter` | Delimiters for the fact block. |
-| `memo.open_delimiter`, `memo.close_delimiter` | Delimiters for the memo block. |
-| `affect.presentation` | Wording of the Affect line. |
-| `affect.block` | Delimiters and the instruction for the affect block. |
-| `affect.decision_instruction` | Selection criteria sent with every `decide` event. |
-| `proactive.framing` | `ruling`, `ladder`, `approach`, and `context_query` for proactive messages. |
-| `proactive.generation_instruction` | `base` plus `variants`. The gateway rotates one variant per send. |
+| `companion_state` | `{open_delimiter, close_delimiter}` wrapping the `<companion_state>` JSON block. |
+| `plugins.memory.instruction` | Instruction string placed in `<companion_state>` when `memory` is active. |
+| `plugins.evergreen` | `{open_delimiter, close_delimiter}` wrapping the `<evergreen_facts>` block. |
+| `plugins.memo` | `{open_delimiter, close_delimiter}` wrapping the `<memo_notes>` block. |
+| `plugins.affect.presentation` | `{prefix, separator, suffix, baseline, level_connector, level_high, level_elevated, level_noticeable}` formatting the Affect status line. |
+| `plugins.affect.block` | `{open_delimiter, close_delimiter, instruction}` wrapping the `<affect>` block. |
+| `plugins.affect.decision_instruction` | Prompt instruction passed to `decide` listeners. |
+| `plugins.proactive.framing` | `{ruling, ladder, approach, context_query}` used when assembling a proactive event. |
+| `plugins.proactive.generation_instruction` | `{base, variants}` instructions rotated across proactive events. |
 
-An external plugin reads its slots with `dusha.prompts.section(ctx.prompts, name, spec)` after injecting `prompts`, and keeps its own defaults for slots the overlay leaves out. A schema 3 overlay still loads with a warning, see [Migrating](guide.md#migrating).
+Template placeholders in `plugins.proactive.framing`:
 
-Placeholders in `proactive.framing`:
-
-- `ruling` accepts `{dimension}`, `{value}`, `{neutral}`, and `{deviation}`.
-- `approach` accepts `{variant}`.
-- `ladder` holds one line per unanswered count. The last line covers higher counts.
-- Write a literal brace as `{{` or `}}`. An unknown placeholder fails startup.
-
-## Memory and context
-
-Search is lexical and uses SQLite FTS5.
-
-| Key | Default | Notes |
-| --- | --- | --- |
-| `plugins.memory.recent_messages` | `8` | Recent messages in the injection. |
-| `plugins.memory.search_hits` | `4` | |
-| `plugins.memory.context_messages` | `1` | Neighbors added around each search hit. |
-| `plugins.evergreen.max_items` | `32` | |
-| `plugins.evergreen.max_chars` | `4000` | |
-| `plugins.memo.max_items` | `10` | Memos per injection. |
-| `plugins.memo.max_chars` | `2000` | Size of the memo block. |
-| `plugins.memo.text_max_chars` | `4000` | Longest memo the API accepts. |
-| `plugins.memo.reason_max_chars` | `1000` | Longest archive reason the API accepts. |
-
-## Embedding
-
-Optional. Set `base_url` and `model` to turn on semantic appraisal. The gateway compares each user message with the `appraisal` prototypes in `emotions.json` and moves the closest emotion. Search stays lexical.
-
-| Key | Default | Notes |
-| --- | --- | --- |
-| `embedding.base_url` | `""` | OpenAI-compatible endpoint. The gateway appends `/embeddings`. |
-| `embedding.api_key_env` | `EMBEDDING_API_KEY` | |
-| `embedding.model` | `""` | |
-| `embedding.dimensions` | `null` | Sent to the endpoint when set. |
-| `embedding.timeout_seconds` | `10` | |
-| `embedding.batch_size` | `32` | |
-| `embedding.failure_cooldown_seconds` | `60` | Pause after a failed request. |
-
-## External plugins
-
-An external plugin is a directory under `plugins_dir` with `pyproject.toml` and a `[tool.dusha]` table. The gateway imports it into its own process. The [Plugin API](plugins.md#plugin-api) describes the contract, and [dusha-plugin-collections](https://github.com/Somme4096/dusha-plugin-collections) has working external plugins, such as `system_one` and `everos_memory`.
-
-| Key | Default | Notes |
-| --- | --- | --- |
-| `plugins_dir` | `""` | Empty uses `plugins` in the companion home. `DUSHA_PLUGINS_DIR` overrides it. |
-
-An external plugin's entry under `plugins` is keyed by its directory name, which must be letters, digits, and underscores and cannot start with a digit. It takes these keys:
-
-| Key | Default | Notes |
-| --- | --- | --- |
-| `options` | `{}` | Passed to the plugin's `apply` as `config`. |
-| `disabled` | `false` | |
-
-External plugins run inside the gateway process with its permissions and dependencies. Install only plugins you wrote or reviewed. A plugin dependency conflict affects the whole gateway.
-
-## Proactive
-
-| Key | Default | Notes |
-| --- | --- | --- |
-| `plugins.proactive.poll_interval_seconds` | `60` | |
-| `plugins.proactive.min_silence_minutes` | `180` | |
-| `plugins.proactive.cooldown_minutes` | `360` | Gap after a send. |
-| `plugins.proactive.max_per_day` | `2` | |
-| `plugins.proactive.max_unanswered` | `2` | Sends stop after this many ignored messages. |
-| `plugins.proactive.quiet_start_hour` | `1` | Local hour. |
-| `plugins.proactive.quiet_end_hour` | `8` | Local hour. |
-| `plugins.proactive.lease_seconds` | `120` | Time a harness holds a polled event before it returns to pending. |
-| `plugins.proactive.retry_delay_minutes` | `15` | Wait after a failed delivery. |
-
-The emotional triggers live in [emotions.json](#emotionsjson). Limits survive a restart.
-
-## Relay
-
-Relay gives the hub MCP tools and `dusha relay` commands that reach their other devices: `look`, `notify`, `spawn`, `spawn_status`, `spawn_wait`, `music`, `shell`, `type_text`, `press_key`, `list_windows`, and `speak`. It asks the `presence` plugin which devices exist, fails fast when a device is down or lacks the capability, and calls the device's own plugin over HTTP, or in this process for the local device. It also adds `<local_time>` to the context and mirrors sent proactive messages to the active device. The device plugins live in [dusha-plugin-collections](https://github.com/Somme4096/dusha-plugin-collections).
-
-```json
-{
-  "plugins": {
-    "presence": {"options": {"device": "nas"}},
-    "relay": {"token": "device-secret"}
-  }
-}
-```
-
-| Key | Default | Notes |
-| --- | --- | --- |
-| `plugins.relay.token` | `""` | Sent as `X-Companion-Token` to every device. |
-| `plugins.relay.tokens` | `{}` | Per-device tokens, keyed by device name. |
-| `plugins.relay.timeout_seconds` | `60` | |
-| `plugins.relay.mirror_proactive` | `true` | Shows sent proactive messages on the active device. |
-| `plugins.relay.mirror_title` | `"dusha"` | |
-| `plugins.relay.mirror_voice` | `false` | Also speaks the mirrored message. |
-| `plugins.relay.spawn_timeout_seconds` | `1800` | |
-| `plugins.relay.spawn_poll_seconds` | `2` | Poll gap for `spawn_wait`. |
-| `plugins.relay.speak_order` | `["presence", "discord"]` | Ways `speak` tries with `device: "auto"`. |
-| `plugins.relay.speak_route` | `""` | Discord route for voice clips. Empty uses the latest chat. |
-| `plugins.relay.speak_timeout_seconds` | `180` | |
-| `plugins.relay.speak_help` | `""` | Replaces the `speak` tool description. |
+- `ruling`: supports `{dimension}`, `{value}`, `{neutral}`, and `{deviation}`.
+- `approach`: supports `{variant}`.
+- `ladder`: non-empty list of strings indexed by `unanswered_proactive` count (the last entry covers all higher counts).
+- Escape literal braces as `{{` and `}}`. Unknown placeholders fail startup.
 
 ## See also
 
-- [guide.md](guide.md): service setup, auth, backup, troubleshooting.
-- [api.md](api.md): HTTP endpoints and integrations.
+- [guide.md](guide.md): CLI usage, harness setup, deployment, authentication, and migration.
+- [plugins.md](plugins.md): Built-in plugins and the Plugin API.
+- [api.md](api.md): HTTP endpoints, proxy routing, and MCP protocol.

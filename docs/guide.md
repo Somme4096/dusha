@@ -1,71 +1,232 @@
-# Dusha guide
+# Dusha Guide
 
-## Run as a systemd service
+Dusha runs as two services per companion: the server (`dusha serve`), which stores state and exposes MCP and CLI routes, and the proxy (`dusha proxy`), which routes model requests from your harness and injects context, such as memory or affect.
 
-Replace `<name>` with your companion's name.
+## Usage
 
-1. Install the CLI. The unit expects the binary at `~/.local/bin/dusha`.
+### Managing companions
+
+Each companion stores its configuration and data in a home directory under `$XDG_CONFIG_HOME/dusha/<name>/` (or `~/.config/dusha/<name>/` when `XDG_CONFIG_HOME` is unset). Companion names can contain letters, digits, dots, dashes, and underscores.
+
+```sh
+dusha companion add <name>
+dusha companion list
+dusha companion update <name>
+dusha companion remove <name>
+```
+
+- `dusha companion add <name>` creates `~/.config/dusha/<name>/config.json` with mode `600`, writing both the server settings and a `proxy` section pointed at that local server. Pass `--serve` to write only the server settings, or `--proxy` to write only the proxy settings.
+- `dusha companion update <name>` adds a missing `--serve` or `--proxy` section to an existing home, updates `--server-url` or `--token`, and upgrades legacy configuration files while keeping `<file>.bak` backups.
+- `dusha companion list` prints the config root directory and all initialized companion names.
+- `dusha companion remove <name>` deletes the companion home directory and its data. Pass `-y` / `--yes` to skip confirmation in non-interactive shells.
+
+Every CLI command selects a companion using the first match in this order:
+
+1. `--config <path>` (uses the file's parent directory as the companion home)
+2. `--home <dir>`
+3. `-c <name>` / `--companion <name>`, or the positional `<name>` argument on `companion`, `serve`, `proxy`, `provider`, and `plugin list`
+4. `DUSHA_HOME` environment variable
+5. `DUSHA_COMPANION` environment variable
+6. The sole companion under the config root, when only one exists
+
+If multiple companions exist and none is specified, the command exits with an error.
+
+### Managing providers
+
+`dusha provider` manages the `providers` section in the companion's `config.json`. Each entry defines an upstream model provider profile that the proxy serves at `http://127.0.0.1:8766/<profile>`.
+
+```sh
+dusha provider <name>
+dusha provider <name> --add deepseek
+dusha provider <name> --add custom --profile local-vllm
+dusha provider <name> --list
+dusha provider <name> --remove deepseek
+```
+
+Running `dusha provider <name>` in a terminal opens an interactive menu to add, list, or remove provider profiles:
+
+- **Adding from the catalog**: Select a provider via interactive menu or pass `--add <provider_id>`. The CLI prompts for the API key. You can 1) Enter the key directly, 2) type `{env:VAR_NAME}` to read it from an environment variable, 3) press Enter to leave it empty. By default, the profile name matches the provider ID unless you provide custom name with `--profile <profile>`.
+- **Adding a custom provider**: Choose `Custom` in the menu or pass `--add custom`. The CLI prompts for a profile name, base URL, optional per-protocol endpoints (`chat`, `messages`, `responses`), auth header style (`bearer` or `x-api-key`), API key, and optional static headers.
+- **Refreshing model catalog**: The models.dev catalog is cached at `$XDG_CACHE_HOME/dusha/models-dev.json` (`~/.cache/dusha/models-dev.json` by default) for 24 hours. Pass `--refresh` to fetch a fresh copy.
+- **Supported protocols**: The catalog includes OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages providers (including Google's OpenAI-compatible endpoint). Providers that require cloud SDK credentials instead of an API key (such as AWS Bedrock, Google Vertex AI, Azure, and GitHub Copilot) are excluded.
+
+Restart is required after adding or modifying a provider.
+
+### Running the proxy
+
+`dusha proxy <name>` starts the local HTTP proxy for an existing companion on, by default, `http://127.0.0.1:8766`. See [configuration.md](configuration.md#proxy) for details.
+
+If the companion was created with `--serve` only, add the proxy section first:
+
+```sh
+dusha companion update <name> --proxy
+```
+
+When you configure `--proxy` without a saved server URL, an interactive terminal prompts and saves the selection to `config.json`. In non-interactive environments, pass `--server-url <url>` and `--token <token>`.
+
+Once the proxy is running, connect your harness to `http://127.0.0.1:8766/<profile>` as described in [Connect a harness](#connect-a-harness).
+
+### All core commands
+
+| Command | Mode | Description |
+| --- | --- | --- |
+| `dusha companion add [name] [--serve] [--proxy] [--server-url URL] [--token TOKEN]` | Local | Create a new companion home and `config.json`. |
+| `dusha companion update [name] [--serve] [--proxy] [--server-url URL] [--token TOKEN]` | Local | Add missing config sections, update server connection settings, or upgrade legacy files. |
+| `dusha companion list` | Local | List initialized companions under the config root. |
+| `dusha companion remove [name] [-y/--yes]` | Local | Delete a companion home and its data directory. |
+| `dusha serve [name]` | Local | Run the companion server (`http://127.0.0.1:8765` by default). |
+| `dusha proxy [name]` | Local | Run the companion proxy (`http://127.0.0.1:8766` by default). |
+| `dusha provider [name] [--add ID] [--profile NAME] [--list] [--remove PROFILE] [--refresh]` | Local | Add, list, or remove model provider profiles. |
+| `dusha plugin list [name]` | Server HTTP | Print each plugin's state, error, injected dependencies, provided services, and event listeners. |
+| `dusha health` | Server HTTP | Run a SQLite integrity check on the server database. |
+| `dusha backup <destination>` | Server HTTP | Write a consistent online SQLite backup to `<destination>` on the server host. |
+
+Active plugins can register their own command groups (such as `memory`, `evergreen`, `memo`, `affect`, `proactive`, and `relay`). 
+
+## Connect a harness
+
+Connecting a harness to Dusha has two steps. 1) routing model requests through `dusha proxy` for automatic context injection and 2) registering the Dusha MCP for tools.
+
+1. **Provider base URL**: Point the harness's provider base URL at `http://127.0.0.1:8766/<profile>`.
+2. **API key (**`<token>` **or** `<harness>:<token>`**)**: Set the harness's provider API key to your Dusha `api_token` (or any placeholder string when [auth](#auth) is off), never your upstream provider's API key. 
+   1. Prefix the value with `<harness>:` (for example, `claude-code:my-dusha-token`, or `claude-code:local` when auth is off) so the stored messages will have appropriate `<harness>` label. This is recommended because you can apply per-harness injection rules via `harnesses.<name>` settings.
+   2. Without this prefix or an `X-Harness` header, the harness name defaults to `<profile>`, for example, `mistral`.
+3. **MCP server**: Point the harness at `http://127.0.0.1:8765/mcp` (Streamable HTTP transport) and pass `X-Companion-Token: <token>` when [auth](#auth) is enabled.
+
+See [api.md](api.md#proxy) for protocol routing and header details.
+
+### Claude Code
+
+In `~/.claude/settings.json`, set `ANTHROPIC_BASE_URL` to your proxy profile URL and `ANTHROPIC_API_KEY` (or `ANTHROPIC_AUTH_TOKEN`) to `claude-code:<token>`:
+
+```json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:8766/anthropic",
+    "ANTHROPIC_API_KEY": "claude-code:replace-with-dusha-token"
+  }
+}
+```
+
+Register the Dusha MCP server:
+
+```sh
+claude mcp add --transport http dusha http://127.0.0.1:8765/mcp \
+  --header "X-Companion-Token: replace-with-dusha-token"
+```
+
+### Codex
+
+In `~/.codex/config.toml`, define a custom model provider pointed at your proxy profile and register the MCP server:
+
+```toml
+model_provider = "dusha"
+
+[model_providers.dusha]
+name = "Dusha"
+base_url = "http://127.0.0.1:8766/openai"
+env_key = "DUSHA_API_KEY"
+wire_api = "responses"
+
+[mcp_servers.dusha]
+url = "http://127.0.0.1:8765/mcp"
+http_headers = { "X-Companion-Token" = "replace-with-dusha-token" }
+```
+
+Export the tagged Dusha token in your shell before running `codex`:
+
+```sh
+export DUSHA_API_KEY="codex:replace-with-dusha-token"
+```
+
+### Antigravity CLI (`agy`)
+
+`agy` uses account OAuth by default and does not expose an endpoint flag on the command line. To route requests through a custom endpoint, switch `modelProvider` to `"gemini"` in `~/.gemini/antigravity-cli/settings.json`:
+
+```json
+{
+  "modelProvider": "gemini"
+}
+```
+
+Then override the endpoint URL and API key in your shell environment before launching `agy`:
+
+```sh
+export GOOGLE_GEMINI_BASE_URL="http://127.0.0.1:8766/<profile>"
+export GEMINI_API_KEY="agy:replace-with-dusha-token"
+```
+
+> [!NOTE]
+> `dusha proxy` injects context on OpenAI `chat/completions`, OpenAI `responses`, and Anthropic `messages` routes, and forwards native Gemini paths untouched unless paired with a protocol translation gateway.
+
+Register the Dusha MCP server in `agy`:
+
+```sh
+agy mcp add --header "X-Companion-Token: replace-with-dusha-token" \
+  dusha http://127.0.0.1:8765/mcp
+```
+
+## Deployment
+
+### Systemd user service
+
+The template unit [`deploy/dusha@.service`](../deploy/dusha@.service) runs `dusha serve <name>` for `~/.config/dusha/<name>/`.
+
+1. Install the CLI and initialize the companion:
 
 ```sh
 uv tool install dusha
-dusha --help
+dusha companion add <name> --serve
 ```
 
-2. Install the unit. The first start creates the companion home and its `config.json`.
+2. Install the systemd user unit:
 
 ```sh
-mkdir -p ~/.config/dusha/<name> ~/.config/systemd/user
-curl -o ~/.config/systemd/user/dusha@.service \
+mkdir -p ~/.config/systemd/user
+curl -fsSL -o ~/.config/systemd/user/dusha@.service \
   https://raw.githubusercontent.com/Somme4096/dusha/main/deploy/dusha@.service
 ```
 
-3. Add secrets, if you use an embedding key. The config stores variable names and this file stores the values.
+3. If you use environment variables for secrets (such as `EMBEDDING_API_KEY`), store them in `~/.config/dusha/<name>/.env`:
 
 ```sh
-touch ~/.config/dusha/<name>/.env
-chmod 600 ~/.config/dusha/<name>/.env
+install -m 600 /dev/null ~/.config/dusha/<name>/.env
 ${EDITOR:-vi} ~/.config/dusha/<name>/.env
 ```
 
 ```ini
-EMBEDDING_API_KEY=replace-me
+EMBEDDING_API_KEY=replace-with-your-key
 ```
 
-The unit sets `PATH` to `~/.local/bin:/usr/local/bin:/usr/bin:/bin`. Add a `PATH=` line to this file when `uv` lives elsewhere.
+The unit sets `PATH` to `%h/.local/bin:/usr/local/bin:/usr/bin:/bin`. If `dusha` is installed elsewhere, add a `PATH=` entry to `.env`.
 
-4. Start the service and check it.
+4. Enable and start the service:
 
 ```sh
 systemctl --user daemon-reload
 systemctl --user enable --now dusha@<name>
-```
-
-Give it a little healthcheck~
-
-```sh
 systemctl --user status dusha@<name>
-curl http://127.0.0.1:8765/health # `/health` should return ok.
+curl http://127.0.0.1:8765/health
 ```
 
-The unit is a template. `dusha@<name>` serves the home `~/.config/dusha/<name>/`.
+### Docker and Podman
 
-## Run as a docker/podman container
+Container images are published to `ghcr.io/somme4096/dusha` on each release. The container runs `dusha serve --home /data`, storing `config.json`, `data/state.sqlite3`, `identity.md`, and `plugins/` in the `/data` volume.
 
-Images are built from source on every release and published to `ghcr.io/somme4096/dusha`. The container runs `dusha serve` with the companion home at `/data`, so one volume has `config.json`, the data directory, and your identity, prompts, and plugins files.
-
-1. Fetch the compose file and start. The commands are the same for `podman compose`.
+1. Download [`deploy/compose.yaml`](../deploy/compose.yaml), initialize `/data/config.json`, and start the container (`podman compose` accepts the same commands):
 
 ```sh
 mkdir dusha && cd dusha
-curl -O https://raw.githubusercontent.com/Somme4096/dusha/main/deploy/compose.yaml
-touch .env # Put EMBEDDING_API_KEY=... here if you use one.
+curl -fsSL -O https://raw.githubusercontent.com/Somme4096/dusha/main/deploy/compose.yaml
+touch .env
+docker compose run --rm dusha companion add --home /data --serve
 docker compose up -d
-curl http://127.0.0.1:8765/health # Should return ok.
+curl http://127.0.0.1:8765/health
 ```
 
-The compose file sets `DUSHA_HOST=0.0.0.0` to override the config's `host` key, and publishes the port on loopback only. Reach it from another device with Tailscale on the host, or a TLS reverse proxy. When Tailscale itself runs in a container, put both on one compose network and point it at `dusha:8765` instead of publishing the port. Do not expose plain HTTP. You know the drill. 
+The compose file sets `DUSHA_HOST=0.0.0.0` inside the container and binds `127.0.0.1:8765:8765` on the host. To access the server from another machine, expose it over Tailscale or a TLS reverse proxy rather than publishing plain HTTP.
 
-2. Edit the config in the volume and restart.
+2. To edit `config.json` in the volume:
 
 ```sh
 docker compose cp dusha:/data/config.json .
@@ -74,82 +235,72 @@ docker compose cp config.json dusha:/data/config.json
 docker compose restart
 ```
 
-3. Update and back up with the commands running inside the container.
+3. To upgrade the image or create a database backup:
 
 ```sh
 docker compose pull && docker compose up -d
 docker compose exec dusha dusha backup /data/backup.sqlite3
-docker compose cp dusha:/data/backup.sqlite3 backup.sqlite3
+docker compose cp dusha:/data/backup.sqlite3 ./backup.sqlite3
 ```
-
-Podman runs the same file with `podman compose`, and Quadlet turns it into a rootless systemd service. Pin `image:` to `1.2.21` or `1.3.21` if you are afraid of it breaking after update.
 
 ## Auth
 
-Auth is off by default, and the service binds to localhost. To turn auth on, put a token in the config:
+When authentication is not enabled, both the server and proxy bind to `127.0.0.1`. To enable authentication, set `api_token` in the server's `config.json`:
 
 ```json
 {
-  "api_token": "replace-with-a-long-random-value"
+  "api_token": "replace-with-a-random-token"
 }
 ```
 
-`openssl rand -hex 32` makes a good one (I hope you already know it). The config now holds a secret. `dusha companion add` writes it with mode `600`, so keep that mode and keep the file out of version control.
+Restart the server afterwards. 
 
-Send the same value in the `X-Companion-Token` header:
+To connect a remote proxy or CLI to an authenticated server, run `dusha companion update <name> --proxy --server-url <url> --token <token>` on the client machine.
 
-```sh
-curl -X POST http://127.0.0.1:8765/state/v1/context \
-  -H 'Content-Type: application/json' \
-  -H "X-Companion-Token: replace-with-a-long-random-value" \
-  -d '{"query":"Hello"}'
-```
+### Dusha token and `harness:token`
 
-In a harness routed through the [proxy](api.md#proxy), put the Dusha token in the harness's provider API key field (`<token>`, or `<harness>:<token>` to also set the harness name and its [context rules](configuration.md#harnesses)). The proxy verifies the Dusha token (`Authorization: Bearer`, `X-Api-Key`, `Api-Key`, or `X-Companion-Token`), strips it before forwarding, and authenticates to the upstream LLM provider using `providers.<profile>.key` from `config.json`. It also sends `X-Companion-Token` to the server for you, as do the other `dusha` commands. On another machine, the proxy's first run asks for the token and saves it in `proxy.server.token`. On the same machine, both read `api_token` themselves. An [MCP](api.md#mcp) harness reaches the server directly, so put the header in its MCP config.
+Dusha proxy only accepts **dusha token** instead of upstream provider's API key. This is true for all provider routes, for example, `http://127.0.0.1:8766/mistral` and `http://127.0.0.1:8766/opencode-go` both uses your dusha token. Dusha proxy replace your dusha token to your key saved in config.json before routing it.
 
-With auth on:
+Why? Because most harnesses only let you configure a base URL and an API key, so setting custom headers like `X-Companion-Token`  for auth is often not possible. You can prefix the API key with `<harness>:` to identify the harness without setting custom HTTP headers:
 
-- Every `/state/v1/*`, `/cli/v1/*`, `/mcp`, and proxy `/<profile>/*` route needs the token. A wrong token returns `401`.
-- `/health` stays public.
-- `/docs`, `/redoc`, and `/openapi.json` are off.
-- A new token needs a restart.
+| Harness API key value | When auth is on (`api_token` set) | When auth is off (`api_token` empty) |
+| --- | --- | --- |
+| `<token>` | Authenticates the request. Harness name defaults to `<profile>` (or `X-Harness`). | Accepted (any value works). Harness name defaults to `<profile>` (or `X-Harness`). |
+| `<harness>:<token>` (for example, `claude-code:my-token`) | Authenticates `<token>` and sets the harness name to `<harness>`. | Sets the harness name to `<harness>` (for example, `claude-code:local`). |
 
-To reach the service from another device, put it behind a TLS reverse proxy, use Tailscale or stay on a private network. Do not expose the plain HTTP port. (I know it's common sense, just consider yourself warned)
+Setting `<harness>:<token>` labels every stored message with `<harness>` and applies the matching [`harnesses.<name>`](configuration.md#harnesses) context filter rules (for example, excluding `affect` in a coding harness).
+
+### Route behavior with auth enabled
+
+- **Server routes**: Every `/state/v1/*`, `/cli/v1/*`, and `/mcp` request requires `X-Companion-Token: <token>`. Missing or invalid tokens return `401`.
+- **Proxy routes**: Every `/<profile>/*` request requires `<token>` or `<harness>:<token>`. The proxy authenticates to the Dusha server automatically using `proxy.server.token`.
+- **Public and disabled routes**: `GET /health` remains public on both server and proxy. The interactive OpenAPI endpoints (`/docs`, `/redoc`, and `/openapi.json`) are disabled.
 
 ## Backup and restore
+
+Create a consistent online backup of the SQLite database while the server is running:
 
 ```sh
 dusha backup /path/to/backups/state-$(date +%F).sqlite3
 ```
 
-The command runs on the server and writes the backup to that path on the server's machine. It is safe while the service runs. Do not copy `state.sqlite3` by hand during writes. (Again, common sense.)
+The destination path is resolved on the server machine. Do not copy `data/state.sqlite3` directly while the server is running. Back up `config.json`, `identity.md`, custom `emotions.json` or `prompts.json` files, and the `plugins/` directory alongside the database snapshot.
 
-Back up your own files too: `config.json`, the identity, emotions, and prompts files, and the plugins directory.
+To restore from a backup:
 
-To restore:
-
-1. Stop the service.
-2. Place the backup in the data directory as `state.sqlite3`.
-3. Start the service.
-
-## Plugins
-
-```sh
-dusha plugin list
-dusha memory reindex
-```
-
-`plugin list` prints each plugin's `state`, `error`, `inject`, `provides`, and `events`. Each plugin adds its own commands, such as `memory`, `evergreen`, `memo`, `affect`, and `proactive`. `memory reindex` rebuilds the built-in search index. Plugin commands run on the server, so it must be up. `dusha --help` lists them, from the last list it saw while the server is down.
-
-See [plugins.md](plugins.md) for the built-in plugins, the commands and tools each one adds, and the [Plugin API](plugins.md#plugin-api) for writing your own.
+1. Stop `dusha serve`.
+2. Copy the backup file to `<data_dir>/state.sqlite3` (and remove any leftover `state.sqlite3-wal` or `state.sqlite3-shm` files).
+3. Start `dusha serve`.
 
 ## Migrating
 
-### prompts.json schema 3 to 4
+Run `dusha companion update <name>` to automatically migrate legacy configuration and prompt files from earlier `1.x` releases. The command writes `<file>.bak` before modifying any file.
 
-Since 1.1.21, prompt text lives under `plugins`, keyed by the plugin that reads it. A schema 3 overlay still loads with a startup warning until 2.0.21. Only an overlay set by `prompts.path` needs this, the packaged text moves on its own. `dusha companion update <name>` rewrites the overlay and keeps the original as `prompts.json.bak`, or move the keys by hand:
+### `prompts.json` schema 3 to schema 4
 
-| Schema 3 | Schema 4 |
+Starting in `1.1.21`, prompt overrides live under `plugins.<name>` rather than top-level keys. Schema 3 overlays continue to load with a warning until `2.0.21`. Run `dusha companion update <name>` or move the keys manually:
+
+| Schema 3 key | Schema 4 key |
 | --- | --- |
 | `affect_presentation` | `plugins.affect.presentation` |
 | `affect` | `plugins.affect.block` |
@@ -158,46 +309,44 @@ Since 1.1.21, prompt text lives under `plugins`, keyed by the plugin that reads 
 | `proactive_generation_instruction` | `plugins.proactive.generation_instruction` |
 | `evergreen` | `plugins.evergreen` |
 | `context_blocks.memo_open_delimiter`, `context_blocks.memo_close_delimiter` | `plugins.memo.open_delimiter`, `plugins.memo.close_delimiter` |
-| `context_blocks.plugin_open_delimiter`, `context_blocks.plugin_close_delimiter` | Removed. Nothing read them. |
+| `context_blocks.plugin_open_delimiter`, `context_blocks.plugin_close_delimiter` | Removed (unused). |
 | `companion_state.memory_instruction` | `plugins.memory.instruction` |
 
-`companion_state` keeps `open_delimiter` and `close_delimiter`.
+`companion_state.open_delimiter` and `companion_state.close_delimiter` remain unchanged.
 
-### proxy.upstreams to providers
+### `proxy.upstreams` to `providers`
 
-Since 1.1.21, provider profiles live in the top-level `providers` section, so server plugins can use them too. `proxy.upstreams` still loads with a warning until 2.0.21. `dusha companion update <name>` moves it and keeps the original as `config.json.bak`, or move the section by hand. `dusha proxy <name> auth login`, `status`, and `logout` became `dusha provider` (`--add`, `--list`, and `--remove`).
+Starting in `1.1.21`, provider profiles live under top-level `providers` instead of `proxy.upstreams` so server plugins can access them as well. `proxy.upstreams` continues to load with a warning until `2.0.21`.
 
-Plugins that used the 1.x Python names keep working with a `DeprecationWarning` until 2.0.21: `Settings.upstreams` is now `Settings.providers`, `dusha.client.settings.Upstream` is now `dusha.providers.Provider`, `save_upstream` is now `save_provider`, and `dusha.config.create_default_config` is now `ensure_server_config`. Reading a 1.x key such as `ctx.prompts["proactive_framing"]` returns the text from its new place under `plugins`. The proxy's `/health` returns `providers` next to the old `upstreams` until then.
+- Run `dusha companion update <name>` to move `proxy.upstreams` to `providers`.
+- Replace `dusha proxy <name> auth login`, `status`, and `logout` with `dusha provider <name> --add`, `--list`, and `--remove`.
+- Legacy Python aliases (`Settings.upstreams`, `dusha.client.settings.Upstream`, `save_upstream`, `dusha.config.create_default_config`, and 1.x `ctx.prompts` keys) emit a `DeprecationWarning` and will be removed in `2.0.21`.
 
-### Provider key as the proxy token
+### Upstream provider key as proxy credential
 
-Clients that sent the real provider key to the proxy still work until 2.0.21, but only when that key matches the `key` set for the provider in the proxy's config. Each provider logs a warning once. Point clients at the dusha token instead. To keep the old flow, move the provider key into the provider profile so the proxy holds it. A key that does not match is rejected with `401`.
+Harnesses that pass the upstream provider API key to the proxy instead of the Dusha token continue to work with a warning until `2.0.21`, provided the key matches `providers.<profile>.key` in `config.json`. Update harnesses to send the Dusha `api_token` (or any placeholder string when authentication is disabled).
 
 ## Troubleshooting
 
-| Symptom | Fix |
+| Symptom | Resolution |
 | --- | --- |
-| Startup fails on a missing config file | The selected home needs a `config.json`. Run `dusha companion list` to see your companions, or `dusha companion add <name>` to write one. |
-| Startup fails on a missing identity file | Fix `plugins.identity.path` or remove the key. The file must be UTF-8. |
-| Startup fails on an empty `plugins.identity.path` | Remove the key to use `identity.md`, or set `plugins.identity.disabled` to `true`. |
-| Startup fails on an unknown `features`, `memory`, `evergreen`, `memo`, `affect`, `proactive`, `emotions`, or `identity_prompt` field, or on a section from an earlier release | Move the section under [`plugins`](configuration.md#plugins). A `features` entry set to `false` becomes `"disabled": true`, entries of the earlier section become external plugins, its directory key becomes `plugins_dir`, `emotions` moves to `plugins.affect.emotions`, and `identity_prompt` becomes `plugins.identity`. |
-| Startup fails on an unknown `api_token_env` field | Rename it to `api_token` and put the token value there. |
-| Startup fails on an unknown `memory_plugin` or `decision` field | Move the external plugin under [`plugins`](configuration.md#external-plugins) and `decision.increment` to `plugins.affect.increment`. |
-| Requests return `401` | Send `X-Companion-Token` with the token value. |
-| A command fails with `cannot connect to the server` | Start `dusha serve <name>`, or check `proxy.server.url` and `port` in the companion's `config.json`. |
-| A plugin's command ends in `No such command` | The plugin is disabled or inactive, see `dusha plugin list`. |
-| `provider --add` fails with `cannot load the models.dev catalog` | The machine is offline and has no cached catalog. Connect once, or add the profile to `providers` by hand. |
-| The provider rejects the harness's key | With a `key` in the profile, the proxy sends that key instead. Check it with `dusha provider --list` and add it again. |
-| `dusha proxy <name>` fails with `Configuration file not found` | Run `dusha companion add <name> --proxy` (or `update <name> --proxy`) to save `proxy.server.url`. Check existing names with `dusha companion list`. |
-| Startup fails on `upstream` or `api_openai` moved to `providers` | Delete them and add a [profile](configuration.md#providers) under `providers` instead. Clients that used `/v1/...` on the server now use `http://127.0.0.1:8766/<profile>`. |
-| The proxy returns `502` | The provider is unreachable or timed out. Read the `detail`, then check the profile's `base_url`. |
-| The proxy forwards but nothing is stored | `GET /health` on the proxy shows `server.status`. Check `proxy.server.url` and `proxy.server.token`. |
-| Memory, fact, memo, affect, or proactive routes return `503` | The `detail` names the plugin. Remove its `"disabled": true`, or turn on the plugin it needs, and restart. Your stored rows are intact. |
-| Startup fails on an external plugin import or `apply` error | The traceback names the plugin directory and the failing module. Check that directory, its `[tool.dusha]` table in `pyproject.toml`, and the traceback. |
-| An external plugin stopped working after an upgrade | External plugins define `apply(ctx, config)` and name it in `[tool.dusha]`. See the [Plugin API](plugins.md#plugin-api). |
-| Duplicate proactive events or write errors | Two processes share one `state.sqlite3`. Stop one. |
+| `Configuration file not found` on startup | Run `dusha companion list` to check initialized companions, or run `dusha companion add <name>` to create `config.json`. |
+| `several companions exist` error | Pass `-c <name>`, `--home <dir>`, or `--config <path>`, or set `DUSHA_COMPANION`. |
+| Startup fails on a missing identity file | Check `plugins.identity.path` in `config.json` and ensure the file exists and is valid UTF-8, or remove `path` to use `identity.md`. |
+| Startup fails on an empty `plugins.identity.path` | Remove `plugins.identity.path` to default to `identity.md`, or set `"disabled": true` under `plugins.identity`. |
+| Startup fails on `upstream` or `api_openai` | Remove those keys and configure a profile under [`providers`](configuration.md#providers) instead. |
+| Requests return `401 Unauthorized` | Pass `X-Companion-Token: <api_token>` to the server, or set `<api_token>` as the provider API key in harnesses routed through the proxy. |
+| CLI command fails with `cannot connect to the server` | Start `dusha serve <name>`, or verify `proxy.server.url` and `port` in `config.json`. |
+| Plugin CLI command fails with `No such command` | The plugin is disabled or inactive. Run `dusha plugin list <name>` to inspect its status. |
+| `dusha provider --add` fails with `cannot load the models.dev catalog` | The machine is offline and has no cached catalog. Connect to the internet once, or use `dusha provider <name> --add custom`. |
+| Proxy returns `502 Bad Gateway` | The upstream provider could not be reached or timed out. Check `providers.<profile>.base_url` and `endpoints` in `config.json`. |
+| Proxy forwards responses but stores no messages | Check `GET http://127.0.0.1:8766/health` and inspect `server.status`. Verify `proxy.server.url` and `proxy.server.token`. |
+| State route returns `503 Service Unavailable` | The response `detail` names the disabled or inactive plugin. Enable it and any required dependencies in `config.json`, then restart the server. |
+| Startup fails on an external plugin import or `apply` error | Inspect the traceback for the failing plugin directory, check its `[tool.dusha]` table in `pyproject.toml`, and ensure its dependencies are installed in the server environment. |
+| Duplicate proactive events or SQLite write errors | Multiple `dusha serve` processes are using the same `state.sqlite3`. Stop the duplicate process. |
 
 ## See also
 
-- [configuration.md](configuration.md): every config key.
-- [api.md](api.md): HTTP endpoints and integrations.
+- [configuration.md](configuration.md): Configuration files and key reference.
+- [plugins.md](plugins.md): Built-in plugins and the Plugin API.
+- [api.md](api.md): HTTP endpoints, proxy routing, and MCP protocol.
