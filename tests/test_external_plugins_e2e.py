@@ -445,7 +445,7 @@ async def test_http_external_plugin_registers_mcp_tools(tmp_path, plugins_dir):
         echoed = await rpc(2, "tools/call", {"name": "probe_echo", "arguments": {"word": "hi", "times": 2}})
         typed = await rpc(3, "tools/call", {"name": "probe_echo", "arguments": {"word": "hi", "times": "2"}})
     tools = {tool["name"]: tool for tool in listed.json()["result"]["tools"]}
-    assert {"probe_echo", "affect_status", "memo_add"} <= set(tools)
+    assert set(tools) == {"probe_echo", "affect_status"}
     assert tools["probe_echo"]["description"] == "Echo a word."
     assert tools["probe_echo"]["inputSchema"]["required"] == ["word"]
     assert tools["probe_echo"]["inputSchema"]["properties"]["times"] == {"type": "integer", "default": 1}
@@ -597,8 +597,8 @@ async def test_http_two_external_plugins_run_in_order_first_emotion_wins_and_del
         health = await client.get("/health")
     assert stored["affect"]["emotion"] == "fear"
     assert stored["affect"]["state"]["base"]["elation"] > before["elation"]
-    assert list(context["context"]["blocks"]) == ["memory", "affect", "probe_two", "probe"]
-    assert health.json()["plugins"][-2:] == ["probe_two", "probe"]
+    assert list(context["context"]["blocks"]) == ["affect", "probe_two", "probe"]
+    assert health.json()["plugins"] == ["affect", "probe_two", "probe"]
 
 
 PROVIDERS_SOURCE = '''\

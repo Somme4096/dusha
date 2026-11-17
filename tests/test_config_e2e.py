@@ -67,8 +67,11 @@ def _prompts_file(tmp_path, mutate, name="prompts.json"):
         ('{"plugins": {"affect": {"mood_follow_hours": 0}}}', "mood_follow_hours must be positive"),
         ('{"plugins": {"affect": {"dimensions": {"bogus": {"neutral": 0.1}}}}}', "unknown dimension"),
         ('{"plugins": {"affect": {"dimensions": {"fear": {"neutral": 0.1, "bogus": 2}}}}}', "unknown field"),
-        ('{"plugins": {"proactive": {"thresholds": {"fear": 5.0}}}}', "within value_range"),
-        ('{"plugins": {"proactive": {"thresholds": {"play": 0.5}}}}', "without a proactive trigger"),
+        ('{"plugins": {"affect": {}, "proactive": {"thresholds": {"fear": 5.0}}}}', "within value_range"),
+        (
+            '{"plugins": {"affect": {}, "proactive": {"thresholds": {"play": 0.5}}}}',
+            "without a proactive trigger",
+        ),
         ('{"plugins": {"proactive": {"quiet_start_hour": 99}}}', "plugins.proactive.quiet_start_hour"),
         ('{"plugins": {"proactive": {"target": "pinned"}}}', "plugins.proactive.target must be"),
         ('{"plugins": {"proactive": {"target": {}}}}', "plugins.proactive.target must be"),
@@ -127,8 +130,9 @@ def test_startup_rejects_invalid_config(tmp_path, body, pattern):
 @pytest.mark.parametrize(
     ("raw", "present", "expected"),
     [
-        ({}, True, "HOME_IDENTITY"),
-        ({}, False, ""),
+        ({}, True, ""),
+        ({"plugins": {"identity": {}}}, True, "HOME_IDENTITY"),
+        ({"plugins": {"identity": {}}}, False, ""),
         ({"plugins": {"identity": {"disabled": True}}}, True, ""),
         ({"plugins": {"identity": {"disabled": True, "path": ""}}}, True, ""),
         ({"plugins": {"identity": {"path": "named.md"}}}, True, "NAMED_IDENTITY"),
@@ -206,7 +210,7 @@ def test_startup_rejects_unreadable_emotions_file(tmp_path, text, message):
         (lambda s: s.update(companion_state={"open_delimiter": "only this"}), "incomplete"),
         (lambda s: s.update(plugins=[]), "keyed by plugin name"),
         (lambda s: s.update(plugins={"memo": "x"}), "plugins.memo must be an object"),
-        (lambda s: s["plugins"].update(afect={}), r"unknown plugin\(s\) under plugins: \['afect'\]"),
+        (lambda s: s["plugins"].update({"bad-name": {}}), "plain directory name"),
         (lambda s: s["plugins"]["affect"].update(decision_instruction=5), "must be a string"),
         (lambda s: s["plugins"]["affect"].update(bogus={}), r"unknown field\(s\) under plugins.affect"),
         (lambda s: s["plugins"]["affect"].update(block={"instruction": "x"}), "affect.block is incomplete"),
@@ -218,15 +222,16 @@ def test_startup_rejects_unreadable_emotions_file(tmp_path, text, message):
 )
 def test_startup_rejects_malformed_prompts_overlay(tmp_path, mutate, pattern):
     path = _prompts_file(tmp_path, mutate)
+    plugins = {"memory": {}, "evergreen": {}, "memo": {}, "affect": {}, "proactive": {}}
     with pytest.raises(ValueError, match=pattern):
-        _start(tmp_path, {"prompts": {"path": str(path)}})
+        _start(tmp_path, {"prompts": {"path": str(path)}, "plugins": plugins})
 
 
 async def test_http_prompts_overlay_replaces_single_plugin_slots(tmp_path):
     overlay = {"plugins": {"affect": {"decision_instruction": "DECIDE"}, "memo": {"open_delimiter": "[m]"}}}
     path = tmp_path / "prompts.json"
     path.write_text(json.dumps(overlay), encoding="utf-8")
-    app = _start(tmp_path, {"prompts": {"path": str(path)}})
+    app = _start(tmp_path, {"prompts": {"path": str(path)}, "plugins": {"affect": {}, "memo": {}}})
     async with _client(app) as client:
         await client.post("/state/v1/memo/add", json={"text": "water the plant"})
         injection = (await client.post("/state/v1/context", json={"query": ""})).json()["injection"]
@@ -237,11 +242,35 @@ async def test_http_prompts_overlay_replaces_single_plugin_slots(tmp_path):
     assert plugins["proactive"] == prompts_module.default_prompts()["plugins"]["proactive"]
 
 
-def test_startup_accepts_prompts_for_a_plugin_listed_in_config(tmp_path):
-    path = tmp_path / "prompts.json"
-    path.write_text(json.dumps({"plugins": {"ambient": {"screen": "SCREEN_SENTINEL"}}}), encoding="utf-8")
-    app = _start(tmp_path, {"plugins": {"ambient": {"disabled": True}}, "prompts": {"path": str(path)}})
+async def test_startup_accepts_prompts_for_inactive_plugins_and_emotions_without_proactive(tmp_path):
+    prompts_path = tmp_path / "prompts.json"
+    prompts_path.write_text(
+        json.dumps({
+            "plugins": {
+                "ambient": {"screen": "SCREEN_SENTINEL"},
+                "proactive": {"generation_instruction": 5},
+            }
+        }),
+        encoding="utf-8",
+    )
+    emotions_path = _emotions_file(
+        tmp_path, lambda s: (s.pop("proactive", None), s.pop("proactive_sent_deltas", None))
+    )
+    app = _start(
+        tmp_path,
+        {
+            "plugins": {"affect": {"emotions": {"path": str(emotions_path)}}},
+            "prompts": {"path": str(prompts_path)},
+        },
+    )
     assert app.state.service.prompts["plugins"]["ambient"] == {"screen": "SCREEN_SENTINEL"}
+    async with _client(app) as client:
+        status = await client.get("/state/v1/plugins")
+        affect = await client.get("/state/v1/affect")
+        memo = await client.get("/state/v1/memo")
+    assert list(status.json()) == ["affect"]
+    assert affect.status_code == 200
+    assert memo.status_code == 404
 
 
 async def test_http_schema_3_prompts_overlay_loads_with_a_deprecation_warning(tmp_path, caplog):
@@ -262,7 +291,10 @@ async def test_http_schema_3_prompts_overlay_loads_with_a_deprecation_warning(tm
     path = tmp_path / "prompts.json"
     path.write_text(json.dumps(overlay), encoding="utf-8")
     with caplog.at_level("WARNING", logger="dusha"):
-        app = _start(tmp_path, {"prompts": {"path": str(path)}})
+        app = _start(
+            tmp_path,
+            {"prompts": {"path": str(path)}, "plugins": {"memory": {}, "memo": {}, "affect": {}}},
+        )
     async with _client(app) as client:
         await client.post("/state/v1/memo/add", json={"text": "water the plant"})
         result = (await client.post("/state/v1/context", json={"query": ""})).json()
@@ -287,7 +319,7 @@ async def test_http_example_config_starts_and_serves(tmp_path):
     "target", ["latest", {"harness": "astrbot"}, {"harness": "astrbot", "conversation_id": "c1"}]
 )
 async def test_startup_accepts_a_proactive_target(tmp_path, target):
-    app = _start(tmp_path, {"plugins": {"proactive": {"target": target}}})
+    app = _start(tmp_path, {"plugins": {"affect": {}, "proactive": {"target": target}}})
     assert app.state.service.get("proactive").rules.target == target
     async with _client(app) as client:
         assert (await client.get("/health")).json()["status"] == "ok"

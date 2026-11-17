@@ -8,7 +8,7 @@ from typing import Any
 
 from . import legacy
 from .homes import DOCS
-from .resources import loads_strict, object_of, read_packaged
+from .resources import PLUGIN_NAME, loads_strict, object_of, read_packaged
 from .serialization import canonical as _serialization_canonical
 
 SCHEMA_VERSION = 4
@@ -99,6 +99,8 @@ def _validate(snapshot: Any, require_complete: bool) -> dict[str, Any]:
     if not isinstance(plugins, dict):
         raise PromptsValidationError("plugins must be an object keyed by plugin name")
     for name, slots in plugins.items():
+        if not isinstance(name, str) or not PLUGIN_NAME.fullmatch(name):
+            raise PromptsValidationError(f"plugin name must be a plain directory name, got {name!r}")
         if not isinstance(slots, dict):
             raise PromptsValidationError(f"plugins.{name} must be an object")
     if require_complete:
@@ -142,14 +144,11 @@ def load_prompts(path: str | Path) -> dict:
     return _validate(overlay, require_complete=False)
 
 
-def resolve_prompts(prompts_config: Any, plugins: Iterable[str]) -> dict:
+def resolve_prompts(prompts_config: Any, plugins: Iterable[str] = ()) -> dict:
     snapshot = default_prompts()
     path = str(getattr(prompts_config, "path", "") or "")
     if path:
         user = load_prompts(path)
-        unknown = sorted(set(user["plugins"]) - set(plugins))
-        if unknown:
-            raise PromptsValidationError(f"unknown plugin(s) under plugins: {unknown}")
         for slot, value in user.items():
             if slot != "plugins":
                 snapshot[slot] = copy.deepcopy(value)

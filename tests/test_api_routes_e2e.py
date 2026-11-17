@@ -211,7 +211,7 @@ async def test_openapi_paths_are_documented(config, monkeypatch):
 async def test_configuration_export_commands_roundtrip(tmp_path):
     from dusha import emotions
     from dusha import prompts as prompts_module
-    from dusha.config import AppConfig, PromptsConfig
+    from dusha.config import AffectConfig, AppConfig, PromptsConfig
 
     configuration = (Path(__file__).parents[1] / "docs" / "configuration.md").read_text(encoding="utf-8")
     commands = [cmd for block in re.findall(r"```sh\n(.*?)```", configuration, re.DOTALL)
@@ -234,6 +234,7 @@ async def test_configuration_export_commands_roundtrip(tmp_path):
         data_dir=tmp_path / "data",
         timezone="Asia/Taipei",
         prompts=PromptsConfig(path=str(prompts_file)),
+        plugins={"affect": AffectConfig()},
     )
     async with _client(api.create_app(cfg)) as client:
         injection = (await client.post("/state/v1/context", json={"query": ""})).json()["injection"]

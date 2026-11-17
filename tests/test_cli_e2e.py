@@ -55,7 +55,12 @@ def _json(result: subprocess.CompletedProcess[str]):
 
 
 def test_cli_runs_plugin_commands_on_the_server_and_state_survives_a_restart(tmp_path, free_port, serving):
-    path = _home(tmp_path, "nova", port=free_port())
+    path = _home(
+        tmp_path,
+        "nova",
+        port=free_port(),
+        plugins={"memory": {}, "evergreen": {}, "memo": {}, "affect": {}},
+    )
     with serving(path):
         remembered = _json(
             _cli(tmp_path, "evergreen", "remember", "favorite", "green tea", "--priority", "70")
@@ -101,7 +106,7 @@ def test_cli_runs_plugin_commands_on_the_server_and_state_survives_a_restart(tmp
 
 
 def test_cli_sends_the_token_and_prefers_the_saved_server(tmp_path, free_port, serving):
-    server = _home(tmp_path, "nova", port=free_port(), api_token="server-secret")
+    server = _home(tmp_path, "nova", port=free_port(), api_token="server-secret", plugins={"memo": {}})
     url = f"http://127.0.0.1:{json.loads(server.read_text())['port']}"
     _home(tmp_path, "client", proxy={"server": {"url": url, "token": "server-secret"}})
     _home(tmp_path, "stale", proxy={"server": {"url": url, "token": "wrong"}})
@@ -121,7 +126,7 @@ def test_cli_sends_the_token_and_prefers_the_saved_server(tmp_path, free_port, s
 def test_cli_hides_the_commands_of_disabled_plugins(tmp_path, free_port, serving):
     path = _home(
         tmp_path, "nova", port=free_port(),
-        plugins={"memory": {"disabled": True}, "evergreen": {"disabled": True}},
+        plugins={"memory": {"disabled": True}, "evergreen": {"disabled": True}, "memo": {}},
     )
     with serving(path):
         listed = _cli(tmp_path, "--help")
@@ -144,7 +149,7 @@ def test_cli_hides_the_commands_of_disabled_plugins(tmp_path, free_port, serving
 
 
 def test_cli_help_works_offline_from_the_cached_command_list(tmp_path, free_port, serving):
-    path = _home(tmp_path, "nova", port=free_port())
+    path = _home(tmp_path, "nova", port=free_port(), plugins={"memo": {}})
     with serving(path):
         online = _cli(tmp_path, "memo", "--help")
     offline = _cli(tmp_path, "memo", "--help")
@@ -222,7 +227,7 @@ def test_cli_resolves_companions_in_the_documented_order(tmp_path, free_port):
 
 
 def test_cli_talks_to_the_only_companion_without_a_selection(tmp_path, free_port, serving):
-    path = _home(tmp_path, "solo", port=free_port())
+    path = _home(tmp_path, "solo", port=free_port(), plugins={"memo": {}})
     with serving(path):
         added = _json(_cli(tmp_path, "memo", "add", "Solo memo."))
     assert added["memo"]["text"] == "Solo memo."
@@ -318,7 +323,7 @@ def test_cli_serve_rejects_a_bad_companion_name_without_creating_anything(tmp_pa
 
 
 def test_cli_companion_add_prompts_for_server_and_proxy_runs_without_creating(tmp_path, free_port, serving):
-    server = _home(tmp_path, "nova", port=free_port(), api_token="server-secret")
+    server = _home(tmp_path, "nova", port=free_port(), api_token="server-secret", plugins={"memo": {}})
     url = f"http://127.0.0.1:{json.loads(server.read_text())['port']}"
     config = tmp_path / "dusha" / "edge" / "config.json"
 
@@ -531,7 +536,8 @@ def test_cli_companion_update_moves_proxy_upstreams_to_providers_and_keeps_a_bac
 
 
 def test_cli_help_uses_imperative_phrases_and_documents_every_plugin_option(tmp_path, free_port, serving):
-    path = _home(tmp_path, "nova", port=free_port(), plugins={"relay": {}})
+    plugins = {"memory": {}, "evergreen": {}, "memo": {}, "affect": {}, "proactive": {}, "relay": {}}
+    path = _home(tmp_path, "nova", port=free_port(), plugins=plugins)
     with serving(path):
         root = _cli(tmp_path, "--help")
         companion_help = _cli(tmp_path, "companion", "--help")

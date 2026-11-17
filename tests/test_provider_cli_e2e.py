@@ -392,7 +392,7 @@ def test_help_and_errors_are_colored_only_on_a_terminal(tmp_path, free_port, ser
         terminal.close(wait=True)
         return terminal.output
 
-    path = _home(tmp_path, "nova", port=free_port())
+    path = _home(tmp_path, "nova", port=free_port(), plugins={"memory": {}})
     with serving(path):
         root = shown("--help", until="Plugin commands")
         remote = shown("memory", "--help", until="recent")

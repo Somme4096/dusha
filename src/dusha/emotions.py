@@ -112,8 +112,9 @@ def _validate_silence(snapshot: dict[str, Any], dimensions: dict[str, Any]) -> N
 def _validate_triggers(
     snapshot: dict[str, Any], dimensions: dict[str, Any], range_min: float, range_max: float
 ) -> None:
+    snapshot.setdefault("proactive", {"triggers": []})
     proactive = _section(snapshot, "proactive", {"triggers"})
-    triggers = proactive.get("triggers")
+    triggers = proactive.setdefault("triggers", [])
     if not isinstance(triggers, list):
         raise EmotionsValidationError("proactive.triggers must be an array")
     for index, trigger in enumerate(triggers):
@@ -232,7 +233,8 @@ def _validate(snapshot: dict[str, Any]) -> dict[str, Any]:
 
     _validate_silence(snapshot, dimensions)
 
-    _deltas_map(snapshot.get("proactive_sent_deltas") or {}, "proactive_sent_deltas", dimensions)
+    snapshot.setdefault("proactive_sent_deltas", {})
+    _deltas_map(snapshot["proactive_sent_deltas"], "proactive_sent_deltas", dimensions)
 
     impact_scale = _number(snapshot.get("impact_scale"), "impact_scale")
     if impact_scale <= 0:

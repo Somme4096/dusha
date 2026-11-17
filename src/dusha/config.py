@@ -261,8 +261,6 @@ BUILTIN_CONFIGS: dict[str, type[Any]] = {
     "proactive": ProactiveConfig,
     "relay": RelayConfig,
 }
-# Built-in plugins that stay off until config.json lists them.
-OPT_IN = frozenset({"relay"})
 
 
 @dataclass(slots=True)
@@ -285,10 +283,7 @@ def _plugin_entries(plugins: dict[str, Any]) -> dict[str, PluginEntry]:
         if not isinstance(value.config, expected):
             raise ValueError(f"plugins.{name} must be a {expected.__name__}")
         entries[name] = value
-    missing = {
-        name: PluginEntry(cls()) for name, cls in BUILTIN_CONFIGS.items() if name not in {*entries, *OPT_IN}
-    }
-    return {**missing, **entries}
+    return entries
 
 
 @dataclass(frozen=True, slots=True)
@@ -533,10 +528,9 @@ def _app_config_from_raw(raw: dict[str, Any], source_dir: Path) -> AppConfig:
     plugins_raw = raw.get("plugins") or {}
     if not isinstance(plugins_raw, dict):
         raise ValueError("plugins must be an object")
-    missing = [name for name in BUILTIN_CONFIGS if name not in {*plugins_raw, *OPT_IN}]
-    plugins = {name: _plugin_section(name, {}, source_dir) for name in missing}
-    for name, section in plugins_raw.items():
-        plugins[str(name)] = _plugin_section(str(name), section, source_dir)
+    plugins = {
+        str(name): _plugin_section(str(name), section, source_dir) for name, section in plugins_raw.items()
+    }
     prompts = _path_section(PromptsConfig, raw.get("prompts"), "prompts", source_dir)
 
     hints = typing.get_type_hints(AppConfig)
