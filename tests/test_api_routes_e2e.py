@@ -219,10 +219,12 @@ async def test_configuration_export_commands_roundtrip(tmp_path):
 
     prompts_file = tmp_path / "prompts.json"
     emotions_file = tmp_path / "emotions.json"
-    prompts_file.write_text(
-        (repo_root / "src" / "dusha" / "resources" / "prompts.json").read_text(encoding="utf-8"),
-        encoding="utf-8",
+    prompts_data = json.loads(
+        (repo_root / "src" / "dusha" / "resources" / "prompts.json").read_text(encoding="utf-8")
     )
+    prompts_data.pop("schema_version", None)
+    prompts_data.pop("prompts_version", None)
+    prompts_file.write_text(json.dumps(prompts_data), encoding="utf-8")
     emotions_file.write_text(
         (repo_root / "src" / "dusha" / "resources" / "emotions.json").read_text(encoding="utf-8"),
         encoding="utf-8",
@@ -231,8 +233,6 @@ async def test_configuration_export_commands_roundtrip(tmp_path):
     emotions.load_emotions(emotions_file)
 
     data = json.loads(prompts_file.read_text(encoding="utf-8"))
-    data.pop("schema_version", None)
-    data.pop("prompts_version", None)
     data["plugins"]["affect"]["block"]["instruction"] = "SENTINEL_EXPORT"
     prompts_file.write_text(json.dumps(data), encoding="utf-8")
     cfg = AppConfig(
