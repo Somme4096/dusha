@@ -1,0 +1,58 @@
+amends "package://github.com/jdx/hk/releases/download/v2.13.0/hk@2.13.0#/Config.pkl"
+import "package://github.com/jdx/hk/releases/download/v2.13.0/hk@2.13.0#/Builtins.pkl"
+
+local test_globs = List(
+  "src/**",
+  "tests/**",
+  "conftest.py",
+  "pyproject.toml",
+  "uv.lock",
+  "config.example.json",
+  "README.md",
+  "docs/*.md",
+  "integrations/agy_dusha/**",
+)
+
+steps {
+  ["ruff"] = (Builtins.ruff) {
+    check = new CommandSpec {
+      command = "uv run ruff check --force-exclude {{files}}"
+      effect = "read"
+    }
+    check_diff = null
+    check_after_diff = false
+    fix = new CommandSpec {
+      command = "uv run ruff check --force-exclude --fix {{files}}"
+      effect = "write"
+    }
+  }
+  ["pytest"] {
+    glob = test_globs
+    depends = List("ruff")
+    output_summary = "combined"
+    env {
+      ["TERM"] = "xterm-256color"
+    }
+    check = new CommandSpec {
+      command = "uv run pytest"
+      effect = "read"
+    }
+  }
+  ["astrbot-pytest"] {
+    glob = List("integrations/astrbot_dusha/**")
+    depends = List("ruff")
+    output_summary = "combined"
+    check = new CommandSpec {
+      command = "uv run pytest integrations/astrbot_dusha/test_astrbot_e2e.py"
+      effect = "read"
+    }
+  }
+}
+
+hooks {
+  ["commit-msg"] {
+    steps {
+      ["conventional-commit"] = Builtins.check_conventional_commit
+    }
+  }
+}

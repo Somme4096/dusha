@@ -4,6 +4,7 @@
 - Do not write comments or descriptions inside the code that are more than one(1) line unless absolutely necessary and user agreed. Use link to actual README.md on github (https://github.com/Somme4096/dusha) for public-facing API descriptions, explain nothing else.
 - Write E2E tests only, no unit tests. 
 - Commit all completed task changes using semantic commits (`type(scope): summary`, such as `refactor(api): unify error handling`), exclude unrelated edits and secrets.
+- Let `hk` run `ruff`, `pytest`, and commit message checks automatically on `git commit` instead of running tests manually after implementation, use `hk check` when verifying before a commit, and never bypass hooks with `--no-verify`.
 - Do NOT EVER use SHA-256 check for ANYTHING unless user explicitly stated so.
 
 ## CLI writing convention
