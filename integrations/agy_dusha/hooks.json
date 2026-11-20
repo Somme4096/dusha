@@ -1,0 +1,18 @@
+{
+  "dusha": {
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "python3 ./hook.py",
+        "timeout": 15
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "python3 ./hook.py",
+        "timeout": 15
+      }
+    ]
+  }
+}

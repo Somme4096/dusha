@@ -1,0 +1,11 @@
+{
+  "name": "dusha",
+  "version": "1.5.21",
+  "description": "Connect Antigravity CLI (agy) to dusha serve through lifecycle hooks.",
+  "author": {
+    "name": "Somme4096",
+    "url": "https://github.com/Somme4096"
+  },
+  "homepage": "https://github.com/Somme4096/dusha",
+  "repository": "https://github.com/Somme4096/dusha"
+}

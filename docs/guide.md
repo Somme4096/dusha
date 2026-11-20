@@ -141,7 +141,27 @@ export DUSHA_API_KEY="codex:replace-with-dusha-token"
 
 ### Antigravity CLI (`agy`)
 
-`agy` uses account OAuth by default and does not expose an endpoint flag on the command line. To route requests through a custom endpoint, switch `modelProvider` to `"gemini"` in `~/.gemini/antigravity-cli/settings.json`:
+`agy` uses Google Account OAuth by default (including Google AI Pro) and ignores custom model base URLs in that mode. Instead of routing model traffic through `dusha proxy`, connect `agy` directly to `dusha serve` with the bundled [`integrations/agy_dusha`](../integrations/agy_dusha/README.md) lifecycle-hook plugin and the Dusha MCP server.
+
+1. Keep `agy` on its default Google Account sign-in (leave `modelProvider` unset in `~/.gemini/antigravity-cli/settings.json`).
+2. Install the bundled `agy` plugin from the repository root:
+
+```sh
+agy plugin install integrations/agy_dusha
+```
+
+3. Register the Dusha MCP server in `agy` (omit `--header` when [auth](#auth) is off):
+
+```sh
+agy mcp add --header "X-Companion-Token: replace-with-dusha-token" \
+  dusha http://127.0.0.1:8765/mcp
+```
+
+The plugin's `PreInvocation` and `Stop` hooks call `dusha serve` directly to ingest user turns, inject context as a `systemMessage` step, and archive assistant replies. When `DUSHA_URL` is unset, it reads the server URL and token from your companion's `config.json` automatically (using `DUSHA_CONFIG`, `DUSHA_HOME`, `DUSHA_COMPANION`, or the sole companion under `~/.config/dusha`). Set `DUSHA_URL`, `DUSHA_TOKEN`, `DUSHA_HARNESS` (default `agy`), or `DUSHA_PLUGINS` to override. See [`integrations/agy_dusha/README.md`](../integrations/agy_dusha/README.md) for all environment options.
+
+#### Using a Gemini API key instead of Google Account OAuth
+
+If you want `agy` to call a custom Gemini endpoint instead of signing in with a Google Account, set `modelProvider` to `"gemini"` in `~/.gemini/antigravity-cli/settings.json`:
 
 ```json
 {
@@ -158,13 +178,6 @@ export GEMINI_API_KEY="agy:replace-with-dusha-token"
 
 > [!NOTE]
 > `dusha proxy` injects context on OpenAI `chat/completions`, OpenAI `responses`, and Anthropic `messages` routes, and forwards native Gemini paths untouched unless paired with a protocol translation gateway.
-
-Register the Dusha MCP server in `agy`:
-
-```sh
-agy mcp add --header "X-Companion-Token: replace-with-dusha-token" \
-  dusha http://127.0.0.1:8765/mcp
-```
 
 ## Deployment
 
