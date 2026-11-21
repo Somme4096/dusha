@@ -1,0 +1,6 @@
+[tools]
+hk = "latest"
+uv = "latest"
+
+[tasks.pre-commit]
+run = "hk run pre-commit"
