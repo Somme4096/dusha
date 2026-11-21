@@ -3,7 +3,7 @@
 - Always use period and comma instead of semicolon. This applies to every user-facing and agent-facing instructions, including comments.
 - Do not write comments or descriptions inside the code that are more than one(1) line unless absolutely necessary and user agreed. Use link to actual README.md on github (https://github.com/Somme4096/dusha) for public-facing API descriptions, explain nothing else.
 - Write E2E tests only, no unit tests. 
-- Let `hk` run `ruff`, `pytest`, and commit message checks automatically on `git commit` instead of running tests manually after implementation, use `hk check` when verifying before a commit, and never bypass hooks with `--no-verify`.
+- Let `hk` run `ruff`, `pytest`, and commit message checks automatically on `git commit` instead of running tests manually after implementation. You may use `hk check` when you need to test before a commit.
 - Do NOT EVER use SHA-256 check for ANYTHING unless user explicitly stated so.
 
 ## CLI writing convention
