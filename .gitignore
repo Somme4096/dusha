@@ -9,3 +9,5 @@ config.json
 data/
 integrations/*.zip
 .claude/settings.local.json
+.serena/
+.opencode/
