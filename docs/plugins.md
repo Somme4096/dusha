@@ -1,10 +1,10 @@
 # Plugins
 
-Every companion feature in Dusha is a plugin. The built-in plugins are `identity`, `memory`, `evergreen`, `memo`, `affect`, `proactive`, and `relay`.
+Every companion feature in Dusha is a plugin. The built-in plugins are `identity`, `memory`, `evergreen`, `memo`, `affect`, and `proactive`.
 
 Only plugins listed under `plugins` in `config.json` are loaded.
 
- `dusha companion add` pre-populates all built-in plugins except `relay`. Set `"disabled": true` on an entry to turn a plugin off while keeping its settings in `config.json`, or remove the entry from `plugins` to skip loading it altogether. For plugin configuration keys, see [configuration.md](configuration.md#plugins). For HTTP endpoints, see [api.md](api.md#endpoints).
+`dusha companion add` pre-populates all built-in plugins. Set `"disabled": true` on an entry to turn a plugin off while keeping its settings in `config.json`, or remove the entry from `plugins` to skip loading it altogether. For plugin configuration keys, see [configuration.md](configuration.md#plugins). For HTTP endpoints, see [api.md](api.md#endpoints).
 
 ## Built-in plugins
 
@@ -110,34 +110,6 @@ Evaluates on a background timer whether the companion should initiate a message 
 | `dusha proactive evaluate` | Run a single evaluation pass immediately and print the queued event or `null`. |
 | `dusha proactive poll [--consumer cli] [--limit 1]` | Lease pending proactive events. |
 | `dusha proactive ack <event_id> <sent\|failed\|release> [--consumer cli] [--text TEXT] [--error TEXT]` | Acknowledge a leased event. |
-
-### `relay`
-
-Opt-in plugin (`"relay": {}` under `plugins` in [`config.json`](configuration.md#relay)) that connects a hub companion to device plugins (`presence`, `screenshot`, `notification`, `acp`, `music`, `hands`, `voice` from [dusha-plugin-collections](https://github.com/Somme4096/dusha-plugin-collections)).
-
-- Queries the `presence` plugin to resolve `device: "auto"` to the device currently in use.
-- Dispatches capabilities locally via in-process events when the target device is the hub itself, or over HTTP (`POST <device_url>/state/v1/...`) for remote devices.
-- Injects `<local_time>` (for example, `<local_time>"Monday 14:30"</local_time>`) into every context build.
-- Listens for `proactive.sent` to mirror proactive messages as notifications (and optional voice) on the active device.
-- Listens for `relay.endpoint` to resolve a device's URL and auth headers for other plugins.
-
-**CLI commands and MCP tools:**
-
-Every MCP tool has a matching CLI command under `dusha relay <command>` (with underscores written as hyphens on the CLI, such as `dusha relay spawn-status`).
-
-| MCP tool | CLI command | Arguments | Description |
-| --- | --- | --- | --- |
-| `look` | `dusha relay look` | `device` (str, default `"auto"`) | Capture a screenshot from a device. |
-| `notify` | `dusha relay notify` | `title` (str), `body` (str, default `""`), `device` (str, default `"auto"`), `urgency` (`"low"`, `"normal"`, `"critical"`, default `"normal"`) | Display a notification on the active desktop or phone. |
-| `spawn` | `dusha relay spawn` | `prompt` (str), `device` (str, default `"auto"`), `agent` (str, default `""`), `cwd` (str, default `""`) | Launch a background coding agent on a device and return its `job` ID. |
-| `spawn_status` | `dusha relay spawn-status` | `job` (str), `device` (str, default `""`) | Check the status and output of a spawned job. |
-| `spawn_wait` | `dusha relay spawn-wait` | `job` (str), `device` (str, default `""`), `timeout_seconds` (float, default `0`) | Poll until a spawned job finishes or times out. |
-| `music` | `dusha relay music` | `action` (str, default `"status"`), `query` (str, default `""`), `device` (str, default `"auto"`), `player` (str, default `""`) | Inspect or control media playback (`status`, `play`, `pause`, `toggle`, `next`, `previous`, `stop`, `volume`, `find`, `album`). |
-| `shell` | `dusha relay shell` | `command` (str), `device` (str, default `"auto"`), `cwd` (str, default `""`), `timeout_seconds` (float, default `60`) | Execute a shell command on a device. |
-| `type_text` | `dusha relay type-text` | `text` (str), `device` (str, default `"auto"`) | Type text into the focused window on a device. |
-| `press_key` | `dusha relay press-key` | `key` (str), `device` (str, default `"auto"`) | Press a key or shortcut on a device. |
-| `list_windows` | `dusha relay list-windows` | `device` (str, default `"auto"`) | List open windows on a device. |
-| `speak` | `dusha relay speak` | `text` (str), `device` (str, default `"auto"`) | Synthesize and play speech on the active device or upload a voice clip to Discord. |
 
 ## Make your own plugin
 

@@ -127,7 +127,6 @@ Every companion feature is a plugin configured under `plugins.<name>`. See [plug
 {
   "plugins": {
     "memo": {"disabled": true},
-    "relay": {"token": "device-secret"},
     "system_one": {"options": {"base_url": "http://127.0.0.1:8000"}}
   }
 }
@@ -190,25 +189,6 @@ Every companion feature is a plugin configured under `plugins.<name>`. See [plug
 | `plugins.proactive.retry_delay_minutes` | `15` | Minutes (`>= 0`) to wait before re-queuing an event acknowledged as `failed`. |
 | `plugins.proactive.thresholds` | `{}` | Overrides trigger thresholds in `emotions.json`, keyed by dimension name. |
 | `plugins.proactive.target` | `"latest"` | Target conversation for proactive events: `"latest"`, `{"harness": "<name>"}`, or `{"harness": "<name>", "conversation_id": "<id>"}`. |
-
-### `relay`
-
-`relay` is opt-in. Include `"relay": {}` (or set any key below) under `plugins` to enable it.
-
-| Key | Default | Description |
-| --- | --- | --- |
-| `plugins.relay.token` | `""` | Shared `X-Companion-Token` sent to remote device servers. |
-| `plugins.relay.tokens` | `{}` | Per-device tokens keyed by device name, overriding `token`. |
-| `plugins.relay.timeout_seconds` | `60` | HTTP request timeout in seconds (`> 0`) for device calls. |
-| `plugins.relay.mirror_proactive` | `true` | Mirror sent proactive messages as notifications on the active device. |
-| `plugins.relay.mirror_title` | `"dusha"` | Notification title used when mirroring proactive messages. |
-| `plugins.relay.mirror_voice` | `false` | Read mirrored proactive messages aloud on the active device. |
-| `plugins.relay.spawn_timeout_seconds` | `1800` | Timeout in seconds (`> 0`) for spawned coding agents. |
-| `plugins.relay.spawn_poll_seconds` | `2` | Poll interval in seconds (`> 0`) for `spawn_wait`. |
-| `plugins.relay.speak_order` | `["presence", "discord"]` | Delivery route priority when `speak` is called with `device: "auto"`. Allowed entries: `"presence"`, `"discord"`. |
-| `plugins.relay.speak_route` | `""` | Fixed Discord route for voice clips. Empty uses the latest conversation route. |
-| `plugins.relay.speak_timeout_seconds` | `180` | Timeout in seconds (`> 0`) for TTS synthesis and playback. |
-| `plugins.relay.speak_help` | `""` | Custom description replacing the default `speak` MCP tool prompt. |
 
 ### External plugins
 

@@ -258,7 +258,7 @@ Each active plugin allowed by the filter runs in `plugins` config order and cont
 2. `<evergreen_facts>[...]</evergreen_facts>`
 3. `<memo_notes>[...]</memo_notes>`
 4. `<affect>...</affect>`
-5. Any blocks from external plugins (or `<local_time>` from `relay`)
+5. Any blocks from external plugins
 6. `<companion_state>{"instructions":{...},"session":[...]}</companion_state>`
 
 All JSON inside blocks escapes `<`, `>`, and `&` as `\u003c`, `\u003e`, and `\u0026`.

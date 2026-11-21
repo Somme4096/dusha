@@ -22,7 +22,6 @@ Because it's just a hackable python API, you can do **literally anything**. Incl
 - write your own emotion system
 - call weather API and feed it to the model real-time (so they know it's raining outside)
 - feed them your browser history
-- let your companion play music on any device through built-in `relay` plugin
 - integrate an external memory provider like [Supermemory](https://github.com/supermemoryai/supermemory) and add tools to Dusha MCP
 
 See [dusha-plugin-collections](https://github.com/Somme4096/dusha-plugin-collections).

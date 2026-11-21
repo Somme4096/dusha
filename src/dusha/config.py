@@ -98,12 +98,6 @@ _BOUNDS: dict[str, dict[str, tuple[float | None, float | None]]] = {
         "lease_seconds": (1, None),
         "retry_delay_minutes": (0, None),
     },
-    "plugins.relay": {
-        "timeout_seconds": (0, None),
-        "spawn_timeout_seconds": (0, None),
-        "spawn_poll_seconds": (0, None),
-        "speak_timeout_seconds": (0, None),
-    },
 }
 _EXCLUSIVE_ZERO = {"timeout_seconds"}
 
@@ -225,33 +219,6 @@ class IdentityConfig:
     path: str = ""
 
 
-RELAY_SPEAK_ROUTES = ("presence", "discord")
-
-
-@dataclass(slots=True)
-class RelayConfig:
-    token: str = ""
-    tokens: dict[str, str] = field(default_factory=dict)
-    timeout_seconds: float = 60
-    mirror_proactive: bool = True
-    mirror_title: str = "dusha"
-    spawn_timeout_seconds: float = 1800
-    spawn_poll_seconds: float = 2
-    mirror_voice: bool = False
-    speak_order: list[str] = field(default_factory=lambda: list(RELAY_SPEAK_ROUTES))
-    speak_route: str = ""
-    speak_timeout_seconds: float = 180
-    speak_help: str = ""
-
-    def __post_init__(self) -> None:
-        _check_bounds(self, "plugins.relay")
-        wrong = sorted(set(self.speak_order) - set(RELAY_SPEAK_ROUTES))
-        if wrong:
-            raise ValueError(
-                f"unknown plugins.relay.speak_order route(s): {wrong}, use {list(RELAY_SPEAK_ROUTES)}"
-            )
-
-
 BUILTIN_CONFIGS: dict[str, type[Any]] = {
     "identity": IdentityConfig,
     "memory": MemoryConfig,
@@ -259,7 +226,6 @@ BUILTIN_CONFIGS: dict[str, type[Any]] = {
     "memo": MemoConfig,
     "affect": AffectConfig,
     "proactive": ProactiveConfig,
-    "relay": RelayConfig,
 }
 
 

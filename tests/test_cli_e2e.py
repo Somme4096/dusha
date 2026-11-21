@@ -552,7 +552,7 @@ def test_cli_companion_update_moves_proxy_upstreams_to_providers_and_keeps_a_bac
 
 
 def test_cli_help_uses_imperative_phrases_and_documents_every_plugin_option(tmp_path, free_port, serving):
-    plugins = {"memory": {}, "evergreen": {}, "memo": {}, "affect": {}, "proactive": {}, "relay": {}}
+    plugins = {"memory": {}, "evergreen": {}, "memo": {}, "affect": {}, "proactive": {}}
     path = _home(tmp_path, "nova", port=free_port(), plugins=plugins)
     with serving(path):
         root = _cli(tmp_path, "--help")
@@ -562,8 +562,6 @@ def test_cli_help_uses_imperative_phrases_and_documents_every_plugin_option(tmp_
         manifest = httpx.get(f"http://127.0.0.1:{json.loads(path.read_text())['port']}/cli/v1/commands").json()
         groups = manifest["groups"]
         commands = manifest["commands"]
-        relay_help = _cli(tmp_path, "relay", "--help")
-        speak_help = _cli(tmp_path, "relay", "speak", "--help")
         poll_help = _cli(tmp_path, "proactive", "poll", "--help")
         ack_help = _cli(tmp_path, "proactive", "ack", "--help")
         memo_help = _cli(tmp_path, "memo", "list", "--help")
@@ -581,10 +579,6 @@ def test_cli_help_uses_imperative_phrases_and_documents_every_plugin_option(tmp_
         for param in spec["args"]:
             if param["option"]:
                 assert param["help"] and param["help"].endswith("."), (label, param["name"], param["help"])
-    assert relay_help.returncode == 0 and "Reach connected devices" in relay_help.stdout
-    assert "their other devices" not in relay_help.stdout and "spawn_status" not in relay_help.stdout
-    assert speak_help.returncode == 0 and "irodori-emoji" not in speak_help.stdout
-    assert "<local_time>" not in speak_help.stdout and "--device" in speak_help.stdout
     assert poll_help.returncode == 0 and "Consumer name leasing the events." in poll_help.stdout
     assert ack_help.returncode == 0 and "Failure reason when outcome is failed." in ack_help.stdout
     assert memo_help.returncode == 0 and "Which memos to list." in memo_help.stdout

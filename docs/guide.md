@@ -81,7 +81,7 @@ Once the proxy is running, connect your harness to `http://127.0.0.1:8766/<profi
 | `dusha health` | Server HTTP | Run a SQLite integrity check on the server database. |
 | `dusha backup <destination>` | Server HTTP | Write a consistent online SQLite backup to `<destination>` on the server host. |
 
-Active plugins can register their own command groups (such as `memory`, `evergreen`, `memo`, `affect`, `proactive`, and `relay`). 
+Active plugins can register their own command groups (such as `memory`, `evergreen`, `memo`, `affect`, and `proactive`).
 
 ## Connect a harness
 
