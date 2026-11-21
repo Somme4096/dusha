@@ -53,7 +53,10 @@ def resolve_home(home: str | Path | None = None, companion: str | None = None) -
         return companion_home(os.environ[COMPANION_ENV])
     names = list_companions()
     if len(names) > 1:
-        raise ValueError(f"several companions exist: {names}. Specify one")
+        raise ValueError(
+            f"several companions exist: {', '.join(names)}.\n"
+            "Specify one with -c <name>, --home <dir>, --config <path>, or DUSHA_COMPANION"
+        )
     return companion_home(names[0]) if names else None
 
 

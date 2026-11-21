@@ -17,6 +17,8 @@ from .client import catalog, presets, remote, settings
 from .providers import PLACEHOLDER, http_url
 
 STATIC = frozenset({"init", "serve", "proxy", "provider", "companion", "plugin"})
+_ROOT_VALUE_OPTIONS = ("-c", "--companion", "--home", "--config")
+_ROOT_ATTACHED_OPTIONS = ("--companion=", "--home=", "--config=")
 _TYPES = {"str": click.STRING, "int": click.INT, "float": click.FLOAT}
 _BUILT = "dusha.commands"
 _CORE = "dusha.core"
@@ -108,14 +110,18 @@ def _print(value: Any) -> None:
     click.echo(json.dumps(value, ensure_ascii=False, indent=2, default=str))
 
 
+def _sentences(text: str) -> str:
+    return "\n".join(_sentence(line) for line in text.splitlines() if line.strip())
+
+
 def _config(resolve: Callable[[], Any], *, hint: str = "") -> Any:
     try:
         return resolve()
     except FileNotFoundError as error:
-        message = _sentence(str(error))
+        message = _sentences(str(error))
         raise ConfigError(f"{message}\n{_sentence(hint)}" if hint else message) from error
     except ValueError as error:
-        raise ConfigError(_sentence(str(error))) from error
+        raise ConfigError(_sentences(str(error))) from error
 
 
 def _add_hint(companion: str | None, home: str | None) -> str:
@@ -137,6 +143,13 @@ def _selection(ctx: click.Context) -> dict[str, Any]:
     return ctx.find_root().params
 
 
+def _companion_name(ctx: click.Context, name: str | None) -> str | None:
+    chosen = _selection(ctx).get("companion")
+    if chosen and name and chosen != name:
+        raise click.UsageError(f"Specify one companion, got both {chosen!r} and {name!r}.", ctx=ctx)
+    return chosen or name
+
+
 def _client(ctx: click.Context, companion: str | None = None) -> tuple[settings.Connection, Path | None]:
     params = _selection(ctx)
     return _config(
@@ -144,7 +157,7 @@ def _client(ctx: click.Context, companion: str | None = None) -> tuple[settings.
             homes.locate(
                 params.get("config"),
                 home=params.get("home"),
-                companion=params.get("companion") or companion,
+                companion=_companion_name(ctx, companion),
             )
         )
     )
@@ -201,7 +214,34 @@ def _build(
     return built
 
 
+def _hoist_root_options(ctx: click.Context, args: list[str]) -> list[str]:
+    hoisted: list[str] = []
+    rest: list[str] = []
+    index = 0
+    while index < len(args):
+        token = args[index]
+        if token == "--":
+            rest.extend(args[index:])
+            break
+        if token in _ROOT_VALUE_OPTIONS:
+            if index + 1 >= len(args):
+                raise click.BadOptionUsage(token, f"Option '{token}' requires an argument.", ctx)
+            hoisted.extend((token, args[index + 1]))
+            index += 2
+            continue
+        if token.startswith(_ROOT_ATTACHED_OPTIONS) or (token.startswith("-c") and len(token) > 2):
+            hoisted.append(token)
+            index += 1
+            continue
+        rest.append(token)
+        index += 1
+    return [*hoisted, *rest]
+
+
 class Root(click.Group):
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        return super().parse_args(ctx, _hoist_root_options(ctx, args))
+
     def _dynamic(self, ctx: click.Context) -> dict[str, click.Command]:
         root = ctx.find_root()
         if _BUILT not in root.meta:
@@ -264,7 +304,7 @@ def serve(ctx: click.Context, name: str | None) -> None:
     from .config import load_config
 
     params = _selection(ctx)
-    companion = params.get("companion") or name
+    companion = _companion_name(ctx, name)
 
     def resolve() -> Any:
         path = homes.locate(params.get("config"), home=params.get("home"), companion=companion)
@@ -329,7 +369,7 @@ def _companion_home(
     ctx: click.Context, name: str | None, command: str
 ) -> tuple[Path, str | None, str | None]:
     params = _selection(ctx)
-    companion = params.get("companion") or name
+    companion = _companion_name(ctx, name)
     home_arg = params.get("home")
     if params.get("config") is not None:
         raise ConfigError(f"Pass a companion name or --home to dusha {command}, not --config.")
@@ -486,7 +526,7 @@ class Proxy(click.Group):
 
 def _proxy_file(ctx: click.Context) -> Path:
     params = _selection(ctx)
-    companion = params.get("companion") or ctx.meta.get(_PROXY_NAME)
+    companion = _companion_name(ctx, ctx.meta.get(_PROXY_NAME))
 
     def resolve() -> Path:
         path = homes.locate(params.get("config"), home=params.get("home"), companion=companion)
@@ -530,7 +570,7 @@ def _pick(found: dict[str, presets.Preset]) -> str:
 
 def _provider_file(ctx: click.Context, name: str | None = None) -> Path:
     params = _selection(ctx)
-    companion = params.get("companion") or name
+    companion = _companion_name(ctx, name)
 
     def resolve() -> Path:
         path = homes.locate(params.get("config"), home=params.get("home"), companion=companion)

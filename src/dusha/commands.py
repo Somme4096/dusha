@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 RESERVED = frozenset({"init", "serve", "proxy", "provider", "companion", "plugin"})
+RESERVED_OPTIONS = frozenset({"companion", "home", "config"})
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
 _TYPES = {str: "str", int: "int", float: "float", bool: "bool"}
 _SCHEMA = {"str": "string", "int": "integer", "float": "number", "bool": "boolean", "choice": "string"}
@@ -223,6 +224,9 @@ class Commands:
         if path in self.entries:
             raise ValueError(f"command {label!r} is already registered")
         check_args(f"command {label!r}", args)
+        for item in args:
+            if item.option and item.name in RESERVED_OPTIONS:
+                raise ValueError(f"command {label!r} uses a reserved option name {item.name!r}")
         positional = [item for item in args if not item.option]
         for before, after in zip(positional, positional[1:], strict=False):
             if before.repeated or (after.required and not before.required):

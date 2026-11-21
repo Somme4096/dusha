@@ -112,13 +112,17 @@ def test_cli_sends_the_token_and_prefers_the_saved_server(tmp_path, free_port, s
     _home(tmp_path, "stale", proxy={"server": {"url": url, "token": "wrong"}})
     with serving(server):
         local = _json(_cli(tmp_path, "-c", "nova", "memo", "add", "From the server machine."))
+        trailing = _json(_cli(tmp_path, "memo", "add", "From trailing flag.", "-c", "nova"))
         remote = _json(_cli(tmp_path, "-c", "client", "memo", "list"))
+        trailing_remote = _json(_cli(tmp_path, "memo", "list", "-c", "client"))
         plugins = _json(_cli(tmp_path, "-c", "client", "plugin", "list"))
+        trailing_plugins = _json(_cli(tmp_path, "plugin", "list", "-c", "client"))
         direct_plugins = _json(_cli(tmp_path, "plugin", "list", "client"))
         denied = _cli(tmp_path, "-c", "stale", "memo", "list")
         denied_plugins = _cli(tmp_path, "plugin", "list", "stale")
-    assert [memo["id"] for memo in remote["memos"]] == [local["memo"]["id"]]
-    assert plugins["memo"]["state"] == "active" and direct_plugins == plugins
+    assert [memo["id"] for memo in remote["memos"]] == [local["memo"]["id"], trailing["memo"]["id"]]
+    assert trailing_remote == remote
+    assert plugins["memo"]["state"] == "active" and direct_plugins == plugins and trailing_plugins == plugins
     assert denied.returncode == 1 and "Invalid companion token." in denied.stderr
     assert denied_plugins.returncode == 1 and "Invalid companion token." in denied_plugins.stderr
 
@@ -216,10 +220,22 @@ def test_cli_resolves_companions_in_the_documented_order(tmp_path, free_port):
     (tmp_path / "config.yaml").write_text("host: example-host\n", encoding="utf-8")
     yaml = _cli(tmp_path, "--config", str(tmp_path / "config.yaml"), "health")
     assert ambiguous.returncode == 2 and "Several companions exist" in ambiguous.stderr
+    hint = "Specify one with -c <name>, --home <dir>, --config <path>, or DUSHA_COMPANION."
+    assert hint in ambiguous.stderr
     assert unknown.returncode == 2 and "Configuration file not found" in unknown.stderr
     assert escaped.returncode == 2 and "Companion name" in escaped.stderr
     assert absent.returncode == 2 and "Configuration file not found" in absent.stderr
     assert yaml.returncode == 2 and "Unsupported configuration format" in yaml.stderr
+    for conflict_args in (
+        ("plugin", "list", "luna", "-c", "dusha"),
+        ("serve", "luna", "-c", "dusha"),
+        ("proxy", "luna", "-c", "dusha"),
+        ("companion", "update", "luna", "-c", "dusha"),
+    ):
+        conflict = _cli(tmp_path, *conflict_args)
+        assert conflict.returncode == 2 and "Specify one companion, got both" in conflict.stderr
+    missing_value = _cli(tmp_path, "plugin", "list", "-c")
+    assert missing_value.returncode == 2 and "requires an argument" in missing_value.stderr
     assert _json(_cli(tmp_path, "companion", "list")) == {
         "root": str(tmp_path / "dusha"),
         "companions": ["dusha", "luna"],
