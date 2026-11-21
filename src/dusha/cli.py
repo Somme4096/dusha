@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shutil
@@ -12,18 +13,20 @@ from typing import Any
 
 import click
 
-from . import homes, providers
+from . import __version__, homes, providers
 from .client import catalog, presets, remote, settings
 from .providers import PLACEHOLDER, http_url
 
 STATIC = frozenset({"init", "serve", "proxy", "provider", "companion", "plugin"})
 _ROOT_VALUE_OPTIONS = ("-c", "--companion", "--home", "--config")
 _ROOT_ATTACHED_OPTIONS = ("--companion=", "--home=", "--config=")
+_ROOT_FLAG_OPTIONS = ("-v", "--verbose", "-q", "--quiet")
 _TYPES = {"str": click.STRING, "int": click.INT, "float": click.FLOAT}
 _BUILT = "dusha.commands"
 _CORE = "dusha.core"
 _PROXY_NAME = "dusha.proxy.name"
 _HEADING, _TERM, _DONE, _WARNING, _ERROR = "green", "cyan", "green", "yellow", "red"
+_logger = logging.getLogger("dusha.cli")
 
 
 def _paint(text: str, **style: Any) -> str:
@@ -54,6 +57,21 @@ def _warn(*lines: str) -> str:
 
 def _success(*lines: str) -> str:
     return _block("Success!", _DONE, *lines)
+
+
+def _is_quiet(ctx: click.Context | None = None) -> bool:
+    current = ctx or click.get_current_context(silent=True)
+    return bool(current and current.find_root().params.get("quiet"))
+
+
+def _echo_warn(*lines: str, ctx: click.Context | None = None) -> None:
+    if not _is_quiet(ctx):
+        click.echo(_warn(*lines), err=True)
+
+
+def _echo_success(*lines: str, ctx: click.Context | None = None) -> None:
+    if not _is_quiet(ctx):
+        click.echo(_success(*lines), err=True)
 
 
 def _ask(text: str) -> str:
@@ -118,9 +136,11 @@ def _config(resolve: Callable[[], Any], *, hint: str = "") -> Any:
     try:
         return resolve()
     except FileNotFoundError as error:
+        _logger.debug("Configuration lookup failed", exc_info=error)
         message = _sentences(str(error))
         raise ConfigError(f"{message}\n{_sentence(hint)}" if hint else message) from error
     except ValueError as error:
+        _logger.debug("Configuration error", exc_info=error)
         raise ConfigError(_sentences(str(error))) from error
 
 
@@ -136,6 +156,7 @@ def _remote(call: Callable[..., Any], *args: Any) -> Any:
     try:
         return call(*args)
     except remote.RemoteError as error:
+        _logger.debug("Remote request failed", exc_info=error)
         raise click.ClickException(_sentence(str(error))) from error
 
 
@@ -188,6 +209,7 @@ def _command(
 
     def callback(**values: Any) -> None:
         if offline:
+            _logger.debug("Server offline for command %s", " ".join(path), exc_info=offline)
             raise click.ClickException(_sentence(str(offline)))
         values = {key: list(value) if isinstance(value, tuple) else value for key, value in values.items()}
         _print(_remote(remote.run, connection, path, values))
@@ -214,6 +236,42 @@ def _build(
     return built
 
 
+def _configure_logging(verbose: bool, quiet: bool) -> None:
+    logger = logging.getLogger("dusha")
+    for handler in list(logger.handlers):
+        if getattr(handler, "_dusha_cli", False):
+            logger.removeHandler(handler)
+    if verbose:
+        logger.setLevel(logging.DEBUG)
+        handler = logging.StreamHandler(sys.stderr)
+        handler._dusha_cli = True  # type: ignore[attr-defined]
+        handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+        logger.addHandler(handler)
+    elif quiet:
+        logger.setLevel(logging.ERROR)
+    else:
+        logger.setLevel(logging.WARNING)
+
+
+def _verbosity_callback(ctx: click.Context, param: click.Parameter, value: bool) -> bool:
+    if not value:
+        return value
+    other = "quiet" if param.name == "verbose" else "verbose"
+    if ctx.params.get(other):
+        raise click.UsageError("Use only one of --verbose or --quiet.", ctx=ctx)
+    _configure_logging(param.name == "verbose", param.name == "quiet")
+    return value
+
+
+def _uvicorn_level(ctx: click.Context) -> str:
+    params = _selection(ctx)
+    if params.get("verbose"):
+        return "debug"
+    if params.get("quiet"):
+        return "warning"
+    return "info"
+
+
 def _hoist_root_options(ctx: click.Context, args: list[str]) -> list[str]:
     hoisted: list[str] = []
     rest: list[str] = []
@@ -229,7 +287,11 @@ def _hoist_root_options(ctx: click.Context, args: list[str]) -> list[str]:
             hoisted.extend((token, args[index + 1]))
             index += 2
             continue
-        if token.startswith(_ROOT_ATTACHED_OPTIONS) or (token.startswith("-c") and len(token) > 2):
+        if (
+            token in _ROOT_FLAG_OPTIONS
+            or token.startswith(_ROOT_ATTACHED_OPTIONS)
+            or (token.startswith("-c") and len(token) > 2)
+        ):
             hoisted.append(token)
             index += 1
             continue
@@ -240,7 +302,12 @@ def _hoist_root_options(ctx: click.Context, args: list[str]) -> list[str]:
 
 class Root(click.Group):
     def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
-        return super().parse_args(ctx, _hoist_root_options(ctx, args))
+        rest = super().parse_args(ctx, _hoist_root_options(ctx, args))
+        verbose, quiet = bool(ctx.params.get("verbose")), bool(ctx.params.get("quiet"))
+        if verbose and quiet:
+            raise click.UsageError("Use only one of --verbose or --quiet.", ctx=ctx)
+        _configure_logging(verbose, quiet)
+        return rest
 
     def _dynamic(self, ctx: click.Context) -> dict[str, click.Command]:
         root = ctx.find_root()
@@ -249,7 +316,7 @@ class Root(click.Group):
                 connection, cache = _client(root)
                 manifest, stale = _remote(remote.manifest, connection, cache)
                 if stale:
-                    click.echo(_warn("Using the cached command list.", str(stale)), err=True)
+                    _echo_warn("Using the cached command list.", str(stale), ctx=root)
                 offline = stale if isinstance(stale, remote.Unreachable) else None
                 root.meta[_BUILT] = _build(manifest, connection, offline)
                 root.meta[_CORE] = frozenset(manifest.get("core", []))
@@ -275,7 +342,7 @@ class Root(click.Group):
         names = self.list_commands(ctx)
         failed = ctx.find_root().meta.get(_BUILT)
         if isinstance(failed, click.ClickException) and isinstance(failed.__cause__, remote.Unreachable):
-            click.echo(_warn(failed.format_message(), "Plugin commands are hidden."), err=True)
+            _echo_warn(failed.format_message(), "Plugin commands are hidden.", ctx=ctx)
         core = {*self.commands, *ctx.find_root().meta.get(_CORE, ())}
         limit = formatter.width - 6 - max(map(len, names), default=0)
         for name in names:
@@ -290,10 +357,24 @@ class Root(click.Group):
 
 
 @click.group(cls=Root, help=homes.DOCS, context_settings={"help_option_names": ["-h", "--help"]})
+@click.version_option(
+    __version__, "-V", "--version", prog_name="dusha", message="%(prog)s %(version)s",
+    help="Show the version and exit.",
+)
 @click.option("-c", "--companion", is_eager=True, help="Companion name under the dusha config root.")
 @click.option("--home", is_eager=True, help="Companion home directory.")
 @click.option("--config", is_eager=True, help="Configuration file path.")
-def main(companion: str | None, home: str | None, config: str | None) -> None:
+@click.option(
+    "-v", "--verbose", is_flag=True, is_eager=True, callback=_verbosity_callback,
+    help="Enable debug logging and detailed errors.",
+)
+@click.option(
+    "-q", "--quiet", is_flag=True, is_eager=True, callback=_verbosity_callback,
+    help="Suppress warnings and status messages.",
+)
+def main(
+    companion: str | None, home: str | None, config: str | None, verbose: bool, quiet: bool
+) -> None:
     pass
 
 
@@ -319,7 +400,7 @@ def serve(ctx: click.Context, name: str | None) -> None:
     from .api import create_app
 
     host = os.getenv("DUSHA_HOST") or cfg.host
-    uvicorn.run(create_app(cfg), host=host, port=cfg.port, log_level="info")
+    uvicorn.run(create_app(cfg), host=host, port=cfg.port, log_level=_uvicorn_level(ctx))
 
 
 def _change_text(change: Any) -> str:
@@ -346,7 +427,7 @@ def _changes(changes: list[Any], *, interactive: bool = False, upgrade: bool = F
     for change in changes:
         if change.kind == setup.NEEDS_PROXY:
             if notes:
-                click.echo(_success(*notes), err=True)
+                _echo_success(*notes)
                 notes.clear()
             _prompt_proxy(change.path, interactive)
             if upgrade and change.path.exists():
@@ -354,7 +435,7 @@ def _changes(changes: list[Any], *, interactive: bool = False, upgrade: bool = F
         else:
             notes.append(_change_text(change))
     if notes:
-        click.echo(_success(*notes), err=True)
+        _echo_success(*notes)
     return bool(changes)
 
 
@@ -422,7 +503,7 @@ def _configure_companion(
 
     if not _config(resolve):
         note = f"Companion {companion} is up to date." if companion else f"Home {home_arg} is up to date."
-        click.echo(_success(note), err=True)
+        _echo_success(note)
 
 
 # Deprecated dusha init, removed in 2.0.21.
@@ -436,12 +517,9 @@ def _configure_companion(
 def init(
     ctx: click.Context, name: str | None, serve_part: bool, proxy_part: bool, server_url: str, token: str
 ) -> None:
-    click.echo(
-        _warn(
-            "Command dusha init is deprecated and goes away in 2.0.21.",
-            "Use dusha companion add or dusha companion update.",
-        ),
-        err=True,
+    _echo_warn(
+        "Command dusha init is deprecated and goes away in 2.0.21.",
+        "Use dusha companion add or dusha companion update.",
     )
     _configure_companion(
         ctx,
@@ -469,7 +547,7 @@ def _setup(path: Path) -> None:
     token = click.prompt(
         _ask("Server token, empty for none"), default="", show_default=False, hide_input=hidden, err=True
     )
-    click.echo(_success(f"Created {settings.create(path, url, token)}."), err=True)
+    _echo_success(f"Created {settings.create(path, url, token)}.")
 
 
 def _checked(value: str) -> bool | str:
@@ -503,7 +581,7 @@ def _connect(path: Path) -> None:
         try:
             remote.plugins(probe)
         except remote.RemoteError as error:
-            click.echo(_warn(str(error)), err=True)
+            _echo_warn(str(error))
             choice = questionary.select(
                 "What now?", choices=["Try again", "Save anyway"], style=style
             ).unsafe_ask()
@@ -514,7 +592,7 @@ def _connect(path: Path) -> None:
         break
     lines = [f"Connected to {url}."] if connected else []
     lines.append(f"Saved {settings.save_server(path, url, token)}.")
-    click.echo(_success(*lines), err=True)
+    _echo_success(*lines)
 
 
 class Proxy(click.Group):
@@ -552,7 +630,7 @@ def proxy(ctx: click.Context) -> None:
 
     from .client.proxy import create_proxy_app
 
-    uvicorn.run(create_proxy_app(cfg), host=cfg.host, port=cfg.port, log_level="info")
+    uvicorn.run(create_proxy_app(cfg), host=cfg.host, port=cfg.port, log_level=_uvicorn_level(ctx))
 
 
 CUSTOM = "custom"
@@ -588,7 +666,7 @@ def _add(path: Path, provider: str | None, profile: str | None, refresh: bool) -
     except catalog.CatalogError as error:
         raise click.ClickException(_sentence(str(error))) from error
     if warning:
-        click.echo(_warn(warning), err=True)
+        _echo_warn(warning)
     found = presets.build(data)
     interactive = sys.stdin.isatty()
     if provider is None:
@@ -620,12 +698,9 @@ def _save(path: Path, name: str, raw: dict[str, Any]) -> None:
     _config(lambda: settings.save_provider(path, name, raw))
     companion, host = path.parent.name, f"[{current.host}]" if ":" in current.host else current.host
     harness = f"http://{host}:{current.port}/{name}"
-    click.echo(
-        _success(
-            f"New provider {name} added to {companion} at {harness}.",
-            f"Restart dusha proxy {companion} and dusha serve {companion} to use it.",
-        ),
-        err=True,
+    _echo_success(
+        f"New provider {name} added to {companion} at {harness}.",
+        f"Restart dusha proxy {companion} and dusha serve {companion} to use it.",
     )
 
 
@@ -681,7 +756,7 @@ def _remove(path: Path, profile: str) -> None:
     if profile not in _config(lambda: settings.load(path, environ=False)).providers:
         raise click.ClickException(f"No provider named {profile!r}.")
     _config(lambda: settings.save_provider(path, profile, None))
-    click.echo(_success(f"Removed {profile} from {path.parent.name}."), err=True)
+    _echo_success(f"Removed {profile} from {path.parent.name}.")
 
 
 def _masked(key: str) -> str:
@@ -772,10 +847,7 @@ def provider_cmd(
 # Deprecated dusha proxy <name> auth, removed in 2.0.21.
 @proxy.group("auth", hidden=True)
 def auth() -> None:
-    click.echo(
-        _warn("Command dusha proxy auth is deprecated and goes away in 2.0.21.", "Use dusha provider."),
-        err=True,
-    )
+    _echo_warn("Command dusha proxy auth is deprecated and goes away in 2.0.21.", "Use dusha provider.")
 
 
 @auth.command("login")
@@ -867,7 +939,7 @@ def companion_remove(ctx: click.Context, name: str | None, yes: bool) -> None:
             _ask(f"Remove companion {label} and its data at {home}?"), default=False, abort=True, err=True
         )
     shutil.rmtree(home)
-    click.echo(_success(f"Removed companion {label} from {home}."), err=True)
+    _echo_success(f"Removed companion {label} from {home}.")
 
 
 @companion_group.command("list", help="List companions")

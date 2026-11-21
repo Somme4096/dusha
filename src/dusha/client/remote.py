@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import socket
 from pathlib import Path
@@ -10,6 +11,8 @@ from typing import Any
 import httpx
 
 from .settings import Connection
+
+logger = logging.getLogger("dusha.cli")
 
 MANIFEST = "/cli/v1/commands"
 RUN = "/cli/v1/run/"
@@ -55,6 +58,7 @@ def request(connection: Connection, method: str, path: str, body: Any = None, *,
         read=None if wait else connection.timeout_seconds,
     )
     try:
+        logger.debug("%s %s", method, connection.url + path)
         response = httpx.request(
             method, connection.url + path, json=body, headers=connection.headers(), timeout=timeout
         )
@@ -98,6 +102,7 @@ def manifest(connection: Connection, cache: Path | None) -> tuple[dict[str, Any]
         cached = _cached(cache, connection.url)
         if cached is None:
             raise
+        logger.debug("Using cached manifest from %s (%s)", cache, error)
         return cached, error
     _store(cache, connection.url, fetched)
     return fetched, None

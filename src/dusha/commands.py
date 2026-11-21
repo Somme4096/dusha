@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 RESERVED = frozenset({"init", "serve", "proxy", "provider", "companion", "plugin"})
-RESERVED_OPTIONS = frozenset({"companion", "home", "config"})
+RESERVED_OPTIONS = frozenset({"companion", "home", "config", "verbose", "quiet"})
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
 _TYPES = {str: "str", int: "int", float: "float", bool: "bool"}
 _SCHEMA = {"str": "string", "int": "integer", "float": "number", "bool": "boolean", "choice": "string"}

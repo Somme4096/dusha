@@ -13,7 +13,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from dusha import api
+from dusha import __version__, api
 from dusha.client import settings
 from dusha.config import load_config
 
@@ -583,3 +583,46 @@ def test_cli_help_uses_imperative_phrases_and_documents_every_plugin_option(tmp_
     assert ack_help.returncode == 0 and "Failure reason when outcome is failed." in ack_help.stdout
     assert memo_help.returncode == 0 and "Which memos to list." in memo_help.stdout
     assert evergreen_help.returncode == 0 and "Priority from 0 to 100." in evergreen_help.stdout
+
+
+def test_cli_version_flags_print_package_version_without_a_companion(tmp_path):
+    for name in ("sol", "sophia"):
+        _home(tmp_path, name, port=8765)
+    for flag in ("-V", "--version"):
+        result = _cli(tmp_path, flag)
+        assert result.returncode == 0
+        assert result.stdout == f"dusha {__version__}\n"
+        assert result.stderr == ""
+
+
+def test_cli_verbose_and_quiet_flags_control_logging_and_status_output(tmp_path, free_port, serving):
+    for clash_args in (("-v", "-q", "companion", "list"), ("companion", "list", "-v", "-q")):
+        clash = _cli(tmp_path, *clash_args)
+        assert clash.returncode == 2 and "Use only one of --verbose or --quiet." in clash.stderr
+
+    quiet_add = _cli(tmp_path, "companion", "add", "nova", "-q", "--serve")
+    assert quiet_add.returncode == 0 and quiet_add.stderr == ""
+
+    port = free_port()
+    path = _home(tmp_path, "nova", port=port, plugins={"memo": {}})
+    with serving(path):
+        verbose_ok = _cli(tmp_path, "memo", "list", "-v")
+    assert verbose_ok.returncode == 0 and json.loads(verbose_ok.stdout) == {"memos": []}
+    assert "DEBUG dusha.cli: GET" in verbose_ok.stderr
+    assert "DEBUG dusha.cli: POST" in verbose_ok.stderr
+
+    verbose_err = _cli(tmp_path, "memo", "list", "-v")
+    assert verbose_err.returncode == 1
+    assert "Traceback (most recent call last):" in verbose_err.stderr
+    assert "Error!\nCannot connect to the server" in verbose_err.stderr
+
+    quiet_help = _cli(tmp_path, "--help", "-q")
+    assert quiet_help.returncode == 0 and quiet_help.stderr == "" and "serve" in quiet_help.stdout
+
+    server = _start(tmp_path, "-q", "serve", "nova")
+    try:
+        health = _wait_for(lambda: _get_json(f"http://127.0.0.1:{port}/health"))
+    finally:
+        stderr = _stop(server)
+    assert health["status"] == "ok"
+    assert "Uvicorn running on" not in stderr
